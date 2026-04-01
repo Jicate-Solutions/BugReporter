@@ -161,6 +161,7 @@ export default function BugsPage() {
           organizationSlug={organization.slug}
           applications={applications}
           applicationsLoading={appsLoading}
+          onStatusChange={() => { refetchBugs(); refetchStats(); }}
         />
       )}
     </div>

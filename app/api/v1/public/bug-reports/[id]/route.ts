@@ -15,6 +15,7 @@ import type {
   MessageAttachment,
   MessageReaction,
 } from '@boobalan_jkkn/shared';
+import { EmailService } from '@/lib/services/email/email.service';
 
 interface MessageQueryResult {
   id: string;
@@ -263,6 +264,22 @@ export const PATCH = withApiKeyAuth(
           message_type: 'system',
           sender_user_id: null, // System message
         });
+      }
+
+      // Notify the reporter if they have an email and status changed (fire-and-forget)
+      const reporterEmail = (updatedBug as any).metadata?.reporter_email;
+      if (reporterEmail && body.status) {
+        EmailService.sendStatusUpdateNotification({
+          reporterEmail,
+          reporterName: (updatedBug as any).metadata?.reporter_name,
+          bugId: updatedBug.id,
+          bugTitle: (updatedBug as any).metadata?.title || 'Bug Report',
+          newStatus: body.status,
+          appName: context.application.name,
+          orgName: context.organization.name,
+          developerNote: body.resolution_notes,
+          bugViewUrl: undefined, // Public API doesn't have a direct reporter view URL
+        }).catch(err => console.error('[BugReportAPI PATCH] Email notification failed:', err));
       }
 
       const response: UpdateBugReportStatusResponse = {

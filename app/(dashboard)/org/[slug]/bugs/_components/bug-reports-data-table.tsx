@@ -41,21 +41,23 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select';
-import { BugStatusBadge } from './bug-status-badge';
 import { BugReport, Application } from '@boobalan_jkkn/shared';
+import { InlineStatusSelect } from './inline-status-select';
 
 interface BugReportsDataTableProps {
   data: BugReport[];
   organizationSlug: string;
   applications: Application[];
   applicationsLoading?: boolean;
+  onStatusChange?: () => void;
 }
 
 export function BugReportsDataTable({
   data,
   organizationSlug,
   applications,
-  applicationsLoading = false
+  applicationsLoading = false,
+  onStatusChange
 }: BugReportsDataTableProps) {
   const [sorting, setSorting] = React.useState<SortingState>([
     { id: 'created_at', desc: true }
@@ -125,7 +127,13 @@ export function BugReportsDataTable({
           </Button>
         );
       },
-      cell: ({ row }) => <BugStatusBadge status={row.getValue('status')} />,
+      cell: ({ row }) => (
+        <InlineStatusSelect
+          bugId={row.original.id}
+          currentStatus={row.getValue('status')}
+          onSuccess={onStatusChange}
+        />
+      ),
       filterFn: (row, id, value) => {
         return value.includes(row.getValue(id));
       }
