@@ -45,6 +45,45 @@ export class BugReportServerService {
   }
 
   /**
+   * Get recent bug reports for a single application, newest first.
+   */
+  static async getRecentByApplication(
+    applicationId: string,
+    limit = 5
+  ): Promise<BugReport[]> {
+    try {
+      const supabase = await createClient();
+
+      const { data, error } = await supabase
+        .from('bug_reports')
+        .select(
+          `
+          *,
+          application:applications(id, name, slug)
+        `
+        )
+        .eq('application_id', applicationId)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (error) throw error;
+
+      return (data || []).map((bug) => ({
+        ...bug,
+        title: bug.metadata?.title || 'Untitled',
+        reporter_name: bug.metadata?.reporter_name || null,
+        reporter_email: bug.metadata?.reporter_email || null,
+      }));
+    } catch (error) {
+      console.error(
+        '[BugReportServerService] Error fetching recent bugs by application:',
+        error
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Get bug report statistics for an organization
    */
   static async getBugStats(organizationId: string): Promise<BugReportStats> {
