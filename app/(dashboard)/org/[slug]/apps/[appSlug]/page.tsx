@@ -398,6 +398,25 @@ export default async function ApplicationPage({
                   </p>
                 )}
               </div>
+
+              <Separator />
+
+              <div className='space-y-2'>
+                <div className='flex items-center gap-2 text-sm font-medium text-muted-foreground'>
+                  <Shield className='h-4 w-4' />
+                  Auto-Merge Policy
+                </div>
+                {application.settings?.auto_triage_policy
+                  ?.auto_merge_eligible ? (
+                  <Badge className='bg-amber-500 hover:bg-amber-500 text-white'>
+                    Auto-merge enabled (danger zones still gated)
+                  </Badge>
+                ) : (
+                  <Badge variant='secondary'>
+                    Manual review required for every fix (default)
+                  </Badge>
+                )}
+              </div>
             </CardContent>
           </Card>
 

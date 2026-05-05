@@ -14,6 +14,9 @@ export interface Application {
     github_repo?: string;
     deploy_hook_url?: string;
     test_credentials_note?: string;
+    auto_triage_policy?: {
+      auto_merge_eligible?: boolean;
+    };
     [key: string]: any;
   };
   _stats?: {
