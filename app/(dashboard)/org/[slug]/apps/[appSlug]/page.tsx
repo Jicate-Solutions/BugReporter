@@ -323,6 +323,84 @@ export default async function ApplicationPage({
             </CardContent>
           </Card>
 
+          {/* Auto-Triage Substrate */}
+          <Card className='border-l-4 border-l-purple-500'>
+            <CardHeader>
+              <div className='flex items-center gap-2'>
+                <div className='rounded-md bg-purple-500/10 p-2'>
+                  <Settings className='h-4 w-4 text-purple-600' />
+                </div>
+                <div>
+                  <CardTitle>Auto-Triage Substrate</CardTitle>
+                  <CardDescription>
+                    Config the auto-triage agent uses to fix bugs end-to-end
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              <div className='space-y-2'>
+                <div className='flex items-center gap-2 text-sm font-medium text-muted-foreground'>
+                  <Hash className='h-4 w-4' />
+                  GitHub Repository
+                </div>
+                {application.settings?.github_repo ? (
+                  <a
+                    href={`https://github.com/${application.settings.github_repo}`}
+                    target='_blank'
+                    rel='noopener noreferrer'
+                    className='flex items-center gap-2 text-sm text-primary hover:underline'
+                  >
+                    <code className='font-mono'>
+                      {application.settings.github_repo}
+                    </code>
+                    <ExternalLink className='h-3.5 w-3.5 flex-shrink-0' />
+                  </a>
+                ) : (
+                  <p className='text-sm text-muted-foreground italic'>
+                    Not set — agent cannot open fix PRs for this app yet
+                  </p>
+                )}
+              </div>
+
+              <Separator />
+
+              <div className='space-y-2'>
+                <div className='flex items-center gap-2 text-sm font-medium text-muted-foreground'>
+                  <Globe className='h-4 w-4' />
+                  Vercel Deploy Hook
+                </div>
+                {application.settings?.deploy_hook_url ? (
+                  <Badge variant='secondary' className='font-mono text-xs'>
+                    Configured
+                  </Badge>
+                ) : (
+                  <p className='text-sm text-muted-foreground italic'>
+                    Not set — agent cannot ship merged fixes
+                  </p>
+                )}
+              </div>
+
+              <Separator />
+
+              <div className='space-y-2'>
+                <div className='flex items-center gap-2 text-sm font-medium text-muted-foreground'>
+                  <Shield className='h-4 w-4' />
+                  Test Credentials Note
+                </div>
+                {application.settings?.test_credentials_note ? (
+                  <p className='text-sm font-mono bg-muted px-2 py-1 rounded'>
+                    {application.settings.test_credentials_note}
+                  </p>
+                ) : (
+                  <p className='text-sm text-muted-foreground italic'>
+                    Not set — agent will skip CFT verification for this app
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Quick Actions Card */}
           <Card className='border-l-4 border-l-green-500'>
             <CardHeader>
