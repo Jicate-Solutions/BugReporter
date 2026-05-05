@@ -14,6 +14,7 @@ import {
   FormMessage
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { AllowedDomainsInput } from './allowed-domains-input';
 import type { Application } from '@boobalan_jkkn/shared';
 
@@ -47,7 +48,12 @@ const applicationFormSchema = z.object({
       .url('Must be a valid URL')
       .optional()
       .or(z.literal('')),
-    test_credentials_note: z.string().optional().or(z.literal(''))
+    test_credentials_note: z.string().optional().or(z.literal('')),
+    auto_triage_policy: z
+      .object({
+        auto_merge_eligible: z.boolean().optional()
+      })
+      .optional()
   })
 });
 
@@ -76,7 +82,12 @@ export function ApplicationForm({
         github_repo: application?.settings?.github_repo || '',
         deploy_hook_url: application?.settings?.deploy_hook_url || '',
         test_credentials_note:
-          application?.settings?.test_credentials_note || ''
+          application?.settings?.test_credentials_note || '',
+        auto_triage_policy: {
+          auto_merge_eligible:
+            application?.settings?.auto_triage_policy?.auto_merge_eligible ??
+            false
+        }
       }
     }
   });
@@ -277,6 +288,31 @@ export function ApplicationForm({
                 production credential.
               </FormDescription>
               <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='settings.auto_triage_policy.auto_merge_eligible'
+          render={({ field }) => (
+            <FormItem className='flex flex-row items-start gap-3 rounded-md border p-4'>
+              <FormControl>
+                <Switch
+                  checked={field.value ?? false}
+                  onCheckedChange={field.onChange}
+                />
+              </FormControl>
+              <div className='space-y-1 leading-none'>
+                <FormLabel>Allow Auto-Merge of Verified Fixes</FormLabel>
+                <FormDescription>
+                  When ON, the auto-triage agent may merge fixes for this app
+                  without human review — but only if the diff stays clear of
+                  danger zones (auth, RLS, migrations, payments, env, vercel
+                  config) AND CI passes AND CFT verifies the fix. When OFF
+                  (default), every PR waits for a human approver.
+                </FormDescription>
+              </div>
             </FormItem>
           )}
         />
