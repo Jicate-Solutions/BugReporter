@@ -1,5 +1,7 @@
 import { ApplicationServerService } from '@/lib/services/applications/server';
 import { OrganizationServerService } from '@/lib/services/organizations/server';
+import { BugReportServerService } from '@/lib/services/bug-reports/server';
+import { BugStatusBadge } from '../../bugs/_components/bug-status-badge';
 import { notFound } from 'next/navigation';
 import {
   Card,
@@ -58,6 +60,11 @@ export default async function ApplicationPage({
 
   const stats = await ApplicationServerService.getApplicationStats(
     application.id
+  );
+
+  const recentBugs = await BugReportServerService.getRecentByApplication(
+    application.id,
+    5
   );
 
   return (
@@ -252,6 +259,67 @@ export default async function ApplicationPage({
 >`}
                 </code>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Recent Bug Reports */}
+          <Card className='border-l-4 border-l-orange-500'>
+            <CardHeader>
+              <div className='flex items-center justify-between'>
+                <div className='flex items-center gap-2'>
+                  <div className='rounded-md bg-orange-500/10 p-2'>
+                    <Bug className='h-4 w-4 text-orange-600' />
+                  </div>
+                  <div>
+                    <CardTitle>Recent Bug Reports</CardTitle>
+                    <CardDescription>
+                      Latest {recentBugs.length} of {stats.total_bugs} reports
+                    </CardDescription>
+                  </div>
+                </div>
+                {stats.total_bugs > recentBugs.length && (
+                  <Button variant='ghost' size='sm' asChild>
+                    <Link href={`/org/${slug}/bugs?app=${appSlug}`}>
+                      View all
+                    </Link>
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className='space-y-2'>
+              {recentBugs.length === 0 ? (
+                <p className='text-sm text-muted-foreground py-6 text-center'>
+                  No bug reports yet for this application.
+                </p>
+              ) : (
+                recentBugs.map((bug) => (
+                  <Link
+                    key={bug.id}
+                    href={`/org/${slug}/bugs/${bug.id}`}
+                    className='flex items-start justify-between gap-3 rounded-md border p-3 hover:bg-muted/50 transition-colors'
+                  >
+                    <div className='min-w-0 flex-1 space-y-1'>
+                      <div className='flex items-center gap-2'>
+                        <span className='text-xs font-mono text-muted-foreground'>
+                          {(bug as { display_id?: string }).display_id ||
+                            `#${bug.id.slice(0, 8)}`}
+                        </span>
+                        <BugStatusBadge status={bug.status} />
+                      </div>
+                      <div className='font-medium text-sm truncate'>
+                        {bug.title || 'Untitled'}
+                      </div>
+                      <div className='text-xs text-muted-foreground'>
+                        {new Date(bug.created_at).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                        })}
+                      </div>
+                    </div>
+                  </Link>
+                ))
+              )}
             </CardContent>
           </Card>
 
