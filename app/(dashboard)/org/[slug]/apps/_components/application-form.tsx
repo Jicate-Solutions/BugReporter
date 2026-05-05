@@ -33,7 +33,21 @@ const applicationFormSchema = z.object({
       .string()
       .url('Must be a valid URL')
       .optional()
-      .or(z.literal(''))
+      .or(z.literal('')),
+    github_repo: z
+      .string()
+      .regex(
+        /^[\w.-]+\/[\w.-]+$/,
+        'Must be in the form owner/repo (e.g. Jicate-Solutions/BugReporter)'
+      )
+      .optional()
+      .or(z.literal('')),
+    deploy_hook_url: z
+      .string()
+      .url('Must be a valid URL')
+      .optional()
+      .or(z.literal('')),
+    test_credentials_note: z.string().optional().or(z.literal(''))
   })
 });
 
@@ -58,7 +72,11 @@ export function ApplicationForm({
       app_url: application?.app_url || '',
       settings: {
         allowed_domains: application?.settings?.allowed_domains || [],
-        webhook_url: application?.settings?.webhook_url || ''
+        webhook_url: application?.settings?.webhook_url || '',
+        github_repo: application?.settings?.github_repo || '',
+        deploy_hook_url: application?.settings?.deploy_hook_url || '',
+        test_credentials_note:
+          application?.settings?.test_credentials_note || ''
       }
     }
   });
@@ -182,6 +200,81 @@ export function ApplicationForm({
               </FormControl>
               <FormDescription>
                 Receive notifications when new bugs are reported
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <div className='space-y-1 pt-2'>
+          <h3 className='text-base font-semibold'>
+            Auto-Triage Substrate (Optional)
+          </h3>
+          <p className='text-sm text-muted-foreground'>
+            Fill these in to make bugs for this app eligible for the auto-triage
+            agent (clone repo → fix → deploy → verify → resolve).
+          </p>
+        </div>
+
+        <FormField
+          control={form.control}
+          name='settings.github_repo'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>GitHub Repository (Optional)</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder='owner/repo (e.g. Jicate-Solutions/BugReporter)'
+                  {...field}
+                />
+              </FormControl>
+              <FormDescription>
+                Where the app&apos;s source code lives. Required for the
+                auto-triage agent to open fix PRs.
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='settings.deploy_hook_url'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Vercel Deploy Hook URL (Optional)</FormLabel>
+              <FormControl>
+                <Input
+                  type='url'
+                  placeholder='https://api.vercel.com/v1/integrations/deploy/...'
+                  {...field}
+                />
+              </FormControl>
+              <FormDescription>
+                The auto-triage agent fires this after merging a fix to ship the
+                build. Generate one from your Vercel project&apos;s Git settings.
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='settings.test_credentials_note'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Test Credentials Note (Optional)</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder='e.g. creator@example.in / demo123, or "Vercel env TEST_USER_EMAIL"'
+                  {...field}
+                />
+              </FormControl>
+              <FormDescription>
+                How the auto-triage agent should authenticate when verifying
+                fixes in the browser. Use a demo account, never a real
+                production credential.
               </FormDescription>
               <FormMessage />
             </FormItem>

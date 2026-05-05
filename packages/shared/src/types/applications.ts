@@ -11,6 +11,9 @@ export interface Application {
   settings?: {
     allowed_domains?: string[];
     webhook_url?: string;
+    github_repo?: string;
+    deploy_hook_url?: string;
+    test_credentials_note?: string;
     [key: string]: any;
   };
   _stats?: {
