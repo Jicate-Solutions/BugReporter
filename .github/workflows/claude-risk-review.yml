@@ -1,0 +1,24 @@
+name: Claude Risk Review (advisory)
+
+# Thin stub — the real workflow is org-central (fix bugs there, not here):
+# https://github.com/Jicate-Solutions/.github → claude-risk-review-reusable.yml
+# Tune this repo's routing by adding `with:` inputs (risky_paths, money_paths,
+# docs_paths, model, app_context) under `uses:` below.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write  # required: claude-code-action OIDC token exchange
+
+concurrency:
+  group: claude-risk-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    uses: Jicate-Solutions/.github/.github/workflows/claude-risk-review-reusable.yml@main
+    secrets: inherit
