@@ -15,7 +15,9 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
 import { AllowedDomainsInput } from './allowed-domains-input';
+import { AVAILABLE_AI_TASKS } from '@/lib/ai/tasks';
 import type { Application } from '@boobalan_jkkn/shared';
 
 const applicationFormSchema = z.object({
@@ -53,6 +55,15 @@ const applicationFormSchema = z.object({
       .object({
         auto_merge_eligible: z.boolean().optional()
       })
+      .optional(),
+    // AI door (₹0 Max lane). MUST stay registered in this schema: zod strips
+    // unknown keys, so an unregistered settings.ai would be silently wiped on
+    // every app edit (same reason auto_triage_policy lives here).
+    ai: z
+      .object({
+        enabled: z.boolean().optional(),
+        allowed_tasks: z.array(z.string()).optional()
+      })
       .optional()
   })
 });
@@ -87,6 +98,10 @@ export function ApplicationForm({
           auto_merge_eligible:
             application?.settings?.auto_triage_policy?.auto_merge_eligible ??
             false
+        },
+        ai: {
+          enabled: application?.settings?.ai?.enabled ?? false,
+          allowed_tasks: application?.settings?.ai?.allowed_tasks || []
         }
       }
     }
@@ -316,6 +331,80 @@ export function ApplicationForm({
             </FormItem>
           )}
         />
+
+        <FormField
+          control={form.control}
+          name='settings.ai.enabled'
+          render={({ field }) => (
+            <FormItem className='flex flex-row items-start gap-3 rounded-md border p-4'>
+              <FormControl>
+                <Switch
+                  checked={field.value ?? false}
+                  onCheckedChange={field.onChange}
+                />
+              </FormControl>
+              <div className='space-y-1 leading-none'>
+                <FormLabel>Enable AI (₹0 Max lane)</FormLabel>
+                <FormDescription>
+                  When ON, this app may run the AI tasks ticked below using its
+                  existing API key — jobs queue behind MyJKKN&apos;s own work
+                  and run at ₹0 on the Max lane. When OFF (default), AI calls
+                  return <code>ai_not_enabled</code>. Bug reporting is
+                  unaffected either way.
+                </FormDescription>
+              </div>
+            </FormItem>
+          )}
+        />
+
+        {form.watch('settings.ai.enabled') && (
+          <FormField
+            control={form.control}
+            name='settings.ai.allowed_tasks'
+            render={({ field }) => (
+              <FormItem className='rounded-md border p-4'>
+                <FormLabel>Approved AI tasks</FormLabel>
+                <FormDescription>
+                  The app can run ONLY the tasks ticked here (the &quot;set
+                  menu&quot;). Anything else returns{' '}
+                  <code>task_not_permitted</code>.
+                </FormDescription>
+                <div className='mt-3 space-y-3'>
+                  {AVAILABLE_AI_TASKS.map((task) => {
+                    const selected = field.value ?? [];
+                    const checked = selected.includes(task.key);
+                    return (
+                      <div key={task.key} className='flex items-start gap-3'>
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(next) => {
+                            field.onChange(
+                              next === true
+                                ? [...selected, task.key]
+                                : selected.filter((k) => k !== task.key)
+                            );
+                          }}
+                        />
+                        <div className='space-y-0.5 leading-none'>
+                          <p className='text-sm font-medium'>
+                            {task.label}{' '}
+                            <code className='text-muted-foreground text-xs'>
+                              {task.key}
+                            </code>
+                          </p>
+                          <p className='text-muted-foreground text-xs'>
+                            {task.description}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
 
         <Button
           type='submit'
