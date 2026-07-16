@@ -13,7 +13,8 @@ import {
   LogOut,
   Home,
   Sparkles,
-  Shield
+  Shield,
+  Activity
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -77,6 +78,12 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       url: `/org/${orgSlug}/ai`,
       icon: Sparkles,
       badge: '₹0'
+    },
+    {
+      title: 'Uptime',
+      url: `/org/${orgSlug}/uptime`,
+      icon: Activity,
+      badge: null
     }
   ];
 
