@@ -17,6 +17,11 @@ export interface Application {
     auto_triage_policy?: {
       auto_merge_eligible?: boolean;
     };
+    /** AI door (₹0 Max lane): per-app switch + approved task menu. */
+    ai?: {
+      enabled?: boolean;
+      allowed_tasks?: string[];
+    };
     [key: string]: any;
   };
   _stats?: {
