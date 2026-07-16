@@ -71,6 +71,12 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       url: `/org/${orgSlug}/bugs`,
       icon: Bug,
       badge: bugCount > 0 ? bugCount.toString() : null
+    },
+    {
+      title: 'AI',
+      url: `/org/${orgSlug}/ai`,
+      icon: Sparkles,
+      badge: '₹0'
     }
   ];
 
