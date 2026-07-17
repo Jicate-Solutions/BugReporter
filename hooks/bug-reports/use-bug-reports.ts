@@ -324,10 +324,10 @@ export function useFleetBugRollup(organizationId: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchRollup = useCallback(async () => {
+  const fetchRollup = useCallback(async (): Promise<boolean> => {
     if (!organizationId) {
       setRollup(null);
-      return;
+      return false;
     }
 
     try {
@@ -336,10 +336,12 @@ export function useFleetBugRollup(organizationId: string) {
 
       const data = await BugReportClientService.getFleetBugRollup(organizationId);
       setRollup(data);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch rollup';
       setError(message);
       console.error('[hooks/fleet-bug-rollup] Fetch error:', err);
+      return false;
     } finally {
       setLoading(false);
     }

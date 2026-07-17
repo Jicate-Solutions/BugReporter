@@ -422,29 +422,40 @@ export class BugReportClientService {
     try {
       const supabase = createClient();
 
-      const [{ data: appsData, error: appsErr }, { data: bugsData, error: bugsErr }] =
-        await Promise.all([
-          supabase
-            .from('applications')
-            .select('id, name, slug')
-            .eq('organization_id', organizationId),
-          supabase
-            .from('bug_reports')
-            .select('application_id, status, category, created_at, resolved_at')
-            .eq('organization_id', organizationId),
-        ]);
-
-      if (appsErr) throw appsErr;
-      if (bugsErr) throw bugsErr;
-
-      const apps = (appsData ?? []) as { id: string; name: string; slug: string }[];
-      const bugs = (bugsData ?? []) as {
+      type BugRow = {
         application_id: string | null;
         status: string | null;
         category: string | null;
         created_at: string;
         resolved_at: string | null;
-      }[];
+      };
+
+      const { data: appsData, error: appsErr } = await supabase
+        .from('applications')
+        .select('id, name, slug')
+        .eq('organization_id', organizationId);
+      if (appsErr) throw appsErr;
+
+      // Page through every bug row. A plain unbounded select is capped by
+      // PostgREST's max-rows (default 1000), which would silently truncate the
+      // totals, trend, and medians for any org past that size — the exact bug a
+      // fleet rollup exists to avoid. Ordering keeps the pages stable.
+      const PAGE = 1000;
+      const bugs: BugRow[] = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase
+          .from('bug_reports')
+          .select('application_id, status, category, created_at, resolved_at')
+          .eq('organization_id', organizationId)
+          .order('created_at', { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (error) throw error;
+        const rows = (data ?? []) as BugRow[];
+        bugs.push(...rows);
+        if (rows.length < PAGE) break;
+      }
+
+      const apps = (appsData ?? []) as { id: string; name: string; slug: string }[];
 
       const now = Date.now();
       const weekAgoMs = now - 7 * 24 * 60 * 60 * 1000;

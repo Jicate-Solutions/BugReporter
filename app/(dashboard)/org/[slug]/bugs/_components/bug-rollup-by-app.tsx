@@ -37,6 +37,7 @@ import type { FleetBugRollup } from '@/lib/services/bug-reports/client';
 interface Props {
   rollup: FleetBugRollup | null;
   loading?: boolean;
+  error?: string | null;
   orgSlug: string;
 }
 
@@ -48,7 +49,7 @@ function fmtResolve(hours: number | null): string {
   return `${Math.round((hours / 24) * 10) / 10}d`;
 }
 
-export function BugRollupByApp({ rollup, loading, orgSlug }: Props) {
+export function BugRollupByApp({ rollup, loading, error, orgSlug }: Props) {
   if (loading) {
     return (
       <div className="space-y-4">
@@ -60,6 +61,19 @@ export function BugRollupByApp({ rollup, loading, orgSlug }: Props) {
         <Skeleton className="h-52" />
         <Skeleton className="h-64" />
       </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center">
+          <p className="text-sm font-medium text-red-600">
+            Couldn&apos;t load the cross-app rollup
+          </p>
+          <p className="text-muted-foreground mt-1 text-xs">{error}</p>
+        </CardContent>
+      </Card>
     );
   }
 

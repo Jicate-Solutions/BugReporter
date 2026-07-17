@@ -16,13 +16,18 @@ export default function BugDashboardPage() {
   const {
     rollup,
     loading: rollupLoading,
+    error: rollupError,
     refetch: refetchRollup
   } = useFleetBugRollup(organization?.id || '');
 
   const handleRefresh = async () => {
     toast.loading('Refreshing data...', { id: 'refresh-dashboard' });
-    await Promise.all([refetch(), refetchRollup()]);
-    toast.success('Data refreshed!', { id: 'refresh-dashboard' });
+    const [, rollupOk] = await Promise.all([refetch(), refetchRollup()]);
+    if (rollupOk) {
+      toast.success('Data refreshed!', { id: 'refresh-dashboard' });
+    } else {
+      toast.error('Some data failed to refresh', { id: 'refresh-dashboard' });
+    }
   };
 
   if (orgLoading || loading) {
@@ -82,6 +87,7 @@ export default function BugDashboardPage() {
         <BugRollupByApp
           rollup={rollup}
           loading={rollupLoading}
+          error={rollupError}
           orgSlug={organization.slug}
         />
       </div>
