@@ -17,6 +17,40 @@ interface BugReportQueryResult extends Omit<BugReport, 'title' | 'reporter_name'
   };
 }
 
+/**
+ * Cross-app rollup: bug totals for a single application within an org.
+ */
+export interface AppBugRollup {
+  application_id: string;
+  name: string;
+  slug: string;
+  total: number;
+  open: number; // status 'open' or legacy 'new'
+  in_progress: number;
+  resolved: number;
+  closed: number; // status 'closed' or legacy 'wont_fix'
+  security: number; // category 'security' — the fleet's risk flag
+  last7: number; // created in the last 7 days
+  medianResolveHours: number | null; // median (resolved_at − created_at), resolved bugs only
+}
+
+/**
+ * Cross-app rollup for a whole organization: every app's bug load, a fleet
+ * trend, and the headline totals. This is the group-by the flat dashboard
+ * never exposed — no schema change, purely a new read.
+ */
+export interface FleetBugRollup {
+  apps: AppBugRollup[]; // noisiest first
+  trend: { date: string; label: string; count: number }[]; // last 14 days
+  totals: {
+    totalApps: number;
+    appsReporting: number; // apps with ≥1 bug
+    open: number; // fleet-wide active (new + seen + in_progress)
+    securityOpen: number; // security-category bugs not yet resolved or closed
+    newThisWeek: number;
+  };
+}
+
 export class BugReportClientService {
   /**
    * Get bug reports with advanced filtering and pagination
@@ -375,6 +409,155 @@ export class BugReportClientService {
       console.log(`[BugReportClientService] Deleted bug report: ${id}`);
     } catch (error) {
       console.error('[BugReportClientService] Error deleting bug report:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cross-app bug rollup for an organization. Reads every bug once (session-
+   * scoped RLS already limits it to what the member may see), groups by
+   * application, and returns per-app loads, a 14-day fleet trend, and totals.
+   */
+  static async getFleetBugRollup(organizationId: string): Promise<FleetBugRollup> {
+    try {
+      const supabase = createClient();
+
+      type BugRow = {
+        application_id: string | null;
+        status: string | null;
+        category: string | null;
+        created_at: string;
+        resolved_at: string | null;
+      };
+
+      const { data: appsData, error: appsErr } = await supabase
+        .from('applications')
+        .select('id, name, slug')
+        .eq('organization_id', organizationId);
+      if (appsErr) throw appsErr;
+
+      // Page through every bug row. A plain unbounded select is capped by
+      // PostgREST's max-rows (default 1000), which would silently truncate the
+      // totals, trend, and medians for any org past that size — the exact bug a
+      // fleet rollup exists to avoid. Ordering keeps the pages stable.
+      const PAGE = 1000;
+      const bugs: BugRow[] = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase
+          .from('bug_reports')
+          .select('application_id, status, category, created_at, resolved_at')
+          .eq('organization_id', organizationId)
+          .order('created_at', { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (error) throw error;
+        const rows = (data ?? []) as BugRow[];
+        bugs.push(...rows);
+        if (rows.length < PAGE) break;
+      }
+
+      const apps = (appsData ?? []) as { id: string; name: string; slug: string }[];
+
+      const now = Date.now();
+      const weekAgoMs = now - 7 * 24 * 60 * 60 * 1000;
+      // Real prod statuses: new · seen · in_progress · resolved · wont_fix.
+      const isOpen = (s: string | null) => s === 'new' || s === 'seen' || s === 'open';
+      const isClosed = (s: string | null) => s === 'wont_fix' || s === 'closed';
+      const isActive = (s: string | null) => s !== 'resolved' && !isClosed(s); // still needs work
+
+      const median = (nums: number[]): number | null => {
+        if (nums.length === 0) return null;
+        const s = [...nums].sort((a, b) => a - b);
+        const mid = Math.floor(s.length / 2);
+        const m = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+        return Math.round(m * 10) / 10;
+      };
+
+      // Group bug rows by application_id.
+      const grouped = new Map<string, typeof bugs>();
+      for (const b of bugs) {
+        const key = b.application_id ?? '__unassigned__';
+        const arr = grouped.get(key);
+        if (arr) arr.push(b);
+        else grouped.set(key, [b]);
+      }
+
+      const rollOne = (list: typeof bugs, meta: { id: string; name: string; slug: string }): AppBugRollup => {
+        // Only genuinely-resolved bugs count toward "time to resolve" — a
+        // wont_fix also carries a resolved_at (set by bulkUpdateStatus), and
+        // counting a bug we gave up on as "resolved" would skew the median.
+        const resolveHours = list
+          .filter((b) => b.status === 'resolved' && b.resolved_at)
+          .map(
+            (b) =>
+              (new Date(b.resolved_at as string).getTime() - new Date(b.created_at).getTime()) / 36e5
+          )
+          .filter((h) => h >= 0);
+        return {
+          application_id: meta.id,
+          name: meta.name,
+          slug: meta.slug,
+          total: list.length,
+          open: list.filter((b) => isOpen(b.status)).length,
+          in_progress: list.filter((b) => b.status === 'in_progress').length,
+          resolved: list.filter((b) => b.status === 'resolved').length,
+          closed: list.filter((b) => isClosed(b.status)).length,
+          security: list.filter((b) => b.category === 'security').length,
+          last7: list.filter((b) => new Date(b.created_at).getTime() > weekAgoMs).length,
+          medianResolveHours: median(resolveHours),
+        };
+      };
+
+      const appRows: AppBugRollup[] = apps.map((a) =>
+        rollOne(grouped.get(a.id) ?? [], a)
+      );
+
+      // Any bugs pointing at no/unknown app become one honest "Unassigned" row.
+      const knownIds = new Set(apps.map((a) => a.id));
+      const orphanBugs = bugs.filter((b) => !b.application_id || !knownIds.has(b.application_id));
+      if (orphanBugs.length > 0) {
+        appRows.push(
+          rollOne(orphanBugs, { id: '__unassigned__', name: 'Unassigned', slug: '' })
+        );
+      }
+
+      // Noisiest first; ties broken by open count, then name.
+      appRows.sort(
+        (a, b) => b.total - a.total || b.open - a.open || a.name.localeCompare(b.name)
+      );
+
+      // 14-day fleet trend (local calendar days).
+      const dayKey = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+          d.getDate()
+        ).padStart(2, '0')}`;
+      const trend: FleetBugRollup['trend'] = [];
+      const counts = new Map<string, number>();
+      for (const b of bugs) counts.set(dayKey(new Date(b.created_at)), (counts.get(dayKey(new Date(b.created_at))) ?? 0) + 1);
+      for (let i = 13; i >= 0; i--) {
+        const d = new Date(now - i * 24 * 60 * 60 * 1000);
+        const key = dayKey(d);
+        trend.push({
+          date: key,
+          label: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+          count: counts.get(key) ?? 0,
+        });
+      }
+
+      return {
+        apps: appRows,
+        trend,
+        totals: {
+          totalApps: apps.length,
+          appsReporting: appRows.filter((r) => r.total > 0 && r.application_id !== '__unassigned__').length,
+          open: bugs.filter((b) => isOpen(b.status) || b.status === 'in_progress').length,
+          securityOpen: bugs.filter(
+            (b) => b.category === 'security' && isActive(b.status)
+          ).length,
+          newThisWeek: bugs.filter((b) => new Date(b.created_at).getTime() > weekAgoMs).length,
+        },
+      };
+    } catch (error) {
+      console.error('[BugReportClientService] Error building fleet rollup:', error);
       throw error;
     }
   }
