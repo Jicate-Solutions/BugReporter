@@ -151,6 +151,10 @@ export function AiDuplicateFinderCard({
           const simRaw = row.similarity;
           const sim = typeof simRaw === 'number' ? simRaw : Number(simRaw);
           if (!matchId || matchId === res.targetId) continue;
+          // When scoped to one app, only in-app candidates are eligible — else a
+          // cross-app top match would shadow a valid lower-similarity in-app one
+          // and a real in-app duplicate would go unreported.
+          if (applicationId && row.application_id !== applicationId) continue;
           if (!Number.isFinite(sim) || sim < MIN_SIMILARITY) continue;
           if (!best || sim > best.sim) best = { id: matchId, sim };
         }

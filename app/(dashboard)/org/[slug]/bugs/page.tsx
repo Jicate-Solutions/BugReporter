@@ -189,7 +189,10 @@ export default function BugsPage() {
       {/* Per-app AI (₹0 Max lane) — appears only when a single app is
           selected in the table above, and follows that dropdown live. */}
       {selectedApp && (
-        <div className='space-y-6 border-t pt-6'>
+        // key forces a clean remount when the app changes, so a briefing /
+        // duplicate list generated for one app never lingers under another
+        // app's header (keeps the section honest to "follows the dropdown").
+        <div key={selectedApp.id} className='space-y-6 border-t pt-6'>
           <div className='space-y-1'>
             <h2 className='flex items-center gap-2 text-xl font-semibold tracking-tight'>
               <Sparkles className='h-5 w-5 text-blue-600' />
