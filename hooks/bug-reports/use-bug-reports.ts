@@ -282,10 +282,10 @@ export function useBugStats(organizationId: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (): Promise<boolean> => {
     if (!organizationId) {
       setStats(null);
-      return;
+      return false;
     }
 
     try {
@@ -294,10 +294,12 @@ export function useBugStats(organizationId: string) {
 
       const data = await BugReportClientService.getBugStats(organizationId);
       setStats(data);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch stats';
       setError(message);
       console.error('[hooks/bug-stats] Fetch error:', err);
+      return false;
     } finally {
       setLoading(false);
     }

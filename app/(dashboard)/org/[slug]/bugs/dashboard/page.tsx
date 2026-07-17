@@ -22,8 +22,8 @@ export default function BugDashboardPage() {
 
   const handleRefresh = async () => {
     toast.loading('Refreshing data...', { id: 'refresh-dashboard' });
-    const [, rollupOk] = await Promise.all([refetch(), refetchRollup()]);
-    if (rollupOk) {
+    const [statsOk, rollupOk] = await Promise.all([refetch(), refetchRollup()]);
+    if (statsOk && rollupOk) {
       toast.success('Data refreshed!', { id: 'refresh-dashboard' });
     } else {
       toast.error('Some data failed to refresh', { id: 'refresh-dashboard' });
