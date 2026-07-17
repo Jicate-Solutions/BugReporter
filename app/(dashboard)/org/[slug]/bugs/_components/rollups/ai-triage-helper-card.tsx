@@ -58,6 +58,7 @@ interface PollResponse {
 
 const POLL_INTERVAL_MS = 4000;
 const MAX_POLLS = 40; // ~2.5 min ceiling
+const REQUEST_TIMEOUT_MS = 15000; // per-request deadline so a hung fetch can't stall a row forever
 
 const TASK_META: Record<
   TriageTask,
@@ -76,6 +77,16 @@ const TASK_ORDER: TriageTask[] = [
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * True for an AbortSignal.timeout() rejection (a per-request deadline hit).
+ * Detected by name, not `instanceof Error`, because AbortSignal.timeout()
+ * rejects with a DOMException, and `DOMException instanceof Error` is false
+ * in Chrome/Firefox.
+ */
+function isTimeoutError(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { name?: string }).name === 'TimeoutError';
 }
 
 /** Compact "how long ago" from an ISO timestamp. */
@@ -193,7 +204,8 @@ export function AiTriageHelperCard({
             organizationId,
             bugId,
             task
-          })
+          }),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
         });
 
         let enqJson: EnqueueResponse;
@@ -226,7 +238,8 @@ export function AiTriageHelperCard({
             const pollRes = await fetch(
               `/api/internal/ai?job_id=${encodeURIComponent(
                 jobId
-              )}&organizationId=${encodeURIComponent(organizationId)}`
+              )}&organizationId=${encodeURIComponent(organizationId)}`,
+              { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
             );
             pollJson = (await pollRes.json()) as PollResponse;
           } catch {
@@ -254,7 +267,11 @@ export function AiTriageHelperCard({
         fail('Timed out waiting for the AI (over 2 minutes). Please try again.');
       } catch (e) {
         fail(
-          e instanceof Error ? e.message : 'Something went wrong running the AI.'
+          isTimeoutError(e)
+            ? "Couldn't reach the AI in time — it may be busy. Try again."
+            : e instanceof Error
+              ? e.message
+              : 'Something went wrong running the AI.'
         );
       }
     },

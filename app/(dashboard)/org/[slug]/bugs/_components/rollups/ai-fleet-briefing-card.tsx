@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge';
 
 const POLL_INTERVAL_MS = 4000;
 const MAX_POLLS = 40; // ~2.5 min ceiling before we give up
+const REQUEST_TIMEOUT_MS = 15000; // per-request deadline so a hung fetch can't stall the card forever
 
 type Phase = 'idle' | 'generating' | 'done' | 'error';
 
@@ -71,6 +72,16 @@ const FALLBACK_TONE = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * True for an AbortSignal.timeout() rejection (a per-request deadline hit).
+ * Detected by name, not `instanceof Error`, because AbortSignal.timeout()
+ * rejects with a DOMException, and `DOMException instanceof Error` is false
+ * in Chrome/Firefox.
+ */
+function isTimeoutError(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { name?: string }).name === 'TimeoutError';
 }
 
 /**
@@ -152,7 +163,8 @@ export function AiFleetBriefingCard({ organizationId }: { organizationId: string
       const enqueueRes = await fetch('/api/internal/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'brief', organizationId })
+        body: JSON.stringify({ kind: 'brief', organizationId }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       });
 
       let enqueueJson: EnqueueResponse;
@@ -181,7 +193,8 @@ export function AiFleetBriefingCard({ organizationId }: { organizationId: string
         let pollJson: PollResponse;
         try {
           const pollRes = await fetch(
-            `/api/internal/ai?job_id=${encodeURIComponent(jobId)}&organizationId=${encodeURIComponent(organizationId)}`
+            `/api/internal/ai?job_id=${encodeURIComponent(jobId)}&organizationId=${encodeURIComponent(organizationId)}`,
+            { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
           );
           pollJson = (await pollRes.json()) as PollResponse;
         } catch {
@@ -223,7 +236,11 @@ export function AiFleetBriefingCard({ organizationId }: { organizationId: string
       );
     } catch (e) {
       finishError(
-        e instanceof Error ? e.message : 'Something went wrong generating the briefing.'
+        isTimeoutError(e)
+          ? "Couldn't reach the AI in time — it may be busy. Try again."
+          : e instanceof Error
+            ? e.message
+            : 'Something went wrong generating the briefing.'
       );
     }
   }, [organizationId, clearTick]);
