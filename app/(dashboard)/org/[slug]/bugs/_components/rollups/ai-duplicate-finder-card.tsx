@@ -83,7 +83,13 @@ function isNewer(a: BugInfo, b: BugInfo): boolean {
   return a.id > b.id;
 }
 
-export function AiDuplicateFinderCard({ organizationId }: { organizationId: string }) {
+export function AiDuplicateFinderCard({
+  organizationId,
+  applicationId
+}: {
+  organizationId: string;
+  applicationId?: string;
+}) {
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [pairs, setPairs] = useState<DuplicatePair[]>([]);
@@ -97,11 +103,13 @@ export function AiDuplicateFinderCard({ organizationId }: { organizationId: stri
       const supabase = createClient();
 
       // 1) Newest active bugs become the similarity targets.
-      const { data: targetData, error: targetErr } = await supabase
+      let targetQuery = supabase
         .from('bug_reports')
         .select('id, created_at')
         .eq('organization_id', organizationId)
-        .in('status', ['new', 'seen'])
+        .in('status', ['new', 'seen']);
+      if (applicationId) targetQuery = targetQuery.eq('application_id', applicationId);
+      const { data: targetData, error: targetErr } = await targetQuery
         .order('created_at', { ascending: false })
         .limit(TARGET_LIMIT);
 
@@ -143,6 +151,10 @@ export function AiDuplicateFinderCard({ organizationId }: { organizationId: stri
           const simRaw = row.similarity;
           const sim = typeof simRaw === 'number' ? simRaw : Number(simRaw);
           if (!matchId || matchId === res.targetId) continue;
+          // When scoped to one app, only in-app candidates are eligible — else a
+          // cross-app top match would shadow a valid lower-similarity in-app one
+          // and a real in-app duplicate would go unreported.
+          if (applicationId && row.application_id !== applicationId) continue;
           if (!Number.isFinite(sim) || sim < MIN_SIMILARITY) continue;
           if (!best || sim > best.sim) best = { id: matchId, sim };
         }
@@ -169,11 +181,16 @@ export function AiDuplicateFinderCard({ organizationId }: { organizationId: stri
       const involvedIds = Array.from(
         new Set(Array.from(pairMap.values()).flatMap((p) => [p.aId, p.bId]))
       );
-      const { data: infoData, error: infoErr } = await supabase
+      // When scoped to one app, filter the matched side to that app too, so a
+      // cross-app match's info row is absent → the pair is dropped at assembly
+      // (step 6's `if (!bugA || !bugB) continue`). Pairs therefore stay in-app.
+      let infoQuery = supabase
         .from('bug_reports')
         .select('id, display_id, description, application_id, created_at')
         .eq('organization_id', organizationId)
         .in('id', involvedIds);
+      if (applicationId) infoQuery = infoQuery.eq('application_id', applicationId);
+      const { data: infoData, error: infoErr } = await infoQuery;
 
       if (infoErr) throw new Error(infoErr.message);
       const infoRows = (infoData ?? []) as InfoRow[];
@@ -231,7 +248,7 @@ export function AiDuplicateFinderCard({ organizationId }: { organizationId: stri
     } finally {
       setScanning(false);
     }
-  }, [organizationId]);
+  }, [organizationId, applicationId]);
 
   const markDuplicate = useCallback(
     async (pair: DuplicatePair) => {

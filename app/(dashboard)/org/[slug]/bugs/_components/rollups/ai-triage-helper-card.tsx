@@ -124,9 +124,11 @@ function prettyJson(raw: string): string {
 }
 
 export function AiTriageHelperCard({
-  organizationId
+  organizationId,
+  applicationId
 }: {
   organizationId: string;
+  applicationId?: string;
 }) {
   const [bugs, setBugs] = useState<ActiveBug[]>([]);
   const [loading, setLoading] = useState(true);
@@ -151,11 +153,13 @@ export function AiTriageHelperCard({
     setLoadError(null);
     try {
       const supabase = createClient();
-      const { data, error } = await supabase
+      let query = supabase
         .from('bug_reports')
         .select('id, display_id, description, created_at')
         .eq('organization_id', organizationId)
-        .in('status', ['new', 'seen'])
+        .in('status', ['new', 'seen']);
+      if (applicationId) query = query.eq('application_id', applicationId);
+      const { data, error } = await query
         .order('created_at', { ascending: false })
         .limit(8);
 
@@ -170,7 +174,7 @@ export function AiTriageHelperCard({
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [organizationId]);
+  }, [organizationId, applicationId]);
 
   useEffect(() => {
     void loadBugs();

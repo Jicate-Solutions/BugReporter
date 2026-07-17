@@ -83,15 +83,20 @@ type BugRow = {
 async function buildFleetStats(
   supabase: Awaited<ReturnType<typeof createClient>>,
   organizationId: string,
-  orgName: string
+  orgName: string,
+  scope?: { applicationId?: string; appName?: string }
 ): Promise<string> {
+  const applicationId = scope?.applicationId;
+  const appName = scope?.appName;
   const PAGE = 1000;
   const bugs: BugRow[] = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
+    let q = supabase
       .from('bug_reports')
       .select('application_id, status, category, created_at, resolved_at')
-      .eq('organization_id', organizationId)
+      .eq('organization_id', organizationId);
+    if (applicationId) q = q.eq('application_id', applicationId);
+    const { data, error } = await q
       .order('created_at', { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw new Error(error.message);
@@ -152,15 +157,21 @@ async function buildFleetStats(
     .map(([id, n]) => `${namesById.get(id) ?? 'Unknown'} ${n}`)
     .join(', ');
 
-  return [
-    `Total bugs across ${appsReporting} reporting apps: ${total}.`,
+  const lines = [
+    appName
+      ? `App "${appName}" — total bugs: ${total}.`
+      : `Total bugs across ${appsReporting} reporting apps: ${total}.`,
     `Open (active) now: ${active}; of these ${stale} have been open longer than 30 days.`,
     `Last 30 days: ${new30} new vs ${resolved30} resolved (backlog change ${new30 - resolved30 >= 0 ? '+' : ''}${new30 - resolved30}).`,
     `Categories: ${catLine || 'none'}.`,
-    `Open security bugs: ${securityActive}.`,
-    `Noisiest apps: ${noisiest || 'none'}.`,
-    `Organization: ${orgName}.`
-  ].join('\n');
+    `Open security bugs: ${securityActive}.`
+  ];
+  // "Noisiest apps" is meaningless when scoped to a single app.
+  if (!appName) lines.push(`Noisiest apps: ${noisiest || 'none'}.`);
+  lines.push(
+    appName ? `Organization: ${orgName} (scope: app "${appName}").` : `Organization: ${orgName}.`
+  );
+  return lines.join('\n');
 }
 
 // ── POST — enqueue ──────────────────────────────────────────────────────────
@@ -174,6 +185,7 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as {
     kind?: string;
     organizationId?: string;
+    applicationId?: string;
     bugId?: string;
     task?: string;
   } | null;
@@ -190,13 +202,35 @@ export async function POST(request: NextRequest) {
 
   if (body.kind === 'brief') {
     task = 'ops.brief';
+    // Optional single-app scope: verify the app belongs to THIS org (so a
+    // member can't point the briefing at another org's app), then narrow the
+    // read to that app. The engine app_id stays reporter-<orgId> — unchanged.
+    let appName: string | undefined;
+    if (body.applicationId !== undefined) {
+      if (!UUID_RE.test(body.applicationId)) {
+        return err('BAD_REQUEST', 'applicationId must be a uuid.', 400);
+      }
+      const { data: app } = await supabase
+        .from('applications')
+        .select('id, name')
+        .eq('id', body.applicationId)
+        .eq('organization_id', org.id)
+        .single();
+      if (!app) {
+        return err('NOT_FOUND', 'No such application in this organization.', 404);
+      }
+      appName = (app as { name: string }).name;
+    }
     let stats: string;
     try {
-      stats = await buildFleetStats(supabase, org.id, org.name);
+      stats = await buildFleetStats(supabase, org.id, org.name, {
+        applicationId: body.applicationId,
+        appName
+      });
     } catch {
-      return err('STATS_FAILED', 'Could not read the fleet numbers.', 500);
+      return err('STATS_FAILED', 'Could not read the bug numbers.', 500);
     }
-    payload = { org: org.name, stats };
+    payload = { org: appName ? `${org.name} — ${appName}` : org.name, stats };
   } else if (body.kind === 'triage') {
     task = typeof body.task === 'string' ? body.task : '';
     if (!TRIAGE_TASKS.includes(task)) {

@@ -51,6 +51,8 @@ interface BugReportsDataTableProps {
   applicationsLoading?: boolean;
   onStatusChange?: () => void;
   initialAppSlug?: string;
+  /** Reports the currently-filtered application id upward (undefined = all apps). */
+  onSelectedAppChange?: (applicationId: string | undefined) => void;
 }
 
 export function BugReportsDataTable({
@@ -59,7 +61,8 @@ export function BugReportsDataTable({
   applications,
   applicationsLoading = false,
   onStatusChange,
-  initialAppSlug
+  initialAppSlug,
+  onSelectedAppChange
 }: BugReportsDataTableProps) {
   const [sorting, setSorting] = React.useState<SortingState>([
     { id: 'created_at', desc: true }
@@ -278,8 +281,9 @@ export function BugReportsDataTable({
     const match = applications.find((a) => a.slug === initialAppSlug);
     if (!match) return;
     table.getColumn('application')?.setFilterValue(match.id);
+    onSelectedAppChange?.(match.id);
     initialAppApplied.current = true;
-  }, [initialAppSlug, applications, table]);
+  }, [initialAppSlug, applications, table, onSelectedAppChange]);
 
   return (
     <div className='w-full space-y-4'>
@@ -299,11 +303,12 @@ export function BugReportsDataTable({
               (table.getColumn('application')?.getFilterValue() as string) ??
               'all'
             }
-            onValueChange={(value) =>
+            onValueChange={(value) => {
               table
                 .getColumn('application')
-                ?.setFilterValue(value === 'all' ? '' : value)
-            }
+                ?.setFilterValue(value === 'all' ? '' : value);
+              onSelectedAppChange?.(value === 'all' ? undefined : value);
+            }}
             disabled={applicationsLoading || applications.length === 0}
           >
             <SelectTrigger className='w-[200px]'>

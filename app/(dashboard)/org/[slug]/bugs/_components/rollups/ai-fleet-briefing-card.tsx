@@ -109,7 +109,13 @@ function parseBriefing(answer: string): BriefBlock[] {
   return blocks;
 }
 
-export function AiFleetBriefingCard({ organizationId }: { organizationId: string }) {
+export function AiFleetBriefingCard({
+  organizationId,
+  applicationId
+}: {
+  organizationId: string;
+  applicationId?: string;
+}) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [blocks, setBlocks] = useState<BriefBlock[] | null>(null);
   const [rawAnswer, setRawAnswer] = useState<string | null>(null);
@@ -163,7 +169,11 @@ export function AiFleetBriefingCard({ organizationId }: { organizationId: string
       const enqueueRes = await fetch('/api/internal/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'brief', organizationId }),
+        body: JSON.stringify({
+          kind: 'brief',
+          organizationId,
+          ...(applicationId ? { applicationId } : {})
+        }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       });
 
@@ -243,7 +253,7 @@ export function AiFleetBriefingCard({ organizationId }: { organizationId: string
             : 'Something went wrong generating the briefing.'
       );
     }
-  }, [organizationId, clearTick]);
+  }, [organizationId, applicationId, clearTick]);
 
   const isGenerating = phase === 'generating';
 
@@ -252,7 +262,7 @@ export function AiFleetBriefingCard({ organizationId }: { organizationId: string
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <Sparkles className="h-4 w-4 text-blue-600" />
-          AI Fleet Briefing
+          {applicationId ? 'AI Briefing' : 'AI Fleet Briefing'}
         </CardTitle>
         <Badge variant="secondary" className="tabular-nums" title="Runs on the ₹0 Max lane">
           ₹0
@@ -262,8 +272,9 @@ export function AiFleetBriefingCard({ organizationId }: { organizationId: string
       <CardContent className="space-y-4">
         {phase === 'idle' && (
           <p className="text-muted-foreground text-sm">
-            Get a plain-English read of the entire bug board across every app — where
-            things stand, what to fix first, and what to watch out for.
+            {applicationId
+              ? "Get a plain-English read of this app's bugs — where things stand, what to fix first, and what to watch out for."
+              : 'Get a plain-English read of the entire bug board across every app — where things stand, what to fix first, and what to watch out for.'}
           </p>
         )}
 
