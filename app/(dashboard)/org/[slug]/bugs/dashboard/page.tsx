@@ -12,6 +12,9 @@ import { ThroughputTrendCard } from '../_components/rollups/throughput-trend-car
 import { AgingRiskCard } from '../_components/rollups/aging-risk-card';
 import { SecuritySpotlightCard } from '../_components/rollups/security-spotlight-card';
 import { ResolutionTimeCard } from '../_components/rollups/resolution-time-card';
+import { AiFleetBriefingCard } from '../_components/rollups/ai-fleet-briefing-card';
+import { AiTriageHelperCard } from '../_components/rollups/ai-triage-helper-card';
+import { AiDuplicateFinderCard } from '../_components/rollups/ai-duplicate-finder-card';
 import { Skeleton } from '@/components/ui/skeleton';
 import toast from 'react-hot-toast';
 
@@ -89,6 +92,10 @@ export default function BugDashboardPage() {
       )}
 
       <div className="border-t pt-6">
+        <AiFleetBriefingCard organizationId={organization.id} />
+      </div>
+
+      <div className="border-t pt-6">
         <BugRollupByApp
           rollup={rollup}
           loading={rollupLoading}
@@ -105,6 +112,11 @@ export default function BugDashboardPage() {
         <ResolutionTimeCard organizationId={organization.id} />
         <AgingRiskCard organizationId={organization.id} />
         <SecuritySpotlightCard organizationId={organization.id} />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <AiTriageHelperCard organizationId={organization.id} />
+        <AiDuplicateFinderCard organizationId={organization.id} />
       </div>
     </div>
   );
