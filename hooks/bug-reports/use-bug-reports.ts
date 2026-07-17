@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { BugReportClientService } from '@/lib/services/bug-reports/client';
+import type { FleetBugRollup } from '@/lib/services/bug-reports/client';
 import type {
   BugReport,
   BugReportFilters,
@@ -311,6 +312,48 @@ export function useBugStats(organizationId: string) {
     loading,
     error,
     refetch: fetchStats,
+  };
+}
+
+/**
+ * Hook to fetch the cross-app bug rollup (per-app loads + fleet trend + totals)
+ * for an organization.
+ */
+export function useFleetBugRollup(organizationId: string) {
+  const [rollup, setRollup] = useState<FleetBugRollup | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchRollup = useCallback(async () => {
+    if (!organizationId) {
+      setRollup(null);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const data = await BugReportClientService.getFleetBugRollup(organizationId);
+      setRollup(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to fetch rollup';
+      setError(message);
+      console.error('[hooks/fleet-bug-rollup] Fetch error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId]);
+
+  useEffect(() => {
+    fetchRollup();
+  }, [fetchRollup]);
+
+  return {
+    rollup,
+    loading,
+    error,
+    refetch: fetchRollup,
   };
 }
 

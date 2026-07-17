@@ -3,19 +3,25 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { List, RefreshCw } from 'lucide-react';
-import { useBugStats } from '@/hooks/bug-reports/use-bug-reports';
+import { useBugStats, useFleetBugRollup } from '@/hooks/bug-reports/use-bug-reports';
 import { useOrganizationContext } from '@/hooks/organizations/use-organization-context';
 import { BugStatsCards } from '../_components/bug-stats-cards';
+import { BugRollupByApp } from '../_components/bug-rollup-by-app';
 import { Skeleton } from '@/components/ui/skeleton';
 import toast from 'react-hot-toast';
 
 export default function BugDashboardPage() {
   const { organization, loading: orgLoading } = useOrganizationContext();
   const { stats, loading, refetch } = useBugStats(organization?.id || '');
+  const {
+    rollup,
+    loading: rollupLoading,
+    refetch: refetchRollup
+  } = useFleetBugRollup(organization?.id || '');
 
   const handleRefresh = async () => {
     toast.loading('Refreshing data...', { id: 'refresh-dashboard' });
-    await refetch();
+    await Promise.all([refetch(), refetchRollup()]);
     toast.success('Data refreshed!', { id: 'refresh-dashboard' });
   };
 
@@ -71,6 +77,14 @@ export default function BugDashboardPage() {
           </p>
         </div>
       )}
+
+      <div className="border-t pt-6">
+        <BugRollupByApp
+          rollup={rollup}
+          loading={rollupLoading}
+          orgSlug={organization.slug}
+        />
+      </div>
     </div>
   );
 }
