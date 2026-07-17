@@ -1,11 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Bug, BarChart3, Filter, RefreshCw } from 'lucide-react';
+import { Bug, BarChart3, Filter, RefreshCw, Sparkles } from 'lucide-react';
 import {
   useBugReports,
   useBugStats
@@ -14,11 +15,21 @@ import { useOrganizationContext } from '@/hooks/organizations/use-organization-c
 import { useApplications } from '@/hooks/applications/use-applications';
 import { BugReportsDataTable } from './_components/bug-reports-data-table';
 import { BugStatsCards } from './_components/bug-stats-cards';
+import { AiFleetBriefingCard } from './_components/rollups/ai-fleet-briefing-card';
+import { AiTriageHelperCard } from './_components/rollups/ai-triage-helper-card';
+import { AiDuplicateFinderCard } from './_components/rollups/ai-duplicate-finder-card';
 import toast from 'react-hot-toast';
 
 export default function BugsPage() {
   const searchParams = useSearchParams();
   const initialAppSlug = searchParams.get('app') || undefined;
+
+  // Which app the bug table is currently filtered to — drives the per-app AI
+  // section below. The table owns the filter and reports the id up via
+  // onSelectedAppChange; undefined means "all apps" (no per-app AI shown).
+  const [selectedAppId, setSelectedAppId] = useState<string | undefined>(
+    undefined
+  );
 
   const { organization, loading: orgLoading } = useOrganizationContext();
   const {
@@ -94,6 +105,10 @@ export default function BugsPage() {
     );
   }
 
+  const selectedApp = selectedAppId
+    ? applications.find((a) => a.id === selectedAppId)
+    : undefined;
+
   return (
     <div className='space-y-8'>
       {/* Header Section */}
@@ -167,7 +182,38 @@ export default function BugsPage() {
           applicationsLoading={appsLoading}
           onStatusChange={() => { refetchBugs(); refetchStats(); }}
           initialAppSlug={initialAppSlug}
+          onSelectedAppChange={setSelectedAppId}
         />
+      )}
+
+      {/* Per-app AI (₹0 Max lane) — appears only when a single app is
+          selected in the table above, and follows that dropdown live. */}
+      {selectedApp && (
+        <div className='space-y-6 border-t pt-6'>
+          <div className='space-y-1'>
+            <h2 className='flex items-center gap-2 text-xl font-semibold tracking-tight'>
+              <Sparkles className='h-5 w-5 text-blue-600' />
+              AI — {selectedApp.name}
+            </h2>
+            <p className='text-sm text-muted-foreground'>
+              AI tools scoped to just this app, on the ₹0 Max lane.
+            </p>
+          </div>
+          <AiFleetBriefingCard
+            organizationId={organization.id}
+            applicationId={selectedApp.id}
+          />
+          <div className='grid gap-6 lg:grid-cols-2'>
+            <AiTriageHelperCard
+              organizationId={organization.id}
+              applicationId={selectedApp.id}
+            />
+            <AiDuplicateFinderCard
+              organizationId={organization.id}
+              applicationId={selectedApp.id}
+            />
+          </div>
+        </div>
       )}
     </div>
   );
