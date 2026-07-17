@@ -482,8 +482,11 @@ export class BugReportClientService {
       }
 
       const rollOne = (list: typeof bugs, meta: { id: string; name: string; slug: string }): AppBugRollup => {
+        // Only genuinely-resolved bugs count toward "time to resolve" — a
+        // wont_fix also carries a resolved_at (set by bulkUpdateStatus), and
+        // counting a bug we gave up on as "resolved" would skew the median.
         const resolveHours = list
-          .filter((b) => b.resolved_at)
+          .filter((b) => b.status === 'resolved' && b.resolved_at)
           .map(
             (b) =>
               (new Date(b.resolved_at as string).getTime() - new Date(b.created_at).getTime()) / 36e5
