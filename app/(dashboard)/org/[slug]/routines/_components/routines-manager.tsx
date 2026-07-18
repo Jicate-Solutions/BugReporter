@@ -86,7 +86,15 @@ function mutationErrorMessage(error: { message?: string } | null): string {
   return m || 'Something went wrong. Please try again.';
 }
 
-export function RoutinesManager({ organizationId }: { organizationId: string }) {
+export function RoutinesManager({
+  organizationId,
+  applicationId
+}: {
+  organizationId: string;
+  /** When set, this manager is app-scoped: shows only this app's routines and
+   *  pins new routines to it (the fleet/scope picker is hidden). */
+  applicationId?: string;
+}) {
   const [supabase] = useState(() => createClient());
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -94,7 +102,7 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
   const [routines, setRoutines] = useState<RoutineRow[]>([]);
   const [latestRuns, setLatestRuns] = useState<Record<string, RunRow>>({});
   const [addKind, setAddKind] = useState<string>(ROUTINE_CATALOG[0]?.id ?? 'app.brief');
-  const [addApp, setAddApp] = useState<string>('__fleet__');
+  const [addApp, setAddApp] = useState<string>(applicationId ?? '__fleet__');
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -124,11 +132,14 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
       .order('name');
     setApps((appData ?? []) as AppRow[]);
 
-    const { data: rData } = await supabase
+    let routinesQuery = supabase
       .from('app_ai_routines')
       .select('*')
-      .eq('organization_id', organizationId)
-      .order('created_at', { ascending: true });
+      .eq('organization_id', organizationId);
+    // App-scoped view: only this app's own routines (fleet routines stay on the
+    // org-level Routines page).
+    if (applicationId) routinesQuery = routinesQuery.eq('application_id', applicationId);
+    const { data: rData } = await routinesQuery.order('created_at', { ascending: true });
     const rs = (rData ?? []) as RoutineRow[];
     setRoutines(rs);
 
@@ -150,7 +161,7 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
       setLatestRuns({});
     }
     setLoading(false);
-  }, [supabase, organizationId]);
+  }, [supabase, organizationId, applicationId]);
 
   useEffect(() => {
     void load();
@@ -326,22 +337,26 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex-1 space-y-1">
-              <label className="text-muted-foreground text-xs">Scope</label>
-              <Select value={addApp} onValueChange={setAddApp}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__fleet__">All apps (fleet)</SelectItem>
-                  {apps.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* App-scoped view pins new routines to this app, so the scope picker
+                is only shown on the org-level (fleet) Routines page. */}
+            {!applicationId && (
+              <div className="flex-1 space-y-1">
+                <label className="text-muted-foreground text-xs">Scope</label>
+                <Select value={addApp} onValueChange={setAddApp}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__fleet__">All apps (fleet)</SelectItem>
+                    {apps.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <Button onClick={addRoutine} disabled={busyId === 'add'} className="gap-2">
               {busyId === 'add' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               Add (paused)
