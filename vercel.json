@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/uptime-probe",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/app-routine-dispatcher",
+      "schedule": "*/15 * * * *"
     }
   ],
   "headers": [
