@@ -6,7 +6,7 @@
  * app_id = reporter-<organizationId> (per-org isolation — unchanged).
  */
 
-interface EngineConfig {
+export interface EngineConfig {
   base: string;
   key: string;
 }
@@ -67,12 +67,13 @@ export interface PollResult {
 export async function pollJob(
   cfg: EngineConfig,
   organizationId: string,
-  jobId: string
+  jobId: string,
+  timeoutMs: number = TIMEOUT_MS
 ): Promise<PollResult> {
   try {
     const res = await fetch(
       `${cfg.base}/api/b2a/ai/run?job_id=${encodeURIComponent(jobId)}&app_id=${encodeURIComponent(appIdFor(organizationId))}`,
-      { headers: { Authorization: `Bearer ${cfg.key}` }, cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT_MS) }
+      { headers: { Authorization: `Bearer ${cfg.key}` }, cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) }
     );
     const data = (await res.json().catch(() => null)) as {
       status?: string;

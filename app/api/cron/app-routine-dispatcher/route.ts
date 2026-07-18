@@ -7,17 +7,24 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { timingSafeEqual } from 'crypto';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { runDispatcher } from '@/lib/routines/dispatcher';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-export async function GET(request: NextRequest) {
-  // Guard against an unset CRON_SECRET — otherwise the literal would be
-  // "Bearer undefined" and any caller sending that would pass.
+function authorized(request: NextRequest): boolean {
+  // Never allow "Bearer undefined" (unset secret); compare in constant time.
   const secret = process.env.CRON_SECRET;
-  if (!secret || request.headers.get('authorization') !== `Bearer ${secret}`) {
+  if (!secret) return false;
+  const header = Buffer.from(request.headers.get('authorization') ?? '');
+  const expected = Buffer.from(`Bearer ${secret}`);
+  return header.length === expected.length && timingSafeEqual(header, expected);
+}
+
+export async function GET(request: NextRequest) {
+  if (!authorized(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

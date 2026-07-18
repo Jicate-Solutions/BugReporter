@@ -16,6 +16,7 @@ export interface RoutineContext {
   admin: SupabaseClient;
   organizationId: string;
   applicationId: string | null; // null = fleet-level (org-wide)
+  routineId: string; // used to build a stable per-routine dedupe key
 }
 
 export interface RoutineInput {
@@ -119,7 +120,13 @@ const APP_BRIEF: RoutineKind = {
   buildInput: async (ctx) => {
     const { stats, total, label } = await buildBugStats(ctx);
     if (total === 0) return null; // nothing to brief → all-clear run, no engine call
-    return { task: 'ops.brief', payload: { org: label, stats } };
+    const utcDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+    return {
+      task: 'ops.brief',
+      payload: { org: label, stats },
+      // Per-routine-per-day key so the Door collapses any retry into one job.
+      dedupeKey: `app.brief:${ctx.routineId}:${utcDate}`
+    };
   }
 };
 
