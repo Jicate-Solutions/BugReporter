@@ -61,6 +61,11 @@ interface AppRow {
 const RUN_POST_TIMEOUT_MS = 15000; // enqueue is a quick Door call
 const RUN_POLL_TIMEOUT_MS = 10000; // the GET waits up to 8s server-side; give headroom
 
+// Deadline for the direct supabase-js mutations (add / enable / schedule / delete).
+// A hung connection with no deadline would leave busyId set forever — buttons
+// disabled, spinner up, no recovery but a reload.
+const MUTATION_TIMEOUT_MS = 15000;
+
 /**
  * True for an AbortSignal.timeout() rejection (a per-request deadline hit).
  * Detected by name, not `instanceof Error`, because AbortSignal.timeout()
@@ -68,6 +73,17 @@ const RUN_POLL_TIMEOUT_MS = 10000; // the GET waits up to 8s server-side; give h
  */
 function isTimeoutError(e: unknown): boolean {
   return typeof e === 'object' && e !== null && (e as { name?: string }).name === 'TimeoutError';
+}
+
+/**
+ * Friendly message for a supabase-js mutation error. Note the abort arrives here
+ * as a string message on `{ error }` (postgrest-js catches the aborted fetch and
+ * returns it as an error), not a thrown DOMException — so match on the text.
+ */
+function mutationErrorMessage(error: { message?: string } | null): string {
+  const m = error?.message ?? '';
+  if (/TimeoutError|AbortError|signal timed out|aborted/i.test(m)) return 'Timed out — please try again.';
+  return m || 'Something went wrong. Please try again.';
 }
 
 export function RoutinesManager({ organizationId }: { organizationId: string }) {
@@ -147,17 +163,20 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
     const entry = getCatalogEntry(addKind);
     if (!entry) return;
     setBusyId('add');
-    const { error } = await supabase.from('app_ai_routines').insert({
-      organization_id: organizationId,
-      application_id: addApp === '__fleet__' ? null : addApp,
-      routine_kind: addKind,
-      enabled: false,
-      days_of_week: entry.defaultDaysOfWeek,
-      minute_of_day: entry.defaultMinuteOfDay
-    });
+    const { error } = await supabase
+      .from('app_ai_routines')
+      .insert({
+        organization_id: organizationId,
+        application_id: addApp === '__fleet__' ? null : addApp,
+        routine_kind: addKind,
+        enabled: false,
+        days_of_week: entry.defaultDaysOfWeek,
+        minute_of_day: entry.defaultMinuteOfDay
+      })
+      .abortSignal(AbortSignal.timeout(MUTATION_TIMEOUT_MS));
     setBusyId(null);
     if (error) {
-      toast.error(/duplicate|unique/i.test(error.message) ? 'That routine already exists here.' : error.message);
+      toast.error(/duplicate|unique/i.test(error.message) ? 'That routine already exists here.' : mutationErrorMessage(error));
       return;
     }
     toast.success('Routine added (paused). Set a schedule, then enable it.');
@@ -166,10 +185,14 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
 
   const setEnabled = async (r: RoutineRow, enabled: boolean) => {
     setBusyId(r.id);
-    const { error } = await supabase.from('app_ai_routines').update({ enabled }).eq('id', r.id);
+    const { error } = await supabase
+      .from('app_ai_routines')
+      .update({ enabled })
+      .eq('id', r.id)
+      .abortSignal(AbortSignal.timeout(MUTATION_TIMEOUT_MS));
     setBusyId(null);
     if (error) {
-      toast.error(error.message);
+      toast.error(mutationErrorMessage(error));
       return;
     }
     void load();
@@ -184,10 +207,11 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
     const { error } = await supabase
       .from('app_ai_routines')
       .update({ days_of_week: days, minute_of_day: minute })
-      .eq('id', r.id);
+      .eq('id', r.id)
+      .abortSignal(AbortSignal.timeout(MUTATION_TIMEOUT_MS));
     setBusyId(null);
     if (error) {
-      toast.error(error.message);
+      toast.error(mutationErrorMessage(error));
       return;
     }
     toast.success('Schedule saved.');
@@ -197,10 +221,14 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
   const removeRoutine = async (r: RoutineRow) => {
     if (!window.confirm('Delete this routine and its run history? This cannot be undone.')) return;
     setBusyId(r.id);
-    const { error } = await supabase.from('app_ai_routines').delete().eq('id', r.id);
+    const { error } = await supabase
+      .from('app_ai_routines')
+      .delete()
+      .eq('id', r.id)
+      .abortSignal(AbortSignal.timeout(MUTATION_TIMEOUT_MS));
     setBusyId(null);
     if (error) {
-      toast.error(error.message);
+      toast.error(mutationErrorMessage(error));
       return;
     }
     toast.success('Routine deleted.');
