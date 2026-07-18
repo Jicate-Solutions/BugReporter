@@ -24,7 +24,6 @@ import {
   Globe,
   Hash,
   Shield,
-  ArrowLeft,
   FileText,
   AlertCircle
 } from 'lucide-react';
@@ -69,55 +68,6 @@ export default async function ApplicationPage({
 
   return (
     <div className='space-y-8'>
-      {/* Breadcrumb & Header */}
-      <div className='space-y-4'>
-        <Button variant='ghost' size='sm' asChild className='gap-2'>
-          <Link href={`/org/${slug}/apps`}>
-            <ArrowLeft className='h-4 w-4' />
-            Back to Applications
-          </Link>
-        </Button>
-
-        <div className='flex flex-col gap-4 md:flex-row md:items-start md:justify-between'>
-          <div className='space-y-2'>
-            <div className='flex items-center gap-3'>
-              <div className='rounded-lg bg-primary/10 p-3'>
-                <Bug className='h-6 w-6 text-primary' />
-              </div>
-              <div>
-                <h1 className='text-3xl font-bold tracking-tight'>
-                  {application.name}
-                </h1>
-                <p className='text-muted-foreground'>
-                  Application in{' '}
-                  <span className='font-medium text-foreground'>
-                    {organization.name}
-                  </span>
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className='flex flex-wrap gap-2'>
-            <Button variant='outline' asChild>
-              <Link href={`/org/${slug}/bugs?app=${appSlug}`}>
-                <FileText className='mr-2 h-4 w-4' />
-                View Bug Reports
-              </Link>
-            </Button>
-            <Button
-              asChild
-              className='bg-linear-to-r from-blue-600 to-blue-700 text-white'
-            >
-              <Link href={`/org/${slug}/apps/${appSlug}/edit`}>
-                <Settings className='mr-2 h-4 w-4' />
-                Settings
-              </Link>
-            </Button>
-          </div>
-        </div>
-      </div>
-
       {/* Stats Section */}
       <ApplicationStats stats={stats} />
 
@@ -279,7 +229,7 @@ export default async function ApplicationPage({
                 </div>
                 {stats.total_bugs > recentBugs.length && (
                   <Button variant='ghost' size='sm' asChild>
-                    <Link href={`/org/${slug}/bugs?app=${appSlug}`}>
+                    <Link href={`/org/${slug}/apps/${appSlug}/bugs`}>
                       View all
                     </Link>
                   </Button>
@@ -439,7 +389,7 @@ export default async function ApplicationPage({
                 className='w-full justify-start h-auto py-3'
                 asChild
               >
-                <Link href={`/org/${slug}/bugs?app=${appSlug}`}>
+                <Link href={`/org/${slug}/apps/${appSlug}/bugs`}>
                   <div className='flex items-start gap-3 text-left'>
                     <FileText className='h-5 w-5 mt-0.5 text-primary' />
                     <div className='flex-1'>

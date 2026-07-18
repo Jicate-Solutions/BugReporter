@@ -14,7 +14,8 @@ import {
   Home,
   Sparkles,
   Shield,
-  Activity
+  Activity,
+  CalendarClock
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -77,6 +78,12 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       title: 'AI',
       url: `/org/${orgSlug}/ai`,
       icon: Sparkles,
+      badge: '₹0'
+    },
+    {
+      title: 'Routines',
+      url: `/org/${orgSlug}/routines`,
+      icon: CalendarClock,
       badge: '₹0'
     },
     {
