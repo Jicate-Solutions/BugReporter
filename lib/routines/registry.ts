@@ -11,6 +11,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { getCatalogEntry } from './catalog';
 
 export interface RoutineContext {
   admin: SupabaseClient;
@@ -110,13 +111,8 @@ async function buildBugStats(
 
 // ── kinds ────────────────────────────────────────────────────────────────────
 const APP_BRIEF: RoutineKind = {
-  id: 'app.brief',
-  name: 'Scheduled briefing',
-  whatItDoes:
-    "A plain-English read of the app's bugs — where things stand, what to fix first, and what to watch out for.",
+  ...getCatalogEntry('app.brief')!, // id, name, whatItDoes, default cadence
   readOnly: true,
-  defaultDaysOfWeek: [1, 2, 3, 4, 5],
-  defaultMinuteOfDay: 210, // 03:30 UTC ≈ 09:00 IST
   buildInput: async (ctx) => {
     const { stats, total, label } = await buildBugStats(ctx);
     if (total === 0) return null; // nothing to brief → all-clear run, no engine call
