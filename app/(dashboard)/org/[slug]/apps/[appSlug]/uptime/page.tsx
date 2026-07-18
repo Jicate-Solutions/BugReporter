@@ -75,7 +75,7 @@ export default async function AppUptimePage({
   if (monitored && (!newest || nowMs() - new Date(newest).getTime() > STALE_MS)) {
     const { results } = await probeApps([{ id: application.id, app_url: application.app_url }]);
     if (results.length > 0) {
-      await service.from('app_uptime_checks').insert(
+      const { error: insErr } = await service.from('app_uptime_checks').insert(
         results.map((r) => ({
           application_id: r.application_id,
           ok: r.ok,
@@ -84,7 +84,25 @@ export default async function AppUptimePage({
           error: r.error
         }))
       );
-      checks = await loadChecks();
+      if (insErr) {
+        // Persisting the live probe failed — surface it, then render from the
+        // in-memory probe result so the tab shows the real just-checked status
+        // instead of a false "no data yet".
+        console.error('[app-uptime] failed to store live probe:', insErr.message);
+        const nowIso = new Date(nowMs()).toISOString();
+        checks = [
+          ...results.map((r) => ({
+            application_id: r.application_id,
+            checked_at: nowIso,
+            ok: r.ok,
+            status_code: r.status_code,
+            latency_ms: r.latency_ms
+          })),
+          ...checks
+        ];
+      } else {
+        checks = await loadChecks();
+      }
     }
   }
 
