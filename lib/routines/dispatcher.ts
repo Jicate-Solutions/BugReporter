@@ -30,6 +30,7 @@ interface RunRow {
   routine_kind: string;
   routine_id: string;
   started_at: string;
+  trigger_source: string; // 'schedule' | 'manual' — manual runs never touch the routine
 }
 
 export interface DispatchSummary {
@@ -151,23 +152,25 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
     // regardless of how many are in flight — decoupled from the bounded fresh poll.
     const { data: staleRuns } = await admin
       .from('app_ai_routine_runs')
-      .select('id, routine_id')
+      .select('id, routine_id, trigger_source')
       .in('status', ['queued', 'running'])
       .lt('started_at', staleCutoff)
       .limit(500);
-    for (const run of (staleRuns ?? []) as { id: string; routine_id: string }[]) {
+    for (const run of (staleRuns ?? []) as { id: string; routine_id: string; trigger_source: string }[]) {
       await admin
         .from('app_ai_routine_runs')
         .update({ status: 'error', error: 'timed out (in-flight > 45m)', finished_at: new Date().toISOString() })
         .eq('id', run.id);
-      await finish(admin, run.routine_id, 'error');
+      // Manual runs never touch the routine (parity with the run-now route); only
+      // scheduled runs record the fire against the routine's last_status.
+      if (run.trigger_source !== 'manual') await finish(admin, run.routine_id, 'error');
       summary.staleFailed++;
     }
 
     // Poll FRESH in-flight runs (bounded count + bounded concurrency + short timeout).
     const { data: pending } = await admin
       .from('app_ai_routine_runs')
-      .select('id, organization_id, job_id, routine_kind, routine_id, started_at')
+      .select('id, organization_id, job_id, routine_kind, routine_id, started_at, trigger_source')
       .in('status', ['queued', 'running'])
       .not('job_id', 'is', null)
       .gte('started_at', staleCutoff)
@@ -187,6 +190,10 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
 async function collectOne(admin: SupabaseClient, cfg: EngineConfig, run: RunRow): Promise<boolean> {
   if (!run.job_id) return false;
   const p = await pollJob(cfg, run.organization_id, run.job_id, POLL_TIMEOUT_MS);
+  // A manual run-now row must never stamp the routine (last_run_at / last_status) —
+  // that would consume the day's scheduled slot. Update ONLY the run row, exactly
+  // like the client GET poll does; scheduled runs still record against the routine.
+  const isManual = run.trigger_source === 'manual';
   if (p.status === 'done') {
     await admin
       .from('app_ai_routine_runs')
@@ -198,7 +205,7 @@ async function collectOne(admin: SupabaseClient, cfg: EngineConfig, run: RunRow)
       .eq('id', run.id);
     // Stamp last_run_at from the FIRE time (started_at), not collection wall-clock,
     // so a near-midnight fire collected after UTC-midnight still counts for its day.
-    await finishDone(admin, run.routine_id, run.started_at);
+    if (!isManual) await finishDone(admin, run.routine_id, run.started_at);
     return true;
   }
   if (p.status === 'error' || p.status === 'canceled') {
@@ -206,7 +213,7 @@ async function collectOne(admin: SupabaseClient, cfg: EngineConfig, run: RunRow)
       .from('app_ai_routine_runs')
       .update({ status: 'error', error: p.error ?? p.status, finished_at: new Date().toISOString() })
       .eq('id', run.id);
-    await finish(admin, run.routine_id, 'error');
+    if (!isManual) await finish(admin, run.routine_id, 'error');
     return true;
   }
   return false; // pending / running / unknown → next tick
