@@ -46,6 +46,7 @@ const POLL_TIMEOUT_MS = 8000; // short: hung polls must not blow the 60s cron bu
 const STALE_RUN_MS = 45 * 60 * 1000; // a run in-flight longer than this is force-failed
 const COLLECT_LIMIT = 40;
 const POLL_BATCH = 5; // bounded concurrency
+const FIRE_DEADLINE_MS = 45000; // wall-clock headroom under maxDuration=60
 
 export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSummary> {
   const summary: DispatchSummary = {
@@ -64,15 +65,31 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
   summary.pruned = typeof pruned === 'number' ? pruned : 0;
 
   // ── FIRE ──────────────────────────────────────────────────────────────────────
-  const { data: due, error: dueErr } = await admin.rpc('fn_app_routine_claim_due', { p_limit: 25 });
+  const { data: due, error: dueErr } = await admin.rpc('fn_app_routine_claim_due', { p_limit: 15 });
   if (dueErr) throw new Error(`claim_due failed: ${dueErr.message}`);
   const routines = (due ?? []) as RoutineRow[];
   summary.claimed = routines.length;
 
+  const fireStartedAt = Date.now();
   for (const r of routines) {
+    if (Date.now() - fireStartedAt > FIRE_DEADLINE_MS) {
+      // Out of wall-clock budget — leave the rest claimed. They re-claim after the
+      // 30-min window (last_run_at unstamped, so nothing is lost, just deferred).
+      console.warn('[dispatcher] FIRE deadline reached; deferring remaining routines');
+      break;
+    }
     const kind = getRoutineKind(r.routine_kind);
-    if (!kind) {
-      await recordRun(admin, r, 'error', null, null, `unknown routine kind: ${r.routine_kind}`);
+    // Runtime enforcement of the read-only invariant (not just the TS literal type):
+    // a non-read-only kind must never be auto-run.
+    if (!kind || kind.readOnly !== true) {
+      await recordRun(
+        admin,
+        r,
+        'error',
+        null,
+        null,
+        kind ? `routine kind is not read-only: ${r.routine_kind}` : `unknown routine kind: ${r.routine_kind}`
+      );
       await finish(admin, r.id, 'error');
       summary.failed++;
       continue;
@@ -128,21 +145,17 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
 
   // ── COLLECT ──────────────────────────────────────────────────────────────────
   if (cfg) {
-    const { data: pending } = await admin
+    const staleCutoff = new Date(Date.now() - STALE_RUN_MS).toISOString();
+
+    // Force-fail ALL stale in-flight runs (unbounded) so no routine stays blocked,
+    // regardless of how many are in flight — decoupled from the bounded fresh poll.
+    const { data: staleRuns } = await admin
       .from('app_ai_routine_runs')
-      .select('id, organization_id, job_id, routine_kind, routine_id, started_at')
+      .select('id, routine_id')
       .in('status', ['queued', 'running'])
-      .not('job_id', 'is', null)
-      .order('started_at', { ascending: true })
-      .limit(COLLECT_LIMIT);
-
-    const runs = (pending ?? []) as RunRow[];
-    const now = Date.now();
-    const stale = runs.filter((run) => now - new Date(run.started_at).getTime() > STALE_RUN_MS);
-    const fresh = runs.filter((run) => now - new Date(run.started_at).getTime() <= STALE_RUN_MS);
-
-    // Force-fail stale in-flight runs so their routine can be re-claimed.
-    for (const run of stale) {
+      .lt('started_at', staleCutoff)
+      .limit(500);
+    for (const run of (staleRuns ?? []) as { id: string; routine_id: string }[]) {
       await admin
         .from('app_ai_routine_runs')
         .update({ status: 'error', error: 'timed out (in-flight > 45m)', finished_at: new Date().toISOString() })
@@ -151,7 +164,16 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
       summary.staleFailed++;
     }
 
-    // Poll fresh runs in bounded-concurrency batches (short timeout each).
+    // Poll FRESH in-flight runs (bounded count + bounded concurrency + short timeout).
+    const { data: pending } = await admin
+      .from('app_ai_routine_runs')
+      .select('id, organization_id, job_id, routine_kind, routine_id, started_at')
+      .in('status', ['queued', 'running'])
+      .not('job_id', 'is', null)
+      .gte('started_at', staleCutoff)
+      .order('started_at', { ascending: true })
+      .limit(COLLECT_LIMIT);
+    const fresh = (pending ?? []) as RunRow[];
     for (let i = 0; i < fresh.length; i += POLL_BATCH) {
       const batch = fresh.slice(i, i + POLL_BATCH);
       const results = await Promise.all(batch.map((run) => collectOne(admin, cfg, run)));

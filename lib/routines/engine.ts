@@ -51,7 +51,9 @@ export async function enqueueJob(
       job_id?: string;
       error?: { message?: string };
     } | null;
-    if (res.status === 202 && data?.job_id) return { jobId: data.job_id, error: null };
+    // Accept any 2xx that carries a job_id — a dedupe hit may return 200 with the
+    // existing job_id rather than 202; treating that as failure would retry all day.
+    if (res.status >= 200 && res.status < 300 && data?.job_id) return { jobId: data.job_id, error: null };
     return { jobId: null, error: data?.error?.message ?? `engine returned HTTP ${res.status}` };
   } catch (e) {
     return { jobId: null, error: e instanceof Error ? e.message : 'engine unreachable' };
