@@ -99,6 +99,7 @@ export async function POST(request: NextRequest) {
         organization_id: r.organization_id,
         application_id: r.application_id,
         routine_kind: r.routine_kind,
+        trigger_source: 'manual',
         status: 'done',
         result: { allClear: true },
         finished_at: new Date().toISOString()
@@ -117,7 +118,10 @@ export async function POST(request: NextRequest) {
     routine_id: r.id,
     organization_id: r.organization_id,
     application_id: r.application_id,
-    routine_kind: r.routine_kind
+    routine_kind: r.routine_kind,
+    // Manual run-now rows must never consume the routine's daily scheduled slot;
+    // the dispatcher reads this to skip stamping last_run_at when it collects one.
+    trigger_source: 'manual' as const
   };
   if (!jobId) {
     await admin
