@@ -125,12 +125,28 @@ export async function POST(request: NextRequest) {
       .insert({ ...base, status: 'error', error: error ?? 'enqueue failed', finished_at: new Date().toISOString() });
     return err('UPSTREAM_ERROR', error ?? 'The AI engine refused the request.', 502);
   }
-  const { data: run } = await admin
+  const { data: run, error: runErr } = await admin
     .from('app_ai_routine_runs')
     .insert({ ...base, status: 'running', job_id: jobId })
     .select('id')
     .single();
-  return NextResponse.json({ status: 'running', runId: run?.id ?? null }, { status: 202 });
+  if (runErr || !run) {
+    // The engine job is already enqueued but we couldn't record a run row to track
+    // it. Returning runId:null would send the client into a `?runId=null` 400 poll
+    // loop and lose the answer. Record a best-effort error run (so the orphan is at
+    // least visible) and fail loudly instead — mirrors the !jobId branch above.
+    await admin
+      .from('app_ai_routine_runs')
+      .insert({
+        ...base,
+        status: 'error',
+        job_id: jobId,
+        error: `run-row insert failed: ${runErr?.message ?? 'unknown'}`,
+        finished_at: new Date().toISOString()
+      });
+    return err('UPSTREAM_ERROR', 'Could not record the run. Please try again.', 502);
+  }
+  return NextResponse.json({ status: 'running', runId: run.id }, { status: 202 });
 }
 
 export async function GET(request: NextRequest) {

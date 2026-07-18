@@ -44,5 +44,10 @@ export function hhmmToMinute(value: string): number | null {
   const h = Number(match[1]);
   const m = Number(match[2]);
   if (h < 0 || h > 23 || m < 0 || m > 59) return null;
-  return Math.min(h * 60 + m, 1425); // cap to the */15 tick grid
+  const minute = h * 60 + m;
+  // The daily grid tops out at the last */15 tick (23:45 = 1425); a later time can't
+  // fire before UTC-midnight. Reject it so the editor surfaces an error, rather than
+  // silently clamping 23:50→23:45 (which left the Save button stuck showing "23:50").
+  if (minute > 1425) return null;
+  return minute;
 }

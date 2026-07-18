@@ -56,6 +56,20 @@ interface AppRow {
   name: string;
 }
 
+// Run-now request deadlines. Without these a hung POST/poll leaves the spinner
+// stuck forever (mirrors the AI-card timeout fix from PR #9).
+const RUN_POST_TIMEOUT_MS = 15000; // enqueue is a quick Door call
+const RUN_POLL_TIMEOUT_MS = 10000; // the GET waits up to 8s server-side; give headroom
+
+/**
+ * True for an AbortSignal.timeout() rejection (a per-request deadline hit).
+ * Detected by name, not `instanceof Error`, because AbortSignal.timeout()
+ * rejects with a DOMException, and `DOMException instanceof Error` is false.
+ */
+function isTimeoutError(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { name?: string }).name === 'TimeoutError';
+}
+
 export function RoutinesManager({ organizationId }: { organizationId: string }) {
   const [supabase] = useState(() => createClient());
   const [loading, setLoading] = useState(true);
@@ -199,7 +213,8 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
       const res = await fetch('/api/internal/routines/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ routineId: r.id })
+        body: JSON.stringify({ routineId: r.id }),
+        signal: AbortSignal.timeout(RUN_POST_TIMEOUT_MS)
       });
       const json = await res.json();
       if (!res.ok) {
@@ -215,8 +230,16 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
       toast.loading('Running…', { id: `run-${r.id}` });
       for (let i = 0; i < 30; i++) {
         await new Promise((r2) => setTimeout(r2, 4000));
-        const pr = await fetch(`/api/internal/routines/run?runId=${encodeURIComponent(runId)}`);
-        const pj = await pr.json();
+        let pj: { status?: string; error?: string };
+        try {
+          const pr = await fetch(`/api/internal/routines/run?runId=${encodeURIComponent(runId)}`, {
+            signal: AbortSignal.timeout(RUN_POLL_TIMEOUT_MS)
+          });
+          pj = await pr.json();
+        } catch {
+          // A single slow/aborted poll shouldn't kill the loop — retry next tick.
+          continue;
+        }
         if (pj.status === 'done') {
           toast.success('Routine ran — result below.', { id: `run-${r.id}` });
           await load();
@@ -230,6 +253,11 @@ export function RoutinesManager({ organizationId }: { organizationId: string }) 
       }
       toast.error('Still running — check back shortly.', { id: `run-${r.id}` });
       await load();
+    } catch (e) {
+      // The POST itself timed out or failed to reach the server.
+      toast.error(isTimeoutError(e) ? 'Run timed out — please try again.' : 'Could not start the run.', {
+        id: `run-${r.id}`
+      });
     } finally {
       setBusyId(null);
     }
