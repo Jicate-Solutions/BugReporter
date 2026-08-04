@@ -1,7 +1,11 @@
 import type { NetworkRequest, Attachment } from './api';
+import type { BugReportStatus } from '../constants/bug-status';
 
-// Bug Report Status Types
-export type BugReportStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+// Status lives in ../constants/bug-status.ts, which is the single source of truth
+// and matches the database CHECK constraint. This module previously declared its
+// own union (`open | in_progress | resolved | closed`) that the database has
+// never accepted — re-exported here so existing importers keep working.
+export type { BugReportStatus };
 
 export type BugReportPriority = 'low' | 'medium' | 'high' | 'critical';
 
@@ -118,12 +122,7 @@ export interface BugReportFilters {
 
 export interface BugReportStats {
   total: number;
-  by_status: {
-    open: number;
-    in_progress: number;
-    resolved: number;
-    closed: number;
-  };
+  by_status: Record<BugReportStatus, number>;
   by_priority: {
     low: number;
     medium: number;

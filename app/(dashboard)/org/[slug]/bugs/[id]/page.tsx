@@ -17,6 +17,8 @@ import { SimilarBugsCard } from './_components/similar-bugs-card';
 import { AttachmentsSection } from './_components/attachments-section';
 import { useState } from 'react';
 import toast from 'react-hot-toast';
+import { BUG_STATUSES, BUG_STATUS_LABELS, bugStatusLabel } from '@boobalan_jkkn/shared';
+import { StatusChangeDialog } from './_components/status-change-dialog';
 
 export default function BugDetailPage() {
   const params = useParams();
@@ -25,6 +27,7 @@ export default function BugDetailPage() {
   const { organization } = useOrganizationContext();
   const { bug, loading, refetch } = useBugReport(id);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -53,15 +56,22 @@ export default function BugDetailPage() {
   const reporterName = bug.reporter_name;
   const reporterEmail = bug.reporter_email;
 
-  const handleStatusChange = async (newStatus: string) => {
+  // Selecting a status opens the note dialog rather than writing immediately —
+  // the note is the reporter-facing half of a status change, and asking for it
+  // after the fact means it never gets written.
+  const handleStatusChange = async (note: string) => {
+    if (!pendingStatus) return;
     setIsUpdating(true);
     try {
-      await BugReportClientService.updateBugStatus(bug.id, newStatus);
-      toast.success(`Bug status updated to ${newStatus}`);
+      await BugReportClientService.updateBugStatus(bug.id, pendingStatus, note);
+      toast.success(`Bug status updated to ${bugStatusLabel(pendingStatus)}`);
+      setPendingStatus(null);
       refetch();
     } catch (error) {
       console.error('Error updating status:', error);
-      toast.error('Failed to update bug status');
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to update bug status'
+      );
     } finally {
       setIsUpdating(false);
     }
@@ -84,18 +94,18 @@ export default function BugDetailPage() {
             <label className="text-sm font-medium text-muted-foreground">Status</label>
             <Select
               value={bug.status}
-              onValueChange={handleStatusChange}
+              onValueChange={setPendingStatus}
               disabled={isUpdating}
             >
               <SelectTrigger className="w-[180px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="new">New</SelectItem>
-                <SelectItem value="seen">Seen</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
-                <SelectItem value="wont_fix">Won't Fix</SelectItem>
+                {BUG_STATUSES.map((status) => (
+                  <SelectItem key={status} value={status}>
+                    {BUG_STATUS_LABELS[status]}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -241,6 +251,15 @@ export default function BugDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      <StatusChangeDialog
+        open={pendingStatus !== null}
+        fromStatus={bug.status}
+        toStatus={pendingStatus}
+        submitting={isUpdating}
+        onCancel={() => setPendingStatus(null)}
+        onConfirm={handleStatusChange}
+      />
     </div>
   );
 }

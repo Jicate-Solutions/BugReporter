@@ -23,6 +23,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApplicationForm } from '../../_components/application-form';
 import { ApiKeyDisplay } from '../../_components/api-key-display';
+import { BugPortalCard } from '../_components/bug-portal-card';
 import {
   useApplication,
   useUpdateApplication,
@@ -109,6 +110,8 @@ export default function EditApplicationPage() {
           />
         </CardContent>
       </Card>
+
+      <BugPortalCard application={application} />
 
       <Card>
         <CardHeader>

@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import type { Application } from '@boobalan_jkkn/shared';
+import { TERMINAL_BUG_STATUSES } from '@boobalan_jkkn/shared';
 
 export class ApplicationServerService {
   /**
@@ -125,12 +126,14 @@ export class ApplicationServerService {
         console.error('[ApplicationServerService] Resolved bugs count error:', resolvedError);
       }
 
-      // Get pending bugs
+      // Get pending bugs — anything not in a terminal status. This used to look
+      // for 'open', which the database has never stored, so freshly reported
+      // ('new') and triaged ('seen') bugs were both missing from the count.
       const { count: pendingBugs, error: pendingError } = await supabase
         .from('bug_reports')
         .select('*', { count: 'exact', head: true })
         .eq('application_id', id)
-        .in('status', ['open', 'in_progress']);
+        .not('status', 'in', `(${TERMINAL_BUG_STATUSES.join(',')})`);
 
       if (pendingError) {
         console.error('[ApplicationServerService] Pending bugs count error:', pendingError);

@@ -3,6 +3,7 @@
 
 import { BugReport, BugReportCategory, CreateBugReportPayload } from './bug-reports';
 import { EnhancedBugReportMessage } from './messaging';
+import type { Application } from './applications';
 
 // =============================================
 // NETWORK TRACE TYPES (SDK Capture)
@@ -85,6 +86,9 @@ export const API_ERROR_CODES = {
   // Resources
   BUG_REPORT_NOT_FOUND: 'BUG_REPORT_NOT_FOUND',
   MESSAGE_NOT_FOUND: 'MESSAGE_NOT_FOUND',
+
+  // Feature gating — the application has not opted into this capability
+  FEATURE_NOT_ENABLED: 'FEATURE_NOT_ENABLED',
 
   // Rate Limiting
   RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
@@ -245,6 +249,8 @@ export interface ApiRequestContext {
     name: string;
     slug: string;
     organization_id: string;
+    /** Per-app config, including the bug_portal opt-in flags. */
+    settings?: Application['settings'];
   };
   organization: {
     id: string;

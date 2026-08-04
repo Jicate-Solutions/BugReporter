@@ -64,6 +64,20 @@ const applicationFormSchema = z.object({
         enabled: z.boolean().optional(),
         allowed_tasks: z.array(z.string()).optional()
       })
+      .optional(),
+    // Bug Status Portal. Edited from its own Settings card, NOT from this form —
+    // but it must still be registered here, for exactly the reason above: this
+    // form submits the whole `settings` object, so an unregistered bug_portal
+    // would be stripped and the app's portal would switch itself off the next
+    // time anyone edited the application's name or URL.
+    bug_portal: z
+      .object({
+        enabled: z.boolean().optional(),
+        allow_reporter_notes: z.boolean().optional(),
+        require_signature: z.boolean().optional(),
+        webhook_enabled: z.boolean().optional(),
+        webhook_secret: z.string().optional()
+      })
       .optional()
   })
 });
@@ -102,7 +116,10 @@ export function ApplicationForm({
         ai: {
           enabled: application?.settings?.ai?.enabled ?? false,
           allowed_tasks: application?.settings?.ai?.allowed_tasks || []
-        }
+        },
+        // Passed straight through so saving this form preserves whatever the
+        // Bug Status Portal card has configured.
+        bug_portal: application?.settings?.bug_portal ?? undefined
       }
     }
   });
