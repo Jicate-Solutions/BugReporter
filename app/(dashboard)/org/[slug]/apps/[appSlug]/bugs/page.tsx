@@ -8,6 +8,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useOrganizationContext } from '@/hooks/organizations/use-organization-context';
 import { useBugReports } from '@/hooks/bug-reports/use-bug-reports';
+import { useBugFilters } from '@/hooks/bug-reports/use-bug-filters';
 import { useApplications } from '@/hooks/applications/use-applications';
 import { BugReportsDataTable } from '../../../bugs/_components/bug-reports-data-table';
 
@@ -86,7 +87,6 @@ export default function AppBugsPage() {
       organizationId={organization.id}
       organizationSlug={organization.slug}
       app={app}
-      appSlug={appSlug}
     />
   );
 }
@@ -94,19 +94,22 @@ export default function AppBugsPage() {
 function AppBugsTable({
   organizationId,
   organizationSlug,
-  app,
-  appSlug
+  app
 }: {
   organizationId: string;
   organizationSlug: string;
   app: Application;
-  appSlug: string;
 }) {
   // Server-side scoped: only this app's bugs are fetched (the hook injects
   // organization_id; the application_id filter narrows to this app).
   const { bugs, loading, error, refetch } = useBugReports(organizationId, { application_id: app.id });
 
-  if (loading) {
+  // Filters are owned here rather than inside the table — see the org bug list
+  // for the full reasoning. The short version: showing the skeleton during a
+  // refetch unmounted the table and wiped the user's filters.
+  const [filters, setFilters] = useBugFilters();
+
+  if (loading && bugs.length === 0) {
     return <TableSkeleton />;
   }
 
@@ -149,7 +152,9 @@ function AppBugsTable({
           applications={[app]}
           applicationsLoading={false}
           onStatusChange={() => refetch()}
-          initialAppSlug={appSlug}
+          filters={filters}
+          onFiltersChange={setFilters}
+          refreshing={loading}
         />
       )}
     </div>

@@ -107,10 +107,19 @@ export const GET = withApiKeyAuth(async (request: NextRequest, context: ApiReque
     if (search) {
       // `title` lives in the metadata JSONB — there is no title column, so the
       // previous `title.ilike` term made every search request a 500.
-      const escaped = search.replace(/[%,()]/g, '');
+      //
+      // The sanitiser also strips `"` and `\`: they are PostgREST logic-tree
+      // quoting characters, so searching `say "hi"` used to break parsing. `*`
+      // is the wildcard inside a logic tree, which avoids depending on how the
+      // client library percent-encodes `%`.
+      const escaped = search.replace(/["\\%*,()]/g, '').trim();
       if (escaped) {
         query = query.or(
-          `description.ilike.%${escaped}%,metadata->>title.ilike.%${escaped}%`
+          [
+            `description.ilike.*${escaped}*`,
+            `display_id.ilike.*${escaped}*`,
+            `metadata->>title.ilike.*${escaped}*`,
+          ].join(',')
         );
       }
     }

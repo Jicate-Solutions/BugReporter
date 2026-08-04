@@ -14,7 +14,15 @@ import {
   getSortedRowModel,
   useReactTable
 } from '@tanstack/react-table';
-import { ArrowUpDown, Eye, MoreHorizontal, ExternalLink } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import {
+  ArrowUpDown,
+  Eye,
+  MoreHorizontal,
+  ExternalLink,
+  Loader2,
+  X
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -42,7 +50,25 @@ import {
   SelectValue
 } from '@/components/ui/select';
 import { BugReport, Application } from '@boobalan_jkkn/shared';
+import {
+  BUG_STATUSES,
+  BUG_STATUS_LABELS,
+  type BugReportStatus
+} from '@boobalan_jkkn/shared';
 import { InlineStatusSelect } from './inline-status-select';
+import {
+  hasActiveFilters,
+  type BugFilters
+} from '@/hooks/bug-reports/use-bug-filters';
+
+const CATEGORY_OPTIONS: { value: string; label: string }[] = [
+  { value: 'bug', label: 'Bug' },
+  { value: 'feature_request', label: 'Feature Request' },
+  { value: 'ui_design', label: 'UI/Design' },
+  { value: 'performance', label: 'Performance' },
+  { value: 'security', label: 'Security' },
+  { value: 'other', label: 'Other' }
+];
 
 interface BugReportsDataTableProps {
   data: BugReport[];
@@ -50,9 +76,14 @@ interface BugReportsDataTableProps {
   applications: Application[];
   applicationsLoading?: boolean;
   onStatusChange?: () => void;
-  initialAppSlug?: string;
-  /** Reports the currently-filtered application id upward (undefined = all apps). */
-  onSelectedAppChange?: (applicationId: string | undefined) => void;
+  /**
+   * Filters are owned by the page, not by this table. They used to be local
+   * state here, which meant a refetch that unmounted the table wiped them.
+   */
+  filters: BugFilters;
+  onFiltersChange: (patch: Partial<BugFilters>) => void;
+  /** Shown while a background refetch is in flight; the table stays mounted. */
+  refreshing?: boolean;
 }
 
 export function BugReportsDataTable({
@@ -61,21 +92,30 @@ export function BugReportsDataTable({
   applications,
   applicationsLoading = false,
   onStatusChange,
-  initialAppSlug,
-  onSelectedAppChange
+  filters,
+  onFiltersChange,
+  refreshing = false
 }: BugReportsDataTableProps) {
+  const router = useRouter();
+
   const [sorting, setSorting] = React.useState<SortingState>([
     { id: 'created_at', desc: true }
   ]);
-  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
-    []
-  );
   const [columnVisibility, setColumnVisibility] =
     React.useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = React.useState({});
-  const [globalFilter, setGlobalFilter] = React.useState('');
 
-  const columns: ColumnDef<BugReport>[] = [
+  // Derived from the page's filters rather than held locally, so the table has
+  // no filter state of its own left to lose.
+  const columnFilters = React.useMemo<ColumnFiltersState>(() => {
+    const next: ColumnFiltersState = [];
+    if (filters.status) next.push({ id: 'status', value: filters.status });
+    if (filters.category) next.push({ id: 'category', value: filters.category });
+    if (filters.app) next.push({ id: 'application', value: filters.app });
+    return next;
+  }, [filters.status, filters.category, filters.app]);
+
+  const columns: ColumnDef<BugReport>[] = React.useMemo(() => [
     {
       accessorKey: 'display_id',
       header: 'ID',
@@ -107,11 +147,7 @@ export function BugReportsDataTable({
         const description = row.original.description || '';
         return (
           <div className='max-w-[500px]'>
-            <Link href={`/org/${organizationSlug}/bugs/${row.original.id}`}>
-              <div className='font-medium truncate hover:underline'>
-                {title}
-              </div>
-            </Link>
+            <div className='font-medium truncate hover:underline'>{title}</div>
             <div className='text-sm text-muted-foreground line-clamp-1'>
               {description}
             </div>
@@ -139,9 +175,11 @@ export function BugReportsDataTable({
           onSuccess={onStatusChange}
         />
       ),
-      filterFn: (row, id, value) => {
-        return value.includes(row.getValue(id));
-      }
+      // Equality, not `value.includes(...)`. The filter value is a string, so
+      // includes() was String.prototype.includes — a substring match that
+      // happens to be right only because no status contains another. Adding a
+      // 'progress' status beside 'in_progress' would have matched both.
+      filterFn: (row, id, value) => !value || row.getValue(id) === value
     },
     {
       accessorKey: 'category',
@@ -149,9 +187,7 @@ export function BugReportsDataTable({
       cell: ({ row }) => (
         <div className='capitalize'>{row.getValue('category')}</div>
       ),
-      filterFn: (row, id, value) => {
-        return value.includes(row.getValue(id));
-      }
+      filterFn: (row, id, value) => !value || row.getValue(id) === value
     },
     {
       accessorKey: 'application',
@@ -160,10 +196,10 @@ export function BugReportsDataTable({
         const app = row.original.application;
         return <div className='font-medium'>{app?.name || 'Unknown'}</div>;
       },
+      // Matched on slug, because that is what lives in the URL.
       filterFn: (row, id, value) => {
         if (!value || value === 'all') return true;
-        const app = row.original.application;
-        return app?.id === value;
+        return row.original.application?.slug === value;
       }
     },
     {
@@ -212,6 +248,9 @@ export function BugReportsDataTable({
         const bug = row.original;
 
         return (
+          // Rows navigate on click now, so this menu must not bubble — otherwise
+          // "Copy bug ID" would also open the bug.
+          <div onClick={(e) => e.stopPropagation()} className='w-fit'>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant='ghost' className='h-8 w-8 p-0'>
@@ -247,68 +286,58 @@ export function BugReportsDataTable({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         );
       }
     }
-  ];
+  ], [organizationSlug, onStatusChange]);
 
   const table = useReactTable({
     data,
     columns,
     onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
-    onGlobalFilterChange: setGlobalFilter,
     globalFilterFn: 'includesString',
+    // Without this the page index snaps back to 1 whenever `data` gets a new
+    // identity, which it does on every background refetch.
+    autoResetPageIndex: false,
     state: {
       sorting,
       columnFilters,
       columnVisibility,
       rowSelection,
-      globalFilter
+      globalFilter: filters.q
     }
   });
-
-  const initialAppApplied = React.useRef(false);
-  React.useEffect(() => {
-    if (initialAppApplied.current) return;
-    if (!initialAppSlug || applications.length === 0) return;
-    const match = applications.find((a) => a.slug === initialAppSlug);
-    if (!match) return;
-    table.getColumn('application')?.setFilterValue(match.id);
-    onSelectedAppChange?.(match.id);
-    initialAppApplied.current = true;
-  }, [initialAppSlug, applications, table, onSelectedAppChange]);
 
   return (
     <div className='w-full space-y-4'>
       {/* Filter Section */}
       <div className='flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
-        <Input
-          placeholder='Search by title, description, or reporter...'
-          value={globalFilter ?? ''}
-          onChange={(event) => setGlobalFilter(event.target.value)}
-          className='max-w-md'
-        />
+        <div className='flex items-center gap-2'>
+          <Input
+            placeholder='Search by ID, title, description, or reporter...'
+            value={filters.q}
+            onChange={(event) => onFiltersChange({ q: event.target.value })}
+            className='max-w-md'
+          />
+          {refreshing && (
+            <Loader2 className='h-4 w-4 shrink-0 animate-spin text-muted-foreground' />
+          )}
+        </div>
 
-        <div className='flex flex-wrap gap-2'>
-          {/* Application Filter */}
+        <div className='flex flex-wrap items-center gap-2'>
+          {/* Application Filter — value is the slug, matching the URL */}
           <Select
-            value={
-              (table.getColumn('application')?.getFilterValue() as string) ??
-              'all'
+            value={filters.app || 'all'}
+            onValueChange={(value) =>
+              onFiltersChange({ app: value === 'all' ? '' : value })
             }
-            onValueChange={(value) => {
-              table
-                .getColumn('application')
-                ?.setFilterValue(value === 'all' ? '' : value);
-              onSelectedAppChange?.(value === 'all' ? undefined : value);
-            }}
             disabled={applicationsLoading || applications.length === 0}
           >
             <SelectTrigger className='w-[200px]'>
@@ -317,22 +346,18 @@ export function BugReportsDataTable({
             <SelectContent>
               <SelectItem value='all'>All Applications</SelectItem>
               {applications.map((app) => (
-                <SelectItem key={app.id} value={app.id}>
+                <SelectItem key={app.id} value={app.slug}>
                   {app.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
 
-          {/* Status Filter */}
+          {/* Status Filter — options come from the shared vocabulary */}
           <Select
-            value={
-              (table.getColumn('status')?.getFilterValue() as string) ?? 'all'
-            }
+            value={filters.status || 'all'}
             onValueChange={(value) =>
-              table
-                .getColumn('status')
-                ?.setFilterValue(value === 'all' ? '' : value)
+              onFiltersChange({ status: value === 'all' ? '' : value })
             }
           >
             <SelectTrigger className='w-[160px]'>
@@ -340,23 +365,19 @@ export function BugReportsDataTable({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value='all'>All Status</SelectItem>
-              <SelectItem value='new'>New</SelectItem>
-              <SelectItem value='seen'>Seen</SelectItem>
-              <SelectItem value='in_progress'>In Progress</SelectItem>
-              <SelectItem value='resolved'>Resolved</SelectItem>
-              <SelectItem value='wont_fix'>Won&apos;t Fix</SelectItem>
+              {BUG_STATUSES.map((status: BugReportStatus) => (
+                <SelectItem key={status} value={status}>
+                  {BUG_STATUS_LABELS[status]}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
 
           {/* Category Filter */}
           <Select
-            value={
-              (table.getColumn('category')?.getFilterValue() as string) ?? 'all'
-            }
+            value={filters.category || 'all'}
             onValueChange={(value) =>
-              table
-                .getColumn('category')
-                ?.setFilterValue(value === 'all' ? '' : value)
+              onFiltersChange({ category: value === 'all' ? '' : value })
             }
           >
             <SelectTrigger className='w-[180px]'>
@@ -364,16 +385,34 @@ export function BugReportsDataTable({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value='all'>All Categories</SelectItem>
-              <SelectItem value='bug'>Bug</SelectItem>
-              <SelectItem value='feature_request'>Feature Request</SelectItem>
-              <SelectItem value='ui_design'>UI/Design</SelectItem>
-              <SelectItem value='performance'>Performance</SelectItem>
-              <SelectItem value='security'>Security</SelectItem>
-              <SelectItem value='other'>Other</SelectItem>
+              {CATEGORY_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
+
+          {hasActiveFilters(filters) && (
+            <Button
+              variant='ghost'
+              size='sm'
+              onClick={() =>
+                onFiltersChange({ q: '', status: '', category: '', app: '' })
+              }
+            >
+              <X className='mr-1 h-4 w-4' />
+              Clear
+            </Button>
+          )}
         </div>
       </div>
+
+      <p className='text-sm text-muted-foreground'>
+        {table.getFilteredRowModel().rows.length === data.length
+          ? `${data.length} bug${data.length === 1 ? '' : 's'}`
+          : `${table.getFilteredRowModel().rows.length} of ${data.length} bugs`}
+      </p>
 
       <div className='rounded-md border'>
         <Table>
@@ -398,10 +437,19 @@ export function BugReportsDataTable({
           <TableBody>
             {table.getRowModel().rows?.length ? (
               table.getRowModel().rows.map((row) => (
+                // The row carried `cursor-pointer` but had no handler, so it
+                // looked clickable and wasn't. Navigation is keyed off
+                // row.original.id — never an index, which sorting or pagination
+                // would desync from what is on screen.
                 <TableRow
                   key={row.id}
                   data-state={row.getIsSelected() && 'selected'}
                   className='cursor-pointer hover:bg-muted/50'
+                  onClick={() =>
+                    router.push(
+                      `/org/${organizationSlug}/bugs/${row.original.id}`
+                    )
+                  }
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>

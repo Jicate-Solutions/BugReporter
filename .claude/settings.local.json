@@ -18,7 +18,8 @@
       "Bash(npm run dev:*)",
       "Bash(ls:*)",
       "mcp__supabase__list_tables",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "mcp__next-devtools__nextjs_docs"
     ]
   },
   "enableAllProjectMcpServers": true,
