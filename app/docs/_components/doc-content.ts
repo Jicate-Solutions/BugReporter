@@ -99,7 +99,7 @@ Navigate to **Applications → New Application** and register your app:
 After creating the application, you'll receive an API key. Copy and save it securely.
 
 \`\`\`
-app_xxxxxxxxxxxxxxxxxxxxxxxxxx
+br_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 \`\`\`
 
 ## Security Warning
@@ -414,6 +414,144 @@ Need help? Our team is here to support JKKN developers.
 *© 2025 JKKN Bug Reporter. All rights reserved.*
 `;
 
+export const BUG_PORTAL_MARKDOWN = `# Bug Status Portal
+
+Once someone reports a bug, they have no way of knowing what happened to it. The
+Bug Status Portal is the return path: a page where a reporter sees the bugs
+**they** submitted, the current status of each, and the notes your team has
+added — and where they can reply.
+
+It is **off by default** for every application, and you turn it on yourself.
+
+---
+
+## 1. Turn it on
+
+Open your application in BugReporter → **Settings** → **Bug Status Portal**, and
+flip the master switch.
+
+That page also lets you choose whether reporters may reply, whether to require
+signed links, and whether to send webhooks.
+
+## 2. Copy the link
+
+Enabling the portal shows a link with your application's slug already filled in:
+
+\`\`\`
+https://<your-bugreporter-host>/portal/<your-app-slug>?u=<user email>
+\`\`\`
+
+## 3. Add it to your app
+
+Pass the signed-in user's email — the same value you already give the SDK as
+\`userContext.email\`:
+
+\`\`\`tsx
+<a href={\\\`https://<your-bugreporter-host>/portal/my-app?u=\\\${encodeURIComponent(user.email)}\\\`}>
+  My bug reports
+</a>
+\`\`\`
+
+That is the whole integration. No SDK upgrade, no new package, no API key in the
+page — the portal renders on BugReporter and looks up the application by slug.
+
+---
+
+## Who sees what
+
+Each reporter sees **only the bugs they submitted** to that one application.
+Notes your team marks as internal are never shown.
+
+> **Security note.** The email in the link comes from the browser, so a
+> determined user of your application could edit it and read another user's bug
+> reports **for that same application**. That is usually acceptable for internal
+> tools. To close it, have your backend sign the link and switch on **Require
+> signed links**:
+>
+> \`\`\`ts
+> import { createHmac } from 'crypto';
+> const sig = createHmac('sha256', WEBHOOK_SECRET)
+>   .update(userEmail.trim().toLowerCase())
+>   .digest('hex');
+> // → /portal/my-app?u=<email>&sig=<sig>
+> \`\`\`
+>
+> Only turn the switch on once your app is minting signed links, or the portal
+> will stop opening.
+
+---
+
+## Reading bugs from your own code
+
+\`\`\`http
+GET /api/v1/public/bug-reports/me?reporter_email=user@example.com
+X-API-Key: br_your_api_key
+\`\`\`
+
+\`reporter_email\` is **required**. Earlier versions of this endpoint returned
+every bug reported to the application, including other reporters' names and
+email addresses; it now returns only that reporter's bugs and rejects requests
+that do not identify one.
+
+Other endpoints, all scoped the same way:
+
+| Endpoint | Purpose |
+| --- | --- |
+| \`GET /api/v1/public/bug-reports/:id?reporter_email=…\` | One bug plus its thread |
+| \`GET /api/v1/public/bug-reports/:id/messages?reporter_email=…\` | The thread alone |
+| \`POST /api/v1/public/bug-reports/:id/messages\` | Post a note as the reporter |
+
+**Status is read-only from your application.** It is owned by the BugReporter
+dashboard, so \`PATCH\` requests carrying a \`status\` are rejected. Statuses are:
+\`new\`, \`seen\`, \`in_progress\`, \`resolved\`, \`wont_fix\`.
+
+---
+
+## Webhooks
+
+Switch on **Send webhooks** and set a URL, and BugReporter POSTs to it whenever a
+status changes or a note is added.
+
+\`\`\`json
+{
+  "event": "bug.status_changed",
+  "bug": { "id": "…", "display_id": "BUG-123", "reporter_email": "user@example.com" },
+  "from_status": "in_progress",
+  "to_status": "resolved",
+  "note": "Fixed in today's release.",
+  "occurred_at": "2026-08-04T10:00:00.000Z"
+}
+\`\`\`
+
+Events: \`bug.status_changed\`, \`bug.note_added\`.
+
+### Verifying the signature
+
+Every request carries \`X-BugReporter-Signature: t=<unix>,v1=<hex>\`. The
+timestamp is signed with the body so an old request cannot be replayed:
+
+\`\`\`ts
+import { createHmac, timingSafeEqual } from 'crypto';
+
+export function verify(rawBody: string, header: string, secret: string) {
+  const parts = Object.fromEntries(header.split(',').map((p) => p.split('=')));
+  const expected = createHmac('sha256', secret)
+    .update(\\\`\\\${parts.t}.\\\${rawBody}\\\`)
+    .digest('hex');
+  const a = Buffer.from(expected);
+  const b = Buffer.from(parts.v1 ?? '');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+\`\`\`
+
+Verify against the **raw** body, before any JSON parsing — re-serialising it
+changes the bytes and the signature will not match.
+
+Failed deliveries retry with backoff (1m, 5m, 15m, 1h, 6h) and then stop. Recent
+deliveries and the last error are shown on the Settings card, and polling
+\`/me\` remains a reliable fallback if a delivery is ever missed.
+`;
+
 export const TAB_CONTENT_MAP: Record<string, { markdown: string; filename: string; title: string }> = {
   installation: {
     markdown: INSTALLATION_MARKDOWN,
@@ -434,6 +572,11 @@ export const TAB_CONTENT_MAP: Record<string, { markdown: string; filename: strin
     markdown: ADVANCED_MARKDOWN,
     filename: 'jkkn-bug-reporter-advanced.md',
     title: 'Advanced Configuration Guide'
+  },
+  portal: {
+    markdown: BUG_PORTAL_MARKDOWN,
+    filename: 'jkkn-bug-reporter-status-portal.md',
+    title: 'Bug Status Portal'
   },
   full: {
     markdown: FULL_DOCUMENTATION_MARKDOWN,

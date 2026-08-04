@@ -12,6 +12,10 @@
     {
       "path": "/api/cron/app-routine-dispatcher",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/webhook-dispatcher",
+      "schedule": "*/5 * * * *"
     }
   ],
   "headers": [
@@ -24,7 +28,7 @@
         },
         {
           "key": "Access-Control-Allow-Methods",
-          "value": "GET, POST, PUT, DELETE, OPTIONS"
+          "value": "GET, POST, PATCH, PUT, DELETE, OPTIONS"
         },
         {
           "key": "Access-Control-Allow-Headers",

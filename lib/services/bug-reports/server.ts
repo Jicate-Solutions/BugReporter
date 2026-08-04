@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
-import type { BugReport, BugReportStats } from '@boobalan_jkkn/shared';
+import type { BugReport, BugReportStats, BugReportStatus } from '@boobalan_jkkn/shared';
+import { BUG_STATUSES } from '@boobalan_jkkn/shared';
 
 export class BugReportServerService {
   /**
@@ -90,26 +91,32 @@ export class BugReportServerService {
     try {
       const supabase = await createClient();
 
+      // NB: `priority` is deliberately absent from this select. There is no
+      // priority column on bug_reports — asking PostgREST for it made this whole
+      // query error out, so these stats never rendered at all.
       const { data: bugs, error } = await supabase
         .from('bug_reports')
-        .select('status, category, priority, created_at')
+        .select('status, category, created_at')
         .eq('organization_id', organizationId);
 
       if (error) throw error;
 
+      const countByStatus = (status: BugReportStatus) =>
+        bugs?.filter((b) => b.status === status).length || 0;
+
       const stats: BugReportStats = {
         total: bugs?.length || 0,
-        by_status: {
-          open: bugs?.filter((b) => b.status === 'open').length || 0,
-          in_progress: bugs?.filter((b) => b.status === 'in_progress').length || 0,
-          resolved: bugs?.filter((b) => b.status === 'resolved').length || 0,
-          closed: bugs?.filter((b) => b.status === 'closed').length || 0,
-        },
+        by_status: BUG_STATUSES.reduce(
+          (acc, status) => ({ ...acc, [status]: countByStatus(status) }),
+          {} as Record<BugReportStatus, number>
+        ),
+        // Always zero until a priority column exists. Kept so the shape is stable
+        // for consumers rather than silently disappearing from the response.
         by_priority: {
-          low: bugs?.filter((b) => b.priority === 'low').length || 0,
-          medium: bugs?.filter((b) => b.priority === 'medium').length || 0,
-          high: bugs?.filter((b) => b.priority === 'high').length || 0,
-          critical: bugs?.filter((b) => b.priority === 'critical').length || 0,
+          low: 0,
+          medium: 0,
+          high: 0,
+          critical: 0,
         },
         by_category: {
           ui: bugs?.filter((b) => b.category === 'ui').length || 0,

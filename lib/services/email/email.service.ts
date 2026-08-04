@@ -1,22 +1,17 @@
 import { Resend } from 'resend';
+import {
+  BUG_STATUS_LABELS,
+  BUG_STATUS_EMAIL_COLORS,
+  TERMINAL_BUG_STATUSES,
+} from '@boobalan_jkkn/shared';
 
-const STATUS_LABELS: Record<string, string> = {
-  new: 'New',
-  seen: 'Seen',
-  in_progress: 'In Progress',
-  resolved: 'Resolved',
-  wont_fix: "Won't Fix",
-};
-
-const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
-  new:         { bg: '#dbeafe', text: '#1d4ed8' },
-  seen:        { bg: '#f3f4f6', text: '#374151' },
-  in_progress: { bg: '#fef3c7', text: '#b45309' },
-  resolved:    { bg: '#dcfce7', text: '#15803d' },
-  wont_fix:    { bg: '#fee2e2', text: '#dc2626' },
-};
-
-const CLOSED_STATUSES = new Set(['resolved', 'wont_fix']);
+// Aliased from the shared vocabulary. These used to be declared locally and had
+// already drifted from the dashboard's palette — `seen` rendered gray in email
+// but amber in the UI, and `wont_fix` red in email but gray in the UI.
+const STATUS_LABELS: Record<string, string> = BUG_STATUS_LABELS;
+const STATUS_COLORS: Record<string, { bg: string; text: string }> =
+  BUG_STATUS_EMAIL_COLORS;
+const CLOSED_STATUSES = new Set<string>(TERMINAL_BUG_STATUSES);
 
 function getResendClient(): Resend {
   return new Resend(process.env.RESEND_API_KEY);

@@ -12,6 +12,7 @@ import type {
   BugReportStats,
 } from '@boobalan_jkkn/shared';
 import toast from 'react-hot-toast';
+import { bugStatusLabel } from '@boobalan_jkkn/shared';
 
 /**
  * Hook to fetch all bug reports with filtering and pagination
@@ -122,13 +123,18 @@ export function useBugReport(id: string) {
 export function useUpdateBugStatus() {
   const [updating, setUpdating] = useState(false);
 
-  const updateStatus = useCallback(async (bugId: string, status: string) => {
+  const updateStatus = useCallback(
+    async (bugId: string, status: string, resolutionNotes?: string) => {
     try {
       setUpdating(true);
 
-      const updated = await BugReportClientService.updateBugStatus(bugId, status);
+      const updated = await BugReportClientService.updateBugStatus(
+        bugId,
+        status,
+        resolutionNotes
+      );
 
-      toast.success(`Bug status updated to ${status}`);
+      toast.success(`Bug status updated to ${bugStatusLabel(status)}`);
 
       return updated;
     } catch (err) {
@@ -139,7 +145,9 @@ export function useUpdateBugStatus() {
     } finally {
       setUpdating(false);
     }
-  }, []);
+  },
+    []
+  );
 
   return {
     updateStatus,
@@ -367,13 +375,35 @@ export function useFleetBugRollup(organizationId: string) {
 export function useBulkUpdateStatus() {
   const [updating, setUpdating] = useState(false);
 
-  const bulkUpdateStatus = useCallback(async (bugIds: string[], status: string) => {
+  const bulkUpdateStatus = useCallback(
+    async (bugIds: string[], status: string, resolutionNotes?: string) => {
     try {
       setUpdating(true);
 
-      await BugReportClientService.bulkUpdateStatus(bugIds, status);
+      const { updated, failed } = await BugReportClientService.bulkUpdateStatus(
+        bugIds,
+        status,
+        resolutionNotes
+      );
 
-      toast.success(`${bugIds.length} bugs updated to ${status}`);
+      // Report partial success honestly. Some transitions can legitimately be
+      // rejected per-bug, so "20 updated" when 3 were refused would be a lie.
+      if (failed.length && updated.length) {
+        toast.success(
+          `${updated.length} of ${bugIds.length} bugs updated to ${bugStatusLabel(status)}`
+        );
+        toast.error(
+          `${failed.length} could not be updated: ${failed[0].message}`
+        );
+      } else if (failed.length) {
+        toast.error(`No bugs were updated: ${failed[0].message}`);
+      } else {
+        toast.success(
+          `${updated.length} bugs updated to ${bugStatusLabel(status)}`
+        );
+      }
+
+      return { updated, failed };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to bulk update status';
       toast.error(message);
@@ -382,7 +412,9 @@ export function useBulkUpdateStatus() {
     } finally {
       setUpdating(false);
     }
-  }, []);
+  },
+    []
+  );
 
   return {
     bulkUpdateStatus,

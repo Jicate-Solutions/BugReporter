@@ -4,51 +4,47 @@ import {
   withApiKeyAuth,
   createApiErrorResponse,
   createApiSuccessResponse,
+  corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import {
+  getBugPortalConfig,
+  normalizeReporterEmail,
+} from '@/lib/services/bug-portal/config';
 import type {
   GetBugReportDetailsResponse,
   UpdateBugReportStatusRequest,
-  UpdateBugReportStatusResponse,
   ApiRequestContext,
   BugReport,
-  EnhancedBugReportMessage,
-  MessageAttachment,
-  MessageReaction,
 } from '@boobalan_jkkn/shared';
-import { EmailService } from '@/lib/services/email/email.service';
 
-interface MessageQueryResult {
-  id: string;
-  bug_report_id: string;
-  sender_user_id: string;
-  message_text: string;
-  message_type: string;
-  created_at: string;
-  updated_at: string;
-  attachments: MessageAttachment[];
-  reactions: MessageReaction[];
-  sender:
-    | {
-        id: string;
-        email: string;
-        full_name?: string | null;
-        avatar_url?: string | null;
-      }
-    | {
-        id: string;
-        email: string;
-        full_name?: string | null;
-        avatar_url?: string | null;
-      }[];
+const BUG_SELECT = `
+  id, display_id, status, category, description, page_url,
+  screenshot_url, attachments, console_logs, created_at, resolved_at,
+  metadata, application_id, organization_id, reporter_email,
+  application:applications(id, name, slug),
+  organization:organizations(id, name)
+`;
+
+function serviceClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
 }
 
 /**
  * GET /api/v1/public/bug-reports/:id
- * Get details of a specific bug report
- * Requires API key authentication
+ * Details of one bug report, plus its note thread.
+ *
+ * Requires API key authentication AND a `reporter_email` that matches the bug's
+ * reporter. The API key identifies the application, never the person — without
+ * the second check any user of an app could read any other user's bug simply by
+ * holding its id.
  *
  * Query parameters:
- * - include_messages: Include messages (default: true)
+ * - reporter_email: REQUIRED
+ * - include_messages: include the thread (default true)
  */
 export const GET = withApiKeyAuth(
   async (
@@ -61,95 +57,74 @@ export const GET = withApiKeyAuth(
       const { id } = params;
       const { searchParams } = new URL(request.url);
       const includeMessages = searchParams.get('include_messages') !== 'false';
-
-      // Create Supabase client
-      const supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_ROLE_KEY!,
-        {
-          auth: {
-            autoRefreshToken: false,
-            persistSession: false,
-          },
-        }
+      const reporterEmail = normalizeReporterEmail(
+        searchParams.get('reporter_email')
       );
 
-      // Fetch bug report
-      const { data: bugReport, error: bugError } = await supabase
-        .from('bug_reports')
-        .select(
-          `
-          *,
-          application:applications(id, name, slug),
-          organization:organizations(id, name)
-        `
-        )
-        .eq('id', id)
-        .eq('application_id', context.application.id) // Ensure bug belongs to this app
-        .single();
-
-      if (bugError) {
-        if (bugError.code === 'PGRST116') {
-          return createApiErrorResponse(
-            'BUG_REPORT_NOT_FOUND',
-            'Bug report not found or does not belong to this application',
-            404
-          );
-        }
-        console.error('[BugReportAPI /:id] Fetch error:', bugError);
+      if (!reporterEmail) {
         return createApiErrorResponse(
-          'INTERNAL_ERROR',
-          'Failed to fetch bug report',
-          500,
-          { error: bugError.message }
+          'VALIDATION_ERROR',
+          'reporter_email is required.',
+          400
         );
       }
 
-      // Fetch messages if requested
-      let messages: EnhancedBugReportMessage[] = [];
+      const supabase = serviceClient();
+
+      const { data: bugReport, error: bugError } = await supabase
+        .from('bug_reports')
+        .select(BUG_SELECT)
+        .eq('id', id)
+        .eq('application_id', context.application.id)
+        .eq('reporter_email', reporterEmail)
+        .single();
+
+      if (bugError || !bugReport) {
+        if (bugError && bugError.code !== 'PGRST116') {
+          console.error('[BugReportAPI /:id] Fetch error:', bugError);
+          return createApiErrorResponse(
+            'INTERNAL_ERROR',
+            'Failed to fetch bug report',
+            500,
+            { error: bugError.message }
+          );
+        }
+        // Deliberately identical to the wrong-application case: a caller must
+        // not be able to tell "exists but isn't yours" from "doesn't exist".
+        return createApiErrorResponse(
+          'BUG_REPORT_NOT_FOUND',
+          'Bug report not found',
+          404
+        );
+      }
+
+      let messages: unknown[] = [];
       if (includeMessages) {
         const { data: messagesData, error: messagesError } = await supabase
           .from('bug_report_messages')
           .select(
-            `
-            *,
-            sender:profiles(id, email, full_name, avatar_url),
-            attachments:bug_report_message_attachments(*),
-            reactions:bug_report_message_metadata(*)
-          `
+            `id, bug_report_id, message_text, message_type, author_kind,
+             author_email, created_at, updated_at,
+             attachments:bug_report_message_attachments(id, file_url, file_name, file_type)`
           )
           .eq('bug_report_id', id)
+          // Internal notes are for the dev team. This is the first place the
+          // is_internal column has ever actually been honoured.
+          .eq('is_internal', false)
+          .eq('is_deleted', false)
           .order('created_at', { ascending: true });
 
         if (messagesError) {
           console.error('[BugReportAPI /:id] Messages fetch error:', messagesError);
-          // Don't fail the request, just log and continue with empty messages
         } else {
-          messages = (messagesData as MessageQueryResult[])?.map((msg) => ({
-            id: msg.id,
-            bug_report_id: msg.bug_report_id,
-            sender_user_id: msg.sender_user_id,
-            message_text: msg.message_text,
-            message_type: msg.message_type,
-            created_at: msg.created_at,
-            updated_at: msg.updated_at,
-            attachments: msg.attachments || [],
-            reactions: msg.reactions || [],
-            sender: Array.isArray(msg.sender) ? msg.sender[0] : msg.sender,
-          })) || [];
+          messages = messagesData || [];
         }
       }
 
-      const response: GetBugReportDetailsResponse = {
-        bug_report: bugReport as BugReport,
+      const response = {
+        bug_report: bugReport as unknown as BugReport,
         messages: includeMessages ? messages : undefined,
-      };
-
-      console.log('[BugReportAPI /:id] Fetched bug report:', {
-        id,
-        application: context.application.name,
-        messages_count: messages.length,
-      });
+      } as GetBugReportDetailsResponse;
 
       return createApiSuccessResponse(response, 200);
     } catch (error) {
@@ -165,12 +140,14 @@ export const GET = withApiKeyAuth(
 
 /**
  * PATCH /api/v1/public/bug-reports/:id
- * Update a bug report's status
- * Requires API key authentication
+ * Add a note to a bug report.
+ *
+ * Status changes are NOT available to integrated applications — status is owned
+ * by the BugReporter dashboard. A request carrying `status` is rejected with a
+ * message pointing at the right place, rather than silently ignored.
  *
  * Request body:
- * - status: 'open' | 'in_progress' | 'resolved' | 'closed'
- * - resolution_notes: Optional notes about the resolution
+ * - resolution_notes: the note to append
  */
 export const PATCH = withApiKeyAuth(
   async (
@@ -181,127 +158,112 @@ export const PATCH = withApiKeyAuth(
     try {
       const params = await routeContext!.params;
       const { id } = params;
-      const body = (await request.json()) as UpdateBugReportStatusRequest;
+      const body = (await request.json()) as UpdateBugReportStatusRequest & {
+        reporter_email?: string;
+      };
 
-      // Validate status if provided (matches database schema)
-      const validStatuses = ['new', 'seen', 'in_progress', 'resolved', 'wont_fix'];
-      if (body.status && !validStatuses.includes(body.status)) {
+      const portal = getBugPortalConfig(context.application.settings);
+      if (!portal.enabled) {
+        return createApiErrorResponse(
+          'FEATURE_NOT_ENABLED',
+          'The Bug Status Portal is not enabled for this application. Enable it from the application Settings tab in BugReporter.',
+          403
+        );
+      }
+      if (!portal.allowReporterNotes) {
+        return createApiErrorResponse(
+          'FEATURE_NOT_ENABLED',
+          'Reporter notes are disabled for this application.',
+          403
+        );
+      }
+
+      if (body.status) {
+        return createApiErrorResponse(
+          'FORBIDDEN',
+          'Status is managed in the BugReporter dashboard and cannot be changed through the public API. Use this endpoint (or POST /messages) to add a note instead.',
+          403
+        );
+      }
+
+      const note = body.resolution_notes?.trim();
+      if (!note) {
         return createApiErrorResponse(
           'VALIDATION_ERROR',
-          `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+          'resolution_notes is required.',
           400
         );
       }
 
-      // Create Supabase client
-      const supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_ROLE_KEY!,
-        {
-          auth: {
-            autoRefreshToken: false,
-            persistSession: false,
-          },
-        }
-      );
+      const reporterEmail = normalizeReporterEmail(body.reporter_email);
+      if (!reporterEmail) {
+        return createApiErrorResponse(
+          'VALIDATION_ERROR',
+          'reporter_email is required.',
+          400
+        );
+      }
 
-      // First verify the bug report exists and belongs to this application
-      const { data: existingBug, error: fetchError } = await supabase
+      const supabase = serviceClient();
+
+      const { data: bug, error: fetchError } = await supabase
         .from('bug_reports')
-        .select('id, status')
+        .select('id, organization_id, application_id, display_id, reporter_email')
         .eq('id', id)
         .eq('application_id', context.application.id)
+        .eq('reporter_email', reporterEmail)
         .single();
 
-      if (fetchError || !existingBug) {
+      if (fetchError || !bug) {
         return createApiErrorResponse(
           'BUG_REPORT_NOT_FOUND',
-          'Bug report not found or does not belong to this application',
+          'Bug report not found',
           404
         );
       }
 
-      // Build update payload (only columns that exist in bug_reports table)
-      const updatePayload: Record<string, any> = {};
-
-      if (body.status) {
-        updatePayload.status = body.status;
-        // Set resolved_at for resolved/wont_fix status
-        if (body.status === 'resolved' || body.status === 'wont_fix') {
-          updatePayload.resolved_at = new Date().toISOString();
-        }
-      }
-
-      // Update the bug report
-      const { data: updatedBug, error: updateError } = await supabase
-        .from('bug_reports')
-        .update(updatePayload)
-        .eq('id', id)
-        .select(
-          `
-          *,
-          application:applications(id, name, slug),
-          organization:organizations(id, name)
-        `
-        )
+      // The insert is checked. Previously this wrote sender_user_id: null into a
+      // NOT NULL column and never inspected the result, so every note silently
+      // failed to save while the caller received a 200.
+      const { data: message, error: insertError } = await supabase
+        .from('bug_report_messages')
+        .insert({
+          bug_report_id: id,
+          sender_user_id: null,
+          author_kind: 'reporter',
+          author_email: reporterEmail,
+          message_text: note,
+          message_type: 'text',
+          is_internal: false,
+        })
+        .select('id, message_text, author_kind, author_email, created_at')
         .single();
 
-      if (updateError) {
-        console.error('[BugReportAPI /:id PATCH] Update error:', updateError);
+      if (insertError) {
+        console.error('[BugReportAPI /:id PATCH] Note insert failed:', insertError);
         return createApiErrorResponse(
           'INTERNAL_ERROR',
-          'Failed to update bug report',
+          'Failed to add note',
           500,
-          { error: updateError.message }
+          { error: insertError.message }
         );
       }
 
-      // If resolution_notes provided, add as a system message
-      if (body.resolution_notes) {
-        await supabase.from('bug_report_messages').insert({
-          bug_report_id: id,
-          message_text: `[Status Update] ${body.resolution_notes}`,
-          message_type: 'system',
-          sender_user_id: null, // System message
-        });
-      }
-
-      // Notify the reporter if they have an email and status changed (fire-and-forget)
-      const reporterEmail = (updatedBug as any).metadata?.reporter_email;
-      if (reporterEmail && body.status) {
-        EmailService.sendStatusUpdateNotification({
-          reporterEmail,
-          reporterName: (updatedBug as any).metadata?.reporter_name,
-          bugId: updatedBug.id,
-          bugTitle: (updatedBug as any).metadata?.title || 'Bug Report',
-          newStatus: body.status,
-          appName: context.application.name,
-          orgName: context.organization.name,
-          developerNote: body.resolution_notes,
-          bugViewUrl: undefined, // Public API doesn't have a direct reporter view URL
-        }).catch(err => console.error('[BugReportAPI PATCH] Email notification failed:', err));
-      }
-
-      const response: UpdateBugReportStatusResponse = {
-        bug_report: updatedBug as BugReport,
-        message: `Bug report status updated to ${body.status || 'unchanged'}`,
-      };
-
-      console.log('[BugReportAPI /:id PATCH] Updated bug report:', {
-        id,
-        application: context.application.name,
-        old_status: existingBug.status,
-        new_status: body.status,
-      });
-
-      return createApiSuccessResponse(response, 200);
+      return createApiSuccessResponse(
+        { message, success: true },
+        201
+      );
     } catch (error) {
       console.error('[BugReportAPI /:id PATCH] Unexpected error:', error);
       return createApiErrorResponse(
         'INTERNAL_ERROR',
-        'An unexpected error occurred while updating bug report',
+        'An unexpected error occurred while adding the note',
         500
       );
     }
   }
 );
+
+export async function OPTIONS() {
+  return corsPreflightResponse();
+}

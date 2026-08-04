@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { formatDistanceToNow } from 'date-fns';
+import { BUG_STATUS_BADGE_CLASS, isBugStatus } from '@boobalan_jkkn/shared';
 
 interface AnalyticsStats {
   totalBugReports: number;
@@ -108,10 +109,13 @@ export default function AnalyticsPage() {
           supabase
             .from('bug_reports')
             .select('*', { count: 'exact', head: true }),
+          // "Open" = reported but not yet being worked on. This queried
+          // status = 'open', a value the database has never stored, so the
+          // Open card read 0 on every deployment.
           supabase
             .from('bug_reports')
             .select('*', { count: 'exact', head: true })
-            .eq('status', 'open'),
+            .in('status', ['new', 'seen']),
           supabase
             .from('bug_reports')
             .select('*', { count: 'exact', head: true })
@@ -120,10 +124,12 @@ export default function AnalyticsPage() {
             .from('bug_reports')
             .select('*', { count: 'exact', head: true })
             .eq('status', 'resolved'),
+          // Same problem: 'closed' was never a real status. The terminal
+          // non-fixed status is 'wont_fix'.
           supabase
             .from('bug_reports')
             .select('*', { count: 'exact', head: true })
-            .eq('status', 'closed'),
+            .eq('status', 'wont_fix'),
           supabase
             .from('organizations')
             .select('*', { count: 'exact', head: true }),
@@ -171,7 +177,7 @@ export default function AnalyticsPage() {
                 .from('bug_reports')
                 .select('*', { count: 'exact', head: true })
                 .eq('organization_id', org.id)
-                .eq('status', 'open'),
+                .in('status', ['new', 'seen']),
               supabase
                 .from('bug_reports')
                 .select('*', { count: 'exact', head: true })
@@ -244,20 +250,10 @@ export default function AnalyticsPage() {
     fetchAnalytics();
   }, []);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'open':
-        return 'border-orange-300 text-orange-700 bg-orange-50';
-      case 'in_progress':
-        return 'border-blue-300 text-blue-700 bg-blue-50';
-      case 'resolved':
-        return 'border-green-300 text-green-700 bg-green-50';
-      case 'closed':
-        return 'border-gray-300 text-gray-700 bg-gray-50';
-      default:
-        return 'border-gray-300 text-gray-700 bg-gray-50';
-    }
-  };
+  const getStatusColor = (status: string) =>
+    isBugStatus(status)
+      ? BUG_STATUS_BADGE_CLASS[status]
+      : 'border-gray-300 text-gray-700 bg-gray-50';
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {

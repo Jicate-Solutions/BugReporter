@@ -7,7 +7,9 @@ import type {
   BugReportFilters,
   UpdateBugReportPayload,
   BugReportStats,
+  BugReportStatus,
 } from '@boobalan_jkkn/shared';
+import { BUG_STATUSES, TERMINAL_BUG_STATUSES } from '@boobalan_jkkn/shared';
 
 interface BugReportQueryResult extends Omit<BugReport, 'title' | 'reporter_name' | 'reporter_email'> {
   metadata?: {
@@ -161,11 +163,15 @@ export class BugReportClientService {
   /**
    * Update bug report status
    */
-  static async updateBugStatus(id: string, status: string): Promise<BugReport> {
+  static async updateBugStatus(
+    id: string,
+    status: string,
+    resolutionNotes?: string
+  ): Promise<BugReport> {
     const response = await fetch(`/api/internal/bug-reports/${id}/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, resolution_notes: resolutionNotes }),
     });
 
     if (!response.ok) {
@@ -334,12 +340,15 @@ export class BugReportClientService {
 
       const stats: BugReportStats = {
         total: bugs?.length || 0,
-        by_status: {
-          open: bugs?.filter((b) => b.status === 'open' || b.status === 'new').length || 0,
-          in_progress: bugs?.filter((b) => b.status === 'in_progress').length || 0,
-          resolved: bugs?.filter((b) => b.status === 'resolved').length || 0,
-          closed: bugs?.filter((b) => b.status === 'closed' || b.status === 'wont_fix').length || 0,
-        },
+        // Previously aliased 'open'→'new' and 'closed'→'wont_fix' to paper over
+        // the two competing vocabularies. Now there is only one.
+        by_status: BUG_STATUSES.reduce(
+          (acc, status) => ({
+            ...acc,
+            [status]: bugs?.filter((b) => b.status === status).length || 0,
+          }),
+          {} as Record<BugReportStatus, number>
+        ),
         by_priority: {
           low: 0,
           medium: 0,
@@ -371,28 +380,52 @@ export class BugReportClientService {
   /**
    * Bulk update bug status
    */
-  static async bulkUpdateStatus(bugIds: string[], status: string): Promise<void> {
-    try {
-      const supabase = createClient();
+  /**
+   * Bulk update bug status.
+   *
+   * This used to write straight to the table from the browser, which skipped
+   * status validation, the reporter email, the audit trail, and webhooks — a
+   * bug closed in bulk was indistinguishable from one that changed by itself.
+   * It now drives the same endpoint as a single update, so every bug takes the
+   * identical path through applyStatusChange().
+   */
+  static async bulkUpdateStatus(
+    bugIds: string[],
+    status: string,
+    resolutionNotes?: string
+  ): Promise<{ updated: string[]; failed: { id: string; message: string }[] }> {
+    const results = await Promise.allSettled(
+      bugIds.map((id) => this.updateBugStatus(id, status, resolutionNotes))
+    );
 
-      const updateData: { status: string; resolved_at: string | null } = {
-        status,
-        resolved_at: null,
-      };
+    const updated: string[] = [];
+    const failed: { id: string; message: string }[] = [];
 
-      if (status === 'resolved' || status === 'wont_fix') {
-        updateData.resolved_at = new Date().toISOString();
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') {
+        updated.push(bugIds[i]);
+      } else {
+        failed.push({
+          id: bugIds[i],
+          message:
+            result.reason instanceof Error
+              ? result.reason.message
+              : 'Failed to update bug status.',
+        });
       }
+    });
 
-      const { error } = await supabase.from('bug_reports').update(updateData).in('id', bugIds);
-
-      if (error) throw error;
-
-      console.log(`[BugReportClientService] Bulk updated ${bugIds.length} bugs to ${status}`);
-    } catch (error) {
-      console.error('[BugReportClientService] Error bulk updating status:', error);
-      throw error;
+    // Partial success is reported rather than thrown. With per-bug transition
+    // rules, one rejected bug in a selection of twenty should not hide the
+    // nineteen that succeeded.
+    if (failed.length) {
+      console.warn(
+        `[BugReportClientService] Bulk update: ${updated.length} ok, ${failed.length} failed`,
+        failed
+      );
     }
+
+    return { updated, failed };
   }
 
   /**
@@ -459,10 +492,16 @@ export class BugReportClientService {
 
       const now = Date.now();
       const weekAgoMs = now - 7 * 24 * 60 * 60 * 1000;
-      // Real prod statuses: new · seen · in_progress · resolved · wont_fix.
-      const isOpen = (s: string | null) => s === 'new' || s === 'seen' || s === 'open';
-      const isClosed = (s: string | null) => s === 'wont_fix' || s === 'closed';
-      const isActive = (s: string | null) => s !== 'resolved' && !isClosed(s); // still needs work
+      // Statuses come from the shared constant; the legacy 'open'/'closed'
+      // aliases are gone because the database never produced them.
+      const isOpen = (s: string | null) => s === 'new' || s === 'seen';
+      // The rollup reports `resolved` and `closed` as separate columns, so this
+      // is wont_fix only — NOT every terminal status, or resolved bugs would be
+      // counted twice.
+      const isClosed = (s: string | null) => s === 'wont_fix';
+      const isTerminal = (s: string | null) =>
+        !!s && (TERMINAL_BUG_STATUSES as readonly string[]).includes(s);
+      const isActive = (s: string | null) => !isTerminal(s); // still needs work
 
       const median = (nums: number[]): number | null => {
         if (nums.length === 0) return null;

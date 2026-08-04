@@ -11,35 +11,28 @@ import {
 } from '@/components/ui/select';
 import { useUpdateBugStatus } from '@/hooks/bug-reports/use-bug-reports';
 import { cn } from '@/lib/utils';
+import {
+  BUG_STATUSES,
+  BUG_STATUS_BADGE_CLASS,
+  BUG_STATUS_LABELS,
+  type BugReportStatus
+} from '@boobalan_jkkn/shared';
 
-const STATUS_OPTIONS = [
-  {
-    value: 'new',
-    label: 'New',
-    className: 'bg-blue-100 text-blue-800 border-blue-200 hover:bg-blue-200'
-  },
-  {
-    value: 'seen',
-    label: 'Seen',
-    className: 'bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-200'
-  },
-  {
-    value: 'in_progress',
-    label: 'In Progress',
-    className:
-      'bg-orange-100 text-orange-800 border-orange-200 hover:bg-orange-200'
-  },
-  {
-    value: 'resolved',
-    label: 'Resolved',
-    className: 'bg-green-100 text-green-800 border-green-200 hover:bg-green-200'
-  },
-  {
-    value: 'wont_fix',
-    label: "Won't Fix",
-    className: 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
-  }
-];
+const STATUS_HOVER_CLASS: Record<BugReportStatus, string> = {
+  new: 'hover:bg-blue-200',
+  seen: 'hover:bg-amber-200',
+  in_progress: 'hover:bg-orange-200',
+  resolved: 'hover:bg-green-200',
+  wont_fix: 'hover:bg-gray-200'
+};
+
+// Derived from the shared vocabulary so this dropdown can never drift from what
+// the database accepts. The hover states are the only thing local to this view.
+const STATUS_OPTIONS = BUG_STATUSES.map((value) => ({
+  value,
+  label: BUG_STATUS_LABELS[value],
+  className: cn(BUG_STATUS_BADGE_CLASS[value], STATUS_HOVER_CLASS[value])
+}));
 
 interface InlineStatusSelectProps {
   bugId: string;
