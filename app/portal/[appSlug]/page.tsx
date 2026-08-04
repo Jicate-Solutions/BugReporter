@@ -4,15 +4,22 @@ import { Bug, ExternalLink } from 'lucide-react';
 import {
   resolvePortalRequest,
   listReporterBugs,
+  countReporterBugsByStatus,
 } from '@/lib/services/bug-portal/server';
 import { PortalStatusBadge } from '../_components/portal-status-badge';
 import { PortalShell, PortalNotice } from '../_components/portal-shell';
+import { PortalSearch } from '../_components/portal-search';
 
 export const dynamic = 'force-dynamic';
 
 interface PageProps {
   params: Promise<{ appSlug: string }>;
-  searchParams: Promise<{ u?: string; sig?: string }>;
+  searchParams: Promise<{
+    u?: string;
+    sig?: string;
+    q?: string;
+    status?: string;
+  }>;
 }
 
 /**
@@ -24,7 +31,7 @@ interface PageProps {
  */
 export default async function PortalPage({ params, searchParams }: PageProps) {
   const { appSlug } = await params;
-  const { u, sig } = await searchParams;
+  const { u, sig, q = '', status = '' } = await searchParams;
 
   const resolved = await resolvePortalRequest(appSlug, u, sig);
 
@@ -50,23 +57,53 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
   }
 
   const { application, reporterEmail } = resolved;
-  const bugs = await listReporterBugs(application.id, reporterEmail);
+
+  const [bugs, counts] = await Promise.all([
+    listReporterBugs(application.id, reporterEmail, { q, status }),
+    countReporterBugsByStatus(application.id, reporterEmail),
+  ]);
+
+  const isFiltering = Boolean(q || status);
 
   return (
     <PortalShell
       title={`${application.name} — your bug reports`}
       subtitle={reporterEmail}
     >
-      {bugs.length === 0 ? (
-        <PortalNotice
-          title="Nothing here yet"
-          body={`You haven't reported any bugs in ${application.name}. When you do, they'll appear here with their current status.`}
+      {counts.total > 0 && (
+        <PortalSearch
+          identity={{ u: reporterEmail, sig }}
+          appSlug={application.slug}
+          q={q}
+          status={status}
+          counts={counts}
         />
+      )}
+
+      {bugs.length === 0 ? (
+        // Two different situations, two different messages. Telling someone who
+        // just searched that they have never reported a bug would be wrong.
+        isFiltering ? (
+          <PortalNotice
+            title="No reports match"
+            body={
+              q
+                ? `Nothing matches "${q}". Try a different word, or part of a report ID like BUG-123.`
+                : 'No reports have that status yet.'
+            }
+          />
+        ) : (
+          <PortalNotice
+            title="Nothing here yet"
+            body={`You haven't reported any bugs in ${application.name}. When you do, they'll appear here with their current status.`}
+          />
+        )
       ) : (
         <ul className="space-y-3">
           {bugs.map((bug) => (
             <li key={bug.id}>
               <Link
+                prefetch={false}
                 href={`/portal/${application.slug}/${bug.id}?u=${encodeURIComponent(
                   reporterEmail
                 )}${sig ? `&sig=${encodeURIComponent(sig)}` : ''}`}

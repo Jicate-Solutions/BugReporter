@@ -1,0 +1,77 @@
+#!/bin/sh
+#
+# Blocks commits that contain credentials.
+#
+# Added after a Supabase personal access token was committed in .mcp.json and
+# lived in the repo's history. The token was account-scoped, so it granted
+# management access to every project — not just this one. Removing it from a
+# file does not remove it from history, and history rewrites are disruptive
+# enough that the only cheap fix is to never let one in.
+#
+# Scans the staged diff only, so it costs nothing on an ordinary commit.
+#
+# To bypass for a legitimate false positive:
+#   SKIP_SECRET_SCAN=1 git commit ...
+# Prefer fixing the match. A bypass on a real secret means a revoke-and-rotate
+# afterwards, which is far more work.
+
+if [ "$SKIP_SECRET_SCAN" = "1" ]; then
+  echo "pre-commit: secret scan skipped (SKIP_SECRET_SCAN=1)"
+  exit 0
+fi
+
+# Only added lines. Deleting a secret must always be allowed — that is how the
+# original one got cleaned up.
+ADDED=$(git diff --cached --diff-filter=ACM -U0 | grep '^+' | grep -v '^+++')
+
+[ -z "$ADDED" ] && exit 0
+
+FOUND=0
+
+flag() {
+  # $1 = human label, $2 = extended regex
+  # -e is required: patterns starting with '-' (private key headers) are
+  # otherwise parsed as grep options and the check silently never runs.
+  MATCH=$(printf '%s\n' "$ADDED" | grep -nE -e "$2" | head -3)
+  if [ -n "$MATCH" ]; then
+    if [ "$FOUND" = "0" ]; then
+      echo ""
+      echo "  COMMIT BLOCKED — possible credential in staged changes"
+      echo ""
+    fi
+    echo "  $1"
+    printf '%s\n' "$MATCH" | sed 's/^/      /'
+    echo ""
+    FOUND=1
+  fi
+}
+
+flag "Supabase personal access token (account-scoped)" \
+     'sbp_[a-zA-Z0-9]{40}'
+flag "Supabase service role key assigned a value" \
+     'SUPABASE_SERVICE_ROLE_KEY[[:space:]]*[:=][[:space:]]*["'\'']?ey'
+flag "Bug Reporter application API key" \
+     'br_[A-Za-z0-9_-]{32}'
+flag "AWS access key id" \
+     'AKIA[0-9A-Z]{16}'
+flag "OpenAI API key" \
+     'sk-[A-Za-z0-9]{32,}'
+flag "Resend API key" \
+     're_[A-Za-z0-9]{20,}'
+flag "Private key block" \
+     '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+if [ "$FOUND" = "1" ]; then
+  cat <<'EOF'
+  Remove the credential, then commit again.
+
+  If it is already pushed anywhere, REVOKE AND ROTATE IT — deleting the line
+  does not un-leak it.
+
+  False positive? SKIP_SECRET_SCAN=1 git commit ...
+EOF
+  echo ""
+  exit 1
+fi
+
+exit 0

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { isBugStatus } from '@boobalan_jkkn/shared';
 import { getBugPortalConfig, normalizeReporterEmail } from './config';
 import type { BugPortalConfig } from './config';
 
@@ -113,29 +114,47 @@ export function verifyPortalSignature(
   return timingSafeEqual(a, b);
 }
 
+/** How many of a reporter's bugs we will ever load for one application. */
+const PORTAL_BUG_LIMIT = 200;
+
+export interface ReporterBugQuery {
+  /** Free text, matched against title, description and display_id. */
+  q?: string;
+  /** Exact status, or undefined for all. */
+  status?: string;
+}
+
 /** The reporter's own bugs for one application. Never anyone else's. */
 export async function listReporterBugs(
   applicationId: string,
-  reporterEmail: string
+  reporterEmail: string,
+  query: ReporterBugQuery = {}
 ): Promise<PortalBugSummary[]> {
   const supabase = createAdminClient();
 
-  const { data, error } = await supabase
+  let request = supabase
     .from('bug_reports')
     .select(
       'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata'
     )
     .eq('application_id', applicationId)
-    .eq('reporter_email', reporterEmail)
+    .eq('reporter_email', reporterEmail);
+
+  // Status is a plain equality, so it is safe to push down to the database.
+  if (query.status && isBugStatus(query.status)) {
+    request = request.eq('status', query.status);
+  }
+
+  const { data, error } = await request
     .order('created_at', { ascending: false })
-    .limit(100);
+    .limit(PORTAL_BUG_LIMIT);
 
   if (error) {
     console.error('[portal] Failed to list bugs:', error);
     return [];
   }
 
-  return (data || []).map((b) => ({
+  const bugs: PortalBugSummary[] = (data || []).map((b) => ({
     id: b.id,
     display_id: b.display_id,
     status: b.status,
@@ -146,6 +165,59 @@ export async function listReporterBugs(
     resolved_at: b.resolved_at,
     title: b.metadata?.title || 'Bug report',
   }));
+
+  // Text search runs here rather than in the database, deliberately.
+  //
+  // `title` lives inside the metadata JSONB, so a server-side search would need
+  // a `metadata->>title` term inside a PostgREST logic tree, plus a sanitiser to
+  // keep user input from breaking that tree — a parse failure there is a 500 on
+  // a page real reporters use. A reporter's own bugs for one application are
+  // bounded (200 above; the largest reporter on the platform has 27), so
+  // matching in memory is free, has no injection surface at all, and matches the
+  // fields users actually search: the title they wrote, the description, and the
+  // BUG-123 code they quote back to you.
+  const term = query.q?.trim().toLowerCase();
+  if (!term) return bugs;
+
+  return bugs.filter(
+    (bug) =>
+      bug.title.toLowerCase().includes(term) ||
+      bug.description.toLowerCase().includes(term) ||
+      bug.display_id.toLowerCase().includes(term)
+  );
+}
+
+/**
+ * How many bugs this reporter has in each status.
+ *
+ * Counted across ALL their bugs, never the filtered set — the point is to answer
+ * "has anything moved?" at a glance, which a count that shrinks as you filter
+ * cannot do.
+ */
+export async function countReporterBugsByStatus(
+  applicationId: string,
+  reporterEmail: string
+): Promise<{ total: number; byStatus: Record<string, number> }> {
+  const supabase = createAdminClient();
+
+  const { data, error } = await supabase
+    .from('bug_reports')
+    .select('status')
+    .eq('application_id', applicationId)
+    .eq('reporter_email', reporterEmail)
+    .limit(1000);
+
+  if (error) {
+    console.error('[portal] Failed to count bugs:', error);
+    return { total: 0, byStatus: {} };
+  }
+
+  const byStatus: Record<string, number> = {};
+  for (const row of data || []) {
+    byStatus[row.status] = (byStatus[row.status] || 0) + 1;
+  }
+
+  return { total: (data || []).length, byStatus };
 }
 
 /** One bug plus its timeline and thread — scoped to app AND reporter. */
