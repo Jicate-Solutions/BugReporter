@@ -102,14 +102,14 @@ function AppBugsTable({
 }) {
   // Server-side scoped: only this app's bugs are fetched (the hook injects
   // organization_id; the application_id filter narrows to this app).
-  const { bugs, loading, error, refetch } = useBugReports(organizationId, { application_id: app.id });
+  const { bugs, loading, refreshing, error, refetch } = useBugReports(organizationId, { application_id: app.id });
 
   // Filters are owned here rather than inside the table — see the org bug list
   // for the full reasoning. The short version: showing the skeleton during a
   // refetch unmounted the table and wiped the user's filters.
   const [filters, setFilters] = useBugFilters();
 
-  if (loading && bugs.length === 0) {
+  if (loading) {
     return <TableSkeleton />;
   }
 
@@ -154,7 +154,7 @@ function AppBugsTable({
           onStatusChange={() => refetch()}
           filters={filters}
           onFiltersChange={setFilters}
-          refreshing={loading}
+          refreshing={refreshing}
         />
       )}
     </div>

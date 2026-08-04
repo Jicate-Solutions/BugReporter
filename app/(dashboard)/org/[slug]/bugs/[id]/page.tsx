@@ -2,7 +2,7 @@
 
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -25,7 +25,7 @@ export default function BugDetailPage() {
   const id = params?.id as string;
 
   const { organization } = useOrganizationContext();
-  const { bug, loading, refetch } = useBugReport(id);
+  const { bug, loading, refreshing, refetch } = useBugReport(id);
   const [isUpdating, setIsUpdating] = useState(false);
   const [pendingStatus, setPendingStatus] = useState<string | null>(null);
 
@@ -90,6 +90,9 @@ export default function BugDetailPage() {
           <p className="text-muted-foreground">Bug Report #{bug.id.substring(0, 8)}</p>
         </div>
         <div className="flex items-center gap-3">
+          {refreshing && (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          )}
           <div className="flex flex-col items-end gap-2">
             <label className="text-sm font-medium text-muted-foreground">Status</label>
             <Select

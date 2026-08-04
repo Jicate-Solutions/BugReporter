@@ -29,6 +29,7 @@ export default function BugsPage() {
   const {
     bugs,
     loading,
+    refreshing,
     error,
     refetch: refetchBugs
   } = useBugReports(organization?.id || '');
@@ -49,10 +50,10 @@ export default function BugsPage() {
     toast.success('Data refreshed!', { id: 'refresh-bugs' });
   };
 
-  // Skeleton on the FIRST load only. Showing it during a background refetch
-  // unmounted the table below and wiped every filter, sort and page — which is
-  // what users were reporting as "the page refreshed".
-  if (orgLoading || (loading && bugs.length === 0)) {
+  // `loading` is now first-load-only (see useBugReports); a background refetch
+  // reports through `refreshing` instead. That is what stops a status change
+  // from unmounting the table below and wiping every filter, sort and page.
+  if (orgLoading || loading) {
     return (
       <div className='space-y-8'>
         <div className='space-y-2'>
@@ -184,7 +185,7 @@ export default function BugsPage() {
           onStatusChange={() => { refetchBugs(); refetchStats(); }}
           filters={filters}
           onFiltersChange={setFilters}
-          refreshing={loading}
+          refreshing={refreshing}
         />
       )}
 
