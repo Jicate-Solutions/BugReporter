@@ -1,5 +1,4 @@
 import { notFound } from 'next/navigation';
-import { ExternalLink } from 'lucide-react';
 import {
   resolvePortalRequest,
   listReporterBugs,
@@ -9,6 +8,7 @@ import { PortalShell, PortalNotice } from '../_components/portal-shell';
 import { PortalSearch } from '../_components/portal-search';
 import { PortalBugRow } from '../_components/portal-bug-row';
 import { PortalPagination } from '../_components/portal-pagination';
+import { PortalProgress } from '../_components/portal-progress';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,9 +75,11 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
 
   return (
     <PortalShell
-      title={`${application.name} — your bug reports`}
-      subtitle={reporterEmail}
+      title="Your bug reports"
+      subtitle={`${application.name} · ${reporterEmail}`}
     >
+      <PortalProgress total={counts.total} byStatus={counts.byStatus} />
+
       {counts.total > 0 && (
         <PortalSearch
           identity={{ u: reporterEmail, sig }}
@@ -108,7 +110,7 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
         )
       ) : (
         <>
-          <ul className="space-y-3">
+          <ul className="space-y-2">
             {result.bugs.map((bug) => (
               <li key={bug.id}>
                 <PortalBugRow
@@ -130,10 +132,6 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
         </>
       )}
 
-      <p className="mt-8 flex items-center gap-1 text-xs text-muted-foreground">
-        <ExternalLink className="h-3 w-3" />
-        Reported from {application.name}
-      </p>
     </PortalShell>
   );
 }

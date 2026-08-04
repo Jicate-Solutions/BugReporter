@@ -4,6 +4,13 @@ import { isBugStatus } from '@boobalan_jkkn/shared';
 import { getBugPortalConfig, normalizeReporterEmail } from './config';
 import type { BugPortalConfig } from './config';
 
+export interface PortalAttachment {
+  url: string;
+  filename: string;
+  filesize?: number;
+  filetype?: string;
+}
+
 export interface PortalBugSummary {
   id: string;
   display_id: string;
@@ -14,6 +21,9 @@ export interface PortalBugSummary {
   created_at: string;
   resolved_at: string | null;
   title: string;
+  /** The screenshot the reporter captured when filing. Public storage URL. */
+  screenshot_url: string | null;
+  attachments: PortalAttachment[];
   /** Notes on the thread, excluding internal ones. */
   noteCount: number;
   /** True when the most recent note came from the team, not the reporter. */
@@ -127,6 +137,29 @@ export function verifyPortalSignature(
   return timingSafeEqual(a, b);
 }
 
+/**
+ * The attachments column is untyped JSONB written by SDK versions that have
+ * drifted, so nothing about its shape is guaranteed. Anything without a usable
+ * url is dropped rather than rendered as a broken image.
+ */
+function normalizeAttachments(raw: unknown): PortalAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (a): a is Record<string, unknown> =>
+        !!a && typeof a === 'object' && typeof (a as any).url === 'string'
+    )
+    .map((a) => ({
+      url: String(a.url),
+      filename:
+        typeof a.filename === 'string' && a.filename
+          ? a.filename
+          : String(a.url).split('/').pop() || 'attachment',
+      filesize: typeof a.filesize === 'number' ? a.filesize : undefined,
+      filetype: typeof a.filetype === 'string' ? a.filetype : undefined,
+    }));
+}
+
 /** How many of a reporter's bugs we will ever load for one application. */
 const PORTAL_BUG_LIMIT = 200;
 
@@ -160,7 +193,7 @@ export async function listReporterBugs(
   let request = supabase
     .from('bug_reports')
     .select(
-      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata'
+      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata, screenshot_url, attachments'
     )
     .eq('application_id', applicationId)
     .eq('reporter_email', reporterEmail);
@@ -189,6 +222,8 @@ export async function listReporterBugs(
     created_at: b.created_at,
     resolved_at: b.resolved_at,
     title: b.metadata?.title || 'Bug report',
+    screenshot_url: b.screenshot_url ?? null,
+    attachments: normalizeAttachments(b.attachments),
     noteCount: 0,
     awaitingReporter: false,
   }));
@@ -327,7 +362,7 @@ export async function getReporterBug(
   const { data: bug } = await supabase
     .from('bug_reports')
     .select(
-      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata'
+      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata, screenshot_url, attachments'
     )
     .eq('id', bugId)
     .eq('application_id', applicationId)
@@ -365,6 +400,8 @@ export async function getReporterBug(
       created_at: bug.created_at,
       resolved_at: bug.resolved_at,
       title: bug.metadata?.title || 'Bug report',
+      screenshot_url: bug.screenshot_url ?? null,
+      attachments: normalizeAttachments(bug.attachments),
       // Derived from the thread already loaded here — no extra query.
       noteCount: thread.length,
       awaitingReporter:

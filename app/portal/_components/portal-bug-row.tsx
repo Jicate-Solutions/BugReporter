@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
-import { MessageSquare } from 'lucide-react';
+import { ImageOff, MessageSquare, Paperclip } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { PortalStatusBadge } from './portal-status-badge';
+import { isTerminalBugStatus, isBugStatus } from '@boobalan_jkkn/shared';
 import type { PortalBugSummary } from '@/lib/services/bug-portal/server';
 
 interface PortalBugRowProps {
@@ -9,60 +11,111 @@ interface PortalBugRowProps {
   href: string;
 }
 
+/** Left-edge rail colour per status — the list reads as a column of state. */
+const STATUS_RAIL: Record<string, string> = {
+  new: 'bg-blue-500',
+  seen: 'bg-amber-500',
+  in_progress: 'bg-orange-500',
+  resolved: 'bg-emerald-500',
+  wont_fix: 'bg-gray-400',
+};
+
 /**
- * One bug in the reporter's list.
- *
- * Two things earn their place beyond the title and status. Dates are relative
- * ("3 days ago") because a reporter cares how long something has been sitting,
- * not what the calendar said. And a bug the team has replied to is called out —
- * that is the one row worth opening, and no status badge can express it, since a
- * bug can sit in "New" while the team asks a question on the thread.
+ * Descriptions frequently repeat the title verbatim — of the eleven rows on the
+ * first live page, eight did. Rendering both wastes half the row on nothing, so
+ * a description that adds no information is dropped.
  */
+function addsInformation(title: string, description: string): boolean {
+  const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+  const t = normalize(title);
+  const d = normalize(description);
+  if (!d || d === t) return false;
+  // Also catch "title" vs "title - dropdown" style near-duplicates.
+  return !(d.startsWith(t) && d.length - t.length < 12);
+}
+
 export function PortalBugRow({ bug, href }: PortalBugRowProps) {
-  const age = formatDistanceToNow(new Date(bug.created_at), {
-    addSuffix: true,
-  });
+  const age = formatDistanceToNow(new Date(bug.created_at), { addSuffix: true });
+  const done = isBugStatus(bug.status) && isTerminalBugStatus(bug.status);
+  const showDescription = addsInformation(bug.title, bug.description);
 
   return (
     <Link
       prefetch={false}
       href={href}
-      className="hover:border-foreground/20 hover:bg-muted/40 block rounded-lg border p-4 transition-colors"
+      className={cn(
+        'group relative flex gap-4 overflow-hidden rounded-lg border py-3 pl-5 pr-4 transition-all',
+        'hover:border-foreground/25 hover:shadow-sm',
+        // Finished work recedes so the open backlog dominates the page.
+        done && 'opacity-70 hover:opacity-100'
+      )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
-          <p className="truncate font-medium">{bug.title}</p>
-          <p className="text-muted-foreground line-clamp-2 text-sm">
-            {bug.description}
-          </p>
-        </div>
-        <PortalStatusBadge status={bug.status} />
+      <span
+        aria-hidden="true"
+        className={cn(
+          'absolute inset-y-0 left-0 w-1',
+          STATUS_RAIL[bug.status] ?? 'bg-gray-300'
+        )}
+      />
+
+      {/* The screenshot is the thing a reporter recognises a bug by — far
+          faster than reading a title they typed in a hurry. */}
+      <div className="bg-muted relative hidden h-16 w-24 shrink-0 overflow-hidden rounded border sm:block">
+        {bug.screenshot_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={bug.screenshot_url}
+            alt=""
+            loading="lazy"
+            className="h-full w-full object-cover object-top transition-transform group-hover:scale-105"
+          />
+        ) : (
+          <div className="text-muted-foreground/40 flex h-full items-center justify-center">
+            <ImageOff className="h-4 w-4" />
+          </div>
+        )}
       </div>
 
-      <div className="text-muted-foreground mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span className="font-mono">{bug.display_id}</span>
-        <span aria-hidden="true">·</span>
-        <span>Reported {age}</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <p className="truncate font-medium leading-6">{bug.title}</p>
+          <PortalStatusBadge status={bug.status} />
+        </div>
 
-        {bug.noteCount > 0 && (
-          <>
-            <span aria-hidden="true">·</span>
+        {showDescription && (
+          <p className="text-muted-foreground mt-0.5 line-clamp-1 text-sm">
+            {bug.description}
+          </p>
+        )}
+
+        <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className="font-mono tracking-tight">{bug.display_id}</span>
+          <span aria-hidden="true" className="opacity-40">
+            &middot;
+          </span>
+          <span>{age}</span>
+
+          {bug.attachments.length > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <Paperclip className="h-3 w-3" />
+              {bug.attachments.length}
+            </span>
+          )}
+
+          {bug.noteCount > 0 && (
             <span
-              className={
-                bug.awaitingReporter
-                  ? 'text-foreground inline-flex items-center gap-1 font-medium'
-                  : 'inline-flex items-center gap-1'
-              }
+              className={cn(
+                'inline-flex items-center gap-1',
+                bug.awaitingReporter && 'text-foreground font-medium'
+              )}
             >
               <MessageSquare className="h-3 w-3" />
               {bug.awaitingReporter
-                ? bug.noteCount === 1
-                  ? 'The team replied'
-                  : `The team replied · ${bug.noteCount} notes`
+                ? 'The team replied'
                 : `${bug.noteCount} note${bug.noteCount === 1 ? '' : 's'}`}
             </span>
-          </>
-        )}
+          )}
+        </div>
       </div>
     </Link>
   );

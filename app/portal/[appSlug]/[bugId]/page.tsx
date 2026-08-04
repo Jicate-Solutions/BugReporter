@@ -9,6 +9,7 @@ import { bugStatusLabel } from '@boobalan_jkkn/shared';
 import { PortalStatusBadge } from '../../_components/portal-status-badge';
 import { PortalShell, PortalNotice } from '../../_components/portal-shell';
 import { PortalReplyForm } from '../../_components/portal-reply-form';
+import { PortalEvidence } from '../../_components/portal-evidence';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,6 +69,11 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
             Reported {new Date(bug.created_at).toLocaleString()} on {bug.page_url}
           </p>
         </section>
+
+        <PortalEvidence
+          screenshotUrl={bug.screenshot_url}
+          attachments={bug.attachments}
+        />
 
         {events.length > 0 && (
           <section>
