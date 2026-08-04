@@ -1,14 +1,14 @@
 import { notFound } from 'next/navigation';
-import Link from 'next/link';
-import { Bug, ExternalLink } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import {
   resolvePortalRequest,
   listReporterBugs,
   countReporterBugsByStatus,
 } from '@/lib/services/bug-portal/server';
-import { PortalStatusBadge } from '../_components/portal-status-badge';
 import { PortalShell, PortalNotice } from '../_components/portal-shell';
 import { PortalSearch } from '../_components/portal-search';
+import { PortalBugRow } from '../_components/portal-bug-row';
+import { PortalPagination } from '../_components/portal-pagination';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +19,7 @@ interface PageProps {
     sig?: string;
     q?: string;
     status?: string;
+    page?: string;
   }>;
 }
 
@@ -31,7 +32,7 @@ interface PageProps {
  */
 export default async function PortalPage({ params, searchParams }: PageProps) {
   const { appSlug } = await params;
-  const { u, sig, q = '', status = '' } = await searchParams;
+  const { u, sig, q = '', status = '', page } = await searchParams;
 
   const resolved = await resolvePortalRequest(appSlug, u, sig);
 
@@ -58,12 +59,19 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
 
   const { application, reporterEmail } = resolved;
 
-  const [bugs, counts] = await Promise.all([
-    listReporterBugs(application.id, reporterEmail, { q, status }),
+  const [result, counts] = await Promise.all([
+    listReporterBugs(application.id, reporterEmail, {
+      q,
+      status,
+      page: Number(page) || 1,
+    }),
     countReporterBugsByStatus(application.id, reporterEmail),
   ]);
 
   const isFiltering = Boolean(q || status);
+  const identityQuery = `u=${encodeURIComponent(reporterEmail)}${
+    sig ? `&sig=${encodeURIComponent(sig)}` : ''
+  }`;
 
   return (
     <PortalShell
@@ -80,7 +88,7 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
         />
       )}
 
-      {bugs.length === 0 ? (
+      {result.bugs.length === 0 ? (
         // Two different situations, two different messages. Telling someone who
         // just searched that they have never reported a bug would be wrong.
         isFiltering ? (
@@ -99,36 +107,27 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
           />
         )
       ) : (
-        <ul className="space-y-3">
-          {bugs.map((bug) => (
-            <li key={bug.id}>
-              <Link
-                prefetch={false}
-                href={`/portal/${application.slug}/${bug.id}?u=${encodeURIComponent(
-                  reporterEmail
-                )}${sig ? `&sig=${encodeURIComponent(sig)}` : ''}`}
-                className="block rounded-lg border p-4 transition-colors hover:bg-muted/50"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Bug className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span className="truncate font-medium">{bug.title}</span>
-                    </div>
-                    <p className="line-clamp-2 text-sm text-muted-foreground">
-                      {bug.description}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {bug.display_id} &middot;{' '}
-                      {new Date(bug.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <PortalStatusBadge status={bug.status} />
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="space-y-3">
+            {result.bugs.map((bug) => (
+              <li key={bug.id}>
+                <PortalBugRow
+                  bug={bug}
+                  href={`/portal/${application.slug}/${bug.id}?${identityQuery}`}
+                />
+              </li>
+            ))}
+          </ul>
+
+          <PortalPagination
+            appSlug={application.slug}
+            carry={{ u: reporterEmail, sig, q, status }}
+            page={result.page}
+            totalPages={result.totalPages}
+            total={result.total}
+            pageSize={result.pageSize}
+          />
+        </>
       )}
 
       <p className="mt-8 flex items-center gap-1 text-xs text-muted-foreground">

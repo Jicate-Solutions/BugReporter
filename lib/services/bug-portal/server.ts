@@ -14,6 +14,19 @@ export interface PortalBugSummary {
   created_at: string;
   resolved_at: string | null;
   title: string;
+  /** Notes on the thread, excluding internal ones. */
+  noteCount: number;
+  /** True when the most recent note came from the team, not the reporter. */
+  awaitingReporter: boolean;
+}
+
+export interface PortalBugPage {
+  bugs: PortalBugSummary[];
+  /** Matches after search and status filtering, before paging. */
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 export interface PortalStatusEvent {
@@ -117,11 +130,15 @@ export function verifyPortalSignature(
 /** How many of a reporter's bugs we will ever load for one application. */
 const PORTAL_BUG_LIMIT = 200;
 
+export const PORTAL_PAGE_SIZE = 10;
+
 export interface ReporterBugQuery {
   /** Free text, matched against title, description and display_id. */
   q?: string;
   /** Exact status, or undefined for all. */
   status?: string;
+  /** 1-based page number. */
+  page?: number;
 }
 
 /** The reporter's own bugs for one application. Never anyone else's. */
@@ -129,8 +146,16 @@ export async function listReporterBugs(
   applicationId: string,
   reporterEmail: string,
   query: ReporterBugQuery = {}
-): Promise<PortalBugSummary[]> {
+): Promise<PortalBugPage> {
   const supabase = createAdminClient();
+
+  const emptyPage: PortalBugPage = {
+    bugs: [],
+    total: 0,
+    page: 1,
+    pageSize: PORTAL_PAGE_SIZE,
+    totalPages: 0,
+  };
 
   let request = supabase
     .from('bug_reports')
@@ -151,10 +176,10 @@ export async function listReporterBugs(
 
   if (error) {
     console.error('[portal] Failed to list bugs:', error);
-    return [];
+    return emptyPage;
   }
 
-  const bugs: PortalBugSummary[] = (data || []).map((b) => ({
+  let bugs: PortalBugSummary[] = (data || []).map((b) => ({
     id: b.id,
     display_id: b.display_id,
     status: b.status,
@@ -164,6 +189,8 @@ export async function listReporterBugs(
     created_at: b.created_at,
     resolved_at: b.resolved_at,
     title: b.metadata?.title || 'Bug report',
+    noteCount: 0,
+    awaitingReporter: false,
   }));
 
   // Text search runs here rather than in the database, deliberately.
@@ -177,14 +204,79 @@ export async function listReporterBugs(
   // fields users actually search: the title they wrote, the description, and the
   // BUG-123 code they quote back to you.
   const term = query.q?.trim().toLowerCase();
-  if (!term) return bugs;
+  if (term) {
+    bugs = bugs.filter(
+      (bug) =>
+        bug.title.toLowerCase().includes(term) ||
+        bug.description.toLowerCase().includes(term) ||
+        bug.display_id.toLowerCase().includes(term)
+    );
+  }
 
-  return bugs.filter(
-    (bug) =>
-      bug.title.toLowerCase().includes(term) ||
-      bug.description.toLowerCase().includes(term) ||
-      bug.display_id.toLowerCase().includes(term)
-  );
+  const total = bugs.length;
+  const totalPages = Math.max(1, Math.ceil(total / PORTAL_PAGE_SIZE));
+  // Clamp rather than 404: landing on page 5 of a list that shrank after a
+  // search should show the last page, not an error.
+  const page = Math.min(Math.max(1, query.page ?? 1), totalPages);
+  const start = (page - 1) * PORTAL_PAGE_SIZE;
+  const pageBugs = bugs.slice(start, start + PORTAL_PAGE_SIZE);
+
+  await attachThreadActivity(supabase, pageBugs);
+
+  return {
+    bugs: pageBugs,
+    total,
+    page,
+    pageSize: PORTAL_PAGE_SIZE,
+    totalPages: total === 0 ? 0 : totalPages,
+  };
+}
+
+/**
+ * Annotate the visible page with note counts and who spoke last.
+ *
+ * "Has anyone replied to me?" is the question a reporter opens this page to
+ * answer, and it is not something a status badge can express — a bug can sit in
+ * `new` while the team asks a question on the thread. Only the current page is
+ * annotated, so this stays one small query no matter how many bugs exist.
+ */
+async function attachThreadActivity(
+  supabase: ReturnType<typeof createAdminClient>,
+  bugs: PortalBugSummary[]
+): Promise<void> {
+  if (bugs.length === 0) return;
+
+  const { data, error } = await supabase
+    .from('bug_report_messages')
+    .select('bug_report_id, author_kind, created_at')
+    .in(
+      'bug_report_id',
+      bugs.map((b) => b.id)
+    )
+    .eq('is_internal', false)
+    .eq('is_deleted', false)
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    // Non-fatal: the list is still useful without the reply hint.
+    console.error('[portal] Failed to load thread activity:', error);
+    return;
+  }
+
+  const byBug = new Map<string, { count: number; lastAuthor: string }>();
+  for (const row of data || []) {
+    const entry = byBug.get(row.bug_report_id) ?? { count: 0, lastAuthor: '' };
+    entry.count += 1;
+    entry.lastAuthor = row.author_kind;
+    byBug.set(row.bug_report_id, entry);
+  }
+
+  for (const bug of bugs) {
+    const entry = byBug.get(bug.id);
+    if (!entry) continue;
+    bug.noteCount = entry.count;
+    bug.awaitingReporter = entry.lastAuthor !== 'reporter';
+  }
 }
 
 /**
@@ -260,6 +352,8 @@ export async function getReporterBug(
       .order('created_at', { ascending: true }),
   ]);
 
+  const thread = (messages as PortalMessage[]) || [];
+
   return {
     bug: {
       id: bug.id,
@@ -271,8 +365,13 @@ export async function getReporterBug(
       created_at: bug.created_at,
       resolved_at: bug.resolved_at,
       title: bug.metadata?.title || 'Bug report',
+      // Derived from the thread already loaded here — no extra query.
+      noteCount: thread.length,
+      awaitingReporter:
+        thread.length > 0 &&
+        thread[thread.length - 1].author_kind !== 'reporter',
     },
     events: (events as PortalStatusEvent[]) || [],
-    messages: (messages as PortalMessage[]) || [],
+    messages: thread,
   };
 }
