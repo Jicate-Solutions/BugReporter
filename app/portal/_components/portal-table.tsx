@@ -69,13 +69,15 @@ function Row({ bug, href }: { bug: PortalBugSummary; href: string }) {
           Desktop keeps it in column order, where the vertical alignment does
           that job instead. */}
       <div className="mb-1.5 flex items-center justify-between gap-3 md:hidden">
-        <span className="portal-mono text-[12px] text-[var(--p-muted)]">
+        <span className="portal-mono flex items-center gap-2 text-[12px] text-[var(--p-muted)]">
+          <UnreadMark show={bug.awaitingReporter} />
           {bug.display_id}
         </span>
         <PortalStatusBadge status={bug.status} />
       </div>
 
-      <div className="portal-mono hidden text-[12px] tracking-[-0.01em] text-[var(--p-muted)] md:block">
+      <div className="portal-mono hidden items-center gap-2 text-[12px] tracking-[-0.01em] text-[var(--p-muted)] md:flex">
+        <UnreadMark show={bug.awaitingReporter} />
         {bug.display_id}
       </div>
 
@@ -149,6 +151,35 @@ function Row({ bug, href }: { bug: PortalBugSummary; href: string }) {
         {updated}
       </div>
     </Link>
+  );
+}
+
+/**
+ * One dot: there is something here you have not answered.
+ *
+ * Deliberately a mark rather than a message. The row already carries a note
+ * count and a status; what it could not say is which rows are *waiting on the
+ * reader*, and that is the one thing worth a fixed position at the start of the
+ * line where the eye can run straight down it.
+ *
+ * It clears when the reporter replies, not when they open the report. There is
+ * no read tracking in the schema, so "opened" is not something the server can
+ * know — and of the two, "you still owe them an answer" is the more useful
+ * thing to keep showing.
+ *
+ * The empty span holds the column when there is nothing to mark, so IDs stay
+ * aligned down the list instead of shifting left and right per row.
+ */
+function UnreadMark({ show }: { show: boolean }) {
+  if (!show) return <span aria-hidden="true" className="w-1.5 shrink-0" />;
+
+  return (
+    <span
+      className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#c2410c]"
+      role="img"
+      aria-label="The team replied — waiting on you"
+      title="The team replied — waiting on you"
+    />
   );
 }
 
