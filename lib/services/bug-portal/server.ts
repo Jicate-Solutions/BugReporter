@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { isBugStatus } from '@boobalan_jkkn/shared';
 import { getBugPortalConfig, normalizeReporterEmail } from './config';
+import { deriveArea, deriveEnvironment } from './derive';
 import type { BugPortalConfig } from './config';
 
 export interface PortalAttachment {
@@ -32,6 +33,12 @@ export interface PortalBugSummary {
   lastActivityAt: string;
   /** Times this bug has been pushed back open. 0 for almost every bug. */
   reopenCount: number;
+  /** Part of the app this came from, read off page_url. Null when unreadable. */
+  area: string | null;
+  /** Browser and OS, parsed from the captured user agent. Null when unreadable. */
+  environment: string | null;
+  /** Browser viewport at capture time, e.g. "1366x702". */
+  viewport: string | null;
 }
 
 export interface PortalBugPage {
@@ -171,7 +178,7 @@ function normalizeAttachments(raw: unknown): PortalAttachment[] {
 }
 
 /** How many of a reporter's bugs we will ever load for one application. */
-const PORTAL_BUG_LIMIT = 200;
+export const PORTAL_BUG_LIMIT = 200;
 
 export const PORTAL_PAGE_SIZE = 10;
 
@@ -195,12 +202,20 @@ export interface ReporterBugQuery {
   q?: string;
   /** Exact status, or undefined for all. */
   status?: string;
+  /** Part of the app, as derived by deriveArea(). */
+  area?: string;
   /** Only bugs whose last note came from the team. */
   needsReply?: boolean;
   /** Ordering. Defaults to newest first. */
   sort?: ReporterBugSort;
   /** 1-based page number. */
   page?: number;
+  /**
+   * Rows per page. Defaults to PORTAL_PAGE_SIZE. The CSV export passes a large
+   * value to take everything in one call; the underlying query is still capped
+   * at PORTAL_BUG_LIMIT, so this cannot be used to pull an unbounded set.
+   */
+  pageSize?: number;
 }
 
 /** The reporter's own bugs for one application. Never anyone else's. */
@@ -258,6 +273,10 @@ export async function listReporterBugs(
     awaitingReporter: false,
     lastActivityAt: b.created_at,
     reopenCount: b.reopen_count ?? 0,
+    area: deriveArea(b.page_url),
+    environment: deriveEnvironment(b.metadata?.browser_info),
+    viewport:
+      typeof b.metadata?.viewport === 'string' ? b.metadata.viewport : null,
   }));
 
   // Text search runs here rather than in the database, deliberately.
@@ -276,8 +295,15 @@ export async function listReporterBugs(
       (bug) =>
         bug.title.toLowerCase().includes(term) ||
         bug.description.toLowerCase().includes(term) ||
-        bug.display_id.toLowerCase().includes(term)
+        bug.display_id.toLowerCase().includes(term) ||
+        (bug.area?.toLowerCase().includes(term) ?? false)
     );
+  }
+
+  // Area is derived in application code, so it cannot be pushed down to the
+  // database the way status is.
+  if (query.area) {
+    bugs = bugs.filter((bug) => bug.area === query.area);
   }
 
   // Annotated BEFORE paging, not after.
@@ -298,20 +324,21 @@ export async function listReporterBugs(
 
   bugs = sortReporterBugs(bugs, query.sort ?? 'newest');
 
+  const pageSize = Math.max(1, query.pageSize ?? PORTAL_PAGE_SIZE);
   const total = bugs.length;
-  const totalPages = Math.max(1, Math.ceil(total / PORTAL_PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   // Clamp rather than 404: landing on page 5 of a list that shrank after a
   // search should show the last page, not an error.
   const page = Math.min(Math.max(1, query.page ?? 1), totalPages);
-  const start = (page - 1) * PORTAL_PAGE_SIZE;
-  const pageBugs = bugs.slice(start, start + PORTAL_PAGE_SIZE);
+  const start = (page - 1) * pageSize;
+  const pageBugs = bugs.slice(start, start + pageSize);
 
   return {
     bugs: pageBugs,
     total,
     needsReplyTotal,
     page,
-    pageSize: PORTAL_PAGE_SIZE,
+    pageSize,
     totalPages: total === 0 ? 0 : totalPages,
   };
 }
@@ -424,30 +451,82 @@ async function attachThreadActivity(
  * "has anything moved?" at a glance, which a count that shrinks as you filter
  * cannot do.
  */
+export interface ReporterStats {
+  total: number;
+  byStatus: Record<string, number>;
+  /** Distinct areas across all of this reporter's bugs, for the filter. */
+  areas: string[];
+  /**
+   * Median days from report to close, across this reporter's closed bugs.
+   * Null when nothing has closed yet — a median of one number is not a median,
+   * and "0d" would read as a claim rather than an absence.
+   */
+  medianCloseDays: number | null;
+  closedCount: number;
+}
+
 export async function countReporterBugsByStatus(
   applicationId: string,
   reporterEmail: string
-): Promise<{ total: number; byStatus: Record<string, number> }> {
+): Promise<ReporterStats> {
   const supabase = createAdminClient();
 
   const { data, error } = await supabase
     .from('bug_reports')
-    .select('status')
+    .select('status, page_url, created_at, resolved_at')
     .eq('application_id', applicationId)
     .eq('reporter_email', reporterEmail)
     .limit(1000);
 
   if (error) {
     console.error('[portal] Failed to count bugs:', error);
-    return { total: 0, byStatus: {} };
+    return {
+      total: 0,
+      byStatus: {},
+      areas: [],
+      medianCloseDays: null,
+      closedCount: 0,
+    };
   }
 
+  const rows = data || [];
   const byStatus: Record<string, number> = {};
-  for (const row of data || []) {
+  const areaSet = new Set<string>();
+  const closeDurations: number[] = [];
+
+  for (const row of rows) {
     byStatus[row.status] = (byStatus[row.status] || 0) + 1;
+
+    const area = deriveArea(row.page_url);
+    if (area) areaSet.add(area);
+
+    if (row.resolved_at) {
+      const days =
+        (new Date(row.resolved_at).getTime() -
+          new Date(row.created_at).getTime()) /
+        86_400_000;
+      // Guard against clock skew or backfilled rows producing negative ages.
+      if (days >= 0) closeDurations.push(days);
+    }
   }
 
-  return { total: (data || []).length, byStatus };
+  return {
+    total: rows.length,
+    byStatus,
+    areas: [...areaSet].sort(),
+    medianCloseDays: median(closeDurations),
+    closedCount: closeDurations.length,
+  };
+}
+
+/** Median, not mean: one bug that sat for a month should not move the number. */
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
 }
 
 /** One bug plus its timeline and thread — scoped to app AND reporter. */
@@ -515,6 +594,12 @@ export async function getReporterBug(
           ? thread[thread.length - 1].created_at
           : bug.created_at,
       reopenCount: bug.reopen_count ?? 0,
+      area: deriveArea(bug.page_url),
+      environment: deriveEnvironment(bug.metadata?.browser_info),
+      viewport:
+        typeof bug.metadata?.viewport === 'string'
+          ? bug.metadata.viewport
+          : null,
     },
     events: (events as PortalStatusEvent[]) || [],
     messages: thread,

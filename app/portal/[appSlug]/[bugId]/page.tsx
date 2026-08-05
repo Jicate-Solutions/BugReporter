@@ -1,20 +1,15 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, RotateCcw } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import {
   resolvePortalRequest,
   getReporterBug,
 } from '@/lib/services/bug-portal/server';
-import {
-  bugStatusLabel,
-  isBugStatus,
-  isTerminalBugStatus,
-} from '@boobalan_jkkn/shared';
-import { PortalStatusBadge } from '../../_components/portal-status-badge';
 import { PortalShell, PortalNotice } from '../../_components/portal-shell';
-import { PortalReplyForm } from '../../_components/portal-reply-form';
-import { PortalReopenForm } from '../../_components/portal-reopen-form';
-import { PortalEvidence } from '../../_components/portal-evidence';
+import {
+  PortalDetailHeader,
+  PortalDetailBody,
+} from '../../_components/portal-detail';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +18,13 @@ interface PageProps {
   searchParams: Promise<{ u?: string; sig?: string }>;
 }
 
+/**
+ * One report, as a full page.
+ *
+ * Navigating from the list intercepts this into a drawer, but this route stays
+ * the real destination: a link pasted into a message, a refresh, or a visit with
+ * JavaScript disabled all land here and get the same content in a plain frame.
+ */
 export default async function PortalBugPage({ params, searchParams }: PageProps) {
   const { appSlug, bugId } = await params;
   const { u, sig } = await searchParams;
@@ -34,7 +36,7 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
       <PortalShell title="Bug report">
         <PortalNotice
           title="This link is not valid"
-          body="Open the portal from within the application you reported the bug in."
+          body="Open the portal from inside the application you reported the bug in."
         />
       </PortalShell>
     );
@@ -47,132 +49,38 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
   if (!result) notFound();
 
   const { bug, events, messages } = result;
-  const isClosed = isBugStatus(bug.status) && isTerminalBugStatus(bug.status);
-  const backHref = `/portal/${application.slug}?u=${encodeURIComponent(
-    reporterEmail
-  )}${sig ? `&sig=${encodeURIComponent(sig)}` : ''}`;
+  const identity = `u=${encodeURIComponent(reporterEmail)}${
+    sig ? `&sig=${encodeURIComponent(sig)}` : ''
+  }`;
 
   return (
-    <PortalShell title={bug.title} subtitle={`${bug.display_id} · ${application.name}`}>
+    <PortalShell
+      title={application.name}
+      subtitle={`${bug.display_id} · ${reporterEmail}`}
+    >
       <Link
-        href={backHref}
-        className="mb-6 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        href={`/portal/${application.slug}?${identity}`}
+        className="mb-6 inline-flex items-center gap-1.5 text-[13px] text-[var(--p-muted)] transition-colors hover:text-[var(--p-ink)]"
       >
         <ArrowLeft className="h-4 w-4" />
-        All my bug reports
+        All my reports
       </Link>
 
-      <div className="space-y-8">
-        <section className="rounded-lg border p-4">
-          <div className="mb-3 flex items-center justify-between gap-4">
-            <span className="text-sm font-medium">Current status</span>
-            <div className="flex items-center gap-2">
-              {bug.reopenCount > 0 && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-800">
-                  <RotateCcw className="h-3 w-3" />
-                  Reopened{bug.reopenCount > 1 ? ` ${bug.reopenCount}×` : ''}
-                </span>
-              )}
-              <PortalStatusBadge status={bug.status} />
-            </div>
-          </div>
-          <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-            {bug.description}
-          </p>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Reported {new Date(bug.created_at).toLocaleString()} on {bug.page_url}
-          </p>
+      <div className="rounded-[14px] border border-[var(--p-line)] bg-[var(--p-card)] p-6">
+        <div className="mb-5 border-b border-[var(--p-line-soft)] pb-5">
+          <PortalDetailHeader bug={bug} />
+        </div>
 
-          {/* Only offered on a closed bug: reopening an open one is a no-op the
-              API would refuse, so the control should not be there to click. */}
-          {isClosed && config.allowReporterReopen && (
-            <PortalReopenForm
-              appSlug={application.slug}
-              bugId={bug.id}
-              reporterEmail={reporterEmail}
-              signature={sig}
-            />
-          )}
-        </section>
-
-        <PortalEvidence
-          screenshotUrl={bug.screenshot_url}
-          attachments={bug.attachments}
+        <PortalDetailBody
+          appSlug={application.slug}
+          bug={bug}
+          events={events}
+          messages={messages}
+          reporterEmail={reporterEmail}
+          signature={sig}
+          allowNotes={config.allowReporterNotes}
+          allowReopen={config.allowReporterReopen}
         />
-
-        {events.length > 0 && (
-          <section>
-            <h2 className="mb-3 text-sm font-medium">History</h2>
-            <ol className="space-y-3 border-l pl-4">
-              {events.map((event) => (
-                <li key={event.id} className="relative">
-                  <span className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full bg-border" />
-                  <div className="text-sm">
-                    {event.from_status ? (
-                      <>
-                        {bugStatusLabel(event.from_status)}{' '}
-                        <span className="text-muted-foreground">&rarr;</span>{' '}
-                        <span className="font-medium">
-                          {bugStatusLabel(event.to_status)}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="font-medium">
-                        {bugStatusLabel(event.to_status)}
-                      </span>
-                    )}
-                  </div>
-                  {event.note && (
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {event.note}
-                    </p>
-                  )}
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {new Date(event.created_at).toLocaleString()}
-                  </p>
-                </li>
-              ))}
-            </ol>
-          </section>
-        )}
-
-        <section>
-          <h2 className="mb-3 text-sm font-medium">Notes</h2>
-          {messages.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No notes yet.
-            </p>
-          ) : (
-            <ul className="space-y-3">
-              {messages.map((message) => {
-                const mine = message.author_kind === 'reporter';
-                return (
-                  <li
-                    key={message.id}
-                    className={`rounded-lg border p-3 text-sm ${
-                      mine ? 'bg-muted/40' : ''
-                    }`}
-                  >
-                    <p className="whitespace-pre-wrap">{message.message_text}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {mine ? 'You' : 'Support team'} &middot;{' '}
-                      {new Date(message.created_at).toLocaleString()}
-                    </p>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-
-          {config.allowReporterNotes && (
-            <PortalReplyForm
-              appSlug={application.slug}
-              bugId={bug.id}
-              reporterEmail={reporterEmail}
-              signature={sig}
-            />
-          )}
-        </section>
       </div>
     </PortalShell>
   );

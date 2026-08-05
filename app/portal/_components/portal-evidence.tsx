@@ -1,4 +1,5 @@
 import { Paperclip } from 'lucide-react';
+import { SectionLabel } from './portal-timeline';
 import type { PortalAttachment } from '@/lib/services/bug-portal/server';
 
 interface PortalEvidenceProps {
@@ -16,16 +17,16 @@ function formatSize(bytes?: number): string | null {
 /**
  * What the reporter actually sent.
  *
- * Every bug filed through the widget carries a screenshot, and until now none
- * of it was visible to the person who captured it — they could see a status and
- * a title, but not the picture they took to explain the problem. Showing it back
- * is both the most useful thing on the page and the clearest proof their report
+ * Every bug filed through the widget carries a screenshot, and until recently
+ * none of it was visible to the person who captured it — they could see a status
+ * and a title, but not the picture they took to explain the problem. Showing it
+ * back is both the most useful thing here and the clearest proof their report
  * arrived intact.
  *
  * Images open in a new tab at full size rather than in a lightbox: a bug
  * screenshot is usually a full-page capture that only becomes readable at 1:1,
- * and the browser's own image viewer already zooms and pans better than
- * anything worth building here.
+ * and the browser's own viewer already zooms and pans better than anything worth
+ * building here.
  */
 export function PortalEvidence({
   screenshotUrl,
@@ -40,14 +41,14 @@ export function PortalEvidence({
 
   return (
     <section>
-      <h2 className="mb-3 text-sm font-medium">What you sent</h2>
+      <SectionLabel>What you sent</SectionLabel>
 
       {screenshotUrl && (
         <a
           href={screenshotUrl}
           target="_blank"
           rel="noreferrer"
-          className="hover:border-foreground/25 block overflow-hidden rounded-lg border transition-colors"
+          className="mt-[9px] block overflow-hidden rounded-[10px] border border-[var(--p-line)] transition-colors hover:border-[#c9c9c5]"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -55,31 +56,31 @@ export function PortalEvidence({
             alt="Screenshot captured when this bug was reported"
             className="max-h-[420px] w-full bg-white object-contain object-top"
           />
-          <span className="text-muted-foreground block border-t px-3 py-2 text-xs">
+          <span className="block border-t border-[var(--p-line-soft)] bg-[var(--p-sunken)] px-3 py-2 text-[11.5px] text-[var(--p-muted)]">
             Screenshot · open full size
           </span>
         </a>
       )}
 
       {images.length > 0 && (
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="mt-2.5 grid grid-cols-3 gap-2.5">
           {images.map((a) => (
             <a
               key={a.url}
               href={a.url}
               target="_blank"
               rel="noreferrer"
-              className="hover:border-foreground/25 overflow-hidden rounded-lg border transition-colors"
               title={a.filename}
+              className="overflow-hidden rounded-[9px] border border-[var(--p-line)] transition-colors hover:border-[#c9c9c5]"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={a.url}
                 alt={a.filename}
                 loading="lazy"
-                className="h-28 w-full bg-white object-cover object-top"
+                className="aspect-[4/3] w-full bg-white object-cover object-top"
               />
-              <span className="text-muted-foreground block truncate border-t px-2 py-1.5 text-xs">
+              <span className="portal-mono block truncate border-t border-[var(--p-line-soft)] px-2 py-1.5 text-[10.5px] text-[var(--p-faint)]">
                 {a.filename}
               </span>
             </a>
@@ -88,7 +89,7 @@ export function PortalEvidence({
       )}
 
       {files.length > 0 && (
-        <ul className="mt-3 space-y-1.5">
+        <ul className="mt-2.5 space-y-1.5">
           {files.map((a) => {
             const size = formatSize(a.filesize);
             return (
@@ -97,12 +98,12 @@ export function PortalEvidence({
                   href={a.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="hover:bg-muted/50 flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors"
+                  className="flex items-center gap-2 rounded-lg border border-[var(--p-line-ctrl)] px-3 py-2 text-[13px] transition-colors hover:bg-[var(--p-hover)]"
                 >
-                  <Paperclip className="text-muted-foreground h-3.5 w-3.5 shrink-0" />
+                  <Paperclip className="h-3.5 w-3.5 shrink-0 text-[var(--p-faint)]" />
                   <span className="truncate">{a.filename}</span>
                   {size && (
-                    <span className="text-muted-foreground ml-auto shrink-0 text-xs tabular-nums">
+                    <span className="portal-mono ml-auto shrink-0 text-[11.5px] tabular-nums text-[var(--p-faint)]">
                       {size}
                     </span>
                   )}
