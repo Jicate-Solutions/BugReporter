@@ -5,6 +5,8 @@ type AppSettings = Application['settings'];
 export interface BugPortalConfig {
   enabled: boolean;
   allowReporterNotes: boolean;
+  /** Lets a reporter push a closed bug back open with a reason. */
+  allowReporterReopen: boolean;
   requireSignature: boolean;
   webhookEnabled: boolean;
   webhookSecret: string | null;
@@ -24,9 +26,22 @@ export function getBugPortalConfig(
 ): BugPortalConfig {
   const portal = settings?.bug_portal;
 
+  const allowReporterNotes = portal?.allow_reporter_notes !== false;
+
   return {
     enabled: portal?.enabled === true,
-    allowReporterNotes: portal?.allow_reporter_notes !== false,
+    allowReporterNotes,
+    // Defaults on, like allowReporterNotes: an app that has already opted into
+    // the portal wants the useful version of it, not a second switch to hunt
+    // for. Teams that would rather own the status outright can turn it off.
+    //
+    // Gated on notes because a reopen carries a required written reason that is
+    // posted to the thread. With notes off there is nowhere for that reason to
+    // go, so the reopen would move the status and silently discard the only part
+    // the team needs. Derived here rather than checked at each call site so the
+    // settings UI and the API cannot disagree about it.
+    allowReporterReopen:
+      allowReporterNotes && portal?.allow_reporter_reopen !== false,
     requireSignature: portal?.require_signature === true,
     webhookEnabled: portal?.webhook_enabled === true,
     webhookSecret: portal?.webhook_secret ?? null,

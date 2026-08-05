@@ -51,6 +51,7 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
 
   const [enabled, setEnabled] = useState(initial.enabled);
   const [allowNotes, setAllowNotes] = useState(initial.allowReporterNotes);
+  const [allowReopen, setAllowReopen] = useState(initial.allowReporterReopen);
   const [requireSignature, setRequireSignature] = useState(
     initial.requireSignature
   );
@@ -104,6 +105,7 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
         bug_portal: {
           enabled,
           allow_reporter_notes: allowNotes,
+          allow_reporter_reopen: allowReopen,
           require_signature: requireSignature,
           webhook_enabled: webhookEnabled,
           webhook_secret:
@@ -232,6 +234,15 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
                 onChange={setAllowNotes}
               />
               <ToggleRow
+                id="allow-reopen"
+                label="Let reporters say it's still broken"
+                description="A reporter can push a bug you closed back to Seen, with a required reason. You get an email; the original resolved date is kept. Turn off to own the status outright."
+                checked={allowReopen}
+                onChange={setAllowReopen}
+                disabled={!allowNotes}
+                disabledHint="Needs replies turned on — a reopen carries a written reason."
+              />
+              <ToggleRow
                 id="require-signature"
                 label="Require signed links"
                 description="Reject portal links without a valid HMAC signature. Only turn on once your app mints signed links, or the portal will stop opening."
@@ -315,20 +326,35 @@ function ToggleRow({
   description,
   checked,
   onChange,
+  disabled = false,
+  disabledHint,
 }: {
   id: string;
   label: string;
   description: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
+  disabledHint?: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4">
+    <div
+      className={`flex items-start justify-between gap-4 ${
+        disabled ? 'opacity-60' : ''
+      }`}
+    >
       <div className="space-y-0.5">
         <Label htmlFor={id}>{label}</Label>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <p className="text-xs text-muted-foreground">
+          {disabled && disabledHint ? disabledHint : description}
+        </p>
       </div>
-      <Switch id={id} checked={checked} onCheckedChange={onChange} />
+      <Switch
+        id={id}
+        checked={checked && !disabled}
+        onCheckedChange={onChange}
+        disabled={disabled}
+      />
     </div>
   );
 }

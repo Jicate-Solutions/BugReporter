@@ -13,6 +13,7 @@ import type {
   Attachment
 } from '@boobalan_jkkn/shared';
 import { EmailService } from '@/lib/services/email/email.service';
+import { resolveAppOwnerRecipient } from '@/lib/services/notifications/app-owner';
 
 // OpenAI embedding model
 const EMBEDDING_MODEL = 'text-embedding-3-small';
@@ -338,38 +339,19 @@ export const POST = withApiKeyAuth(
         try {
           console.log('[BugReportAPI] Starting developer notification for bug:', bugReport.id);
 
-          // Fetch the app creator (the person who registered this application)
-          const { data: appData, error: appError } = await supabase
-            .from('applications')
-            .select('created_by_user_id')
-            .eq('id', context.application.id)
-            .single();
-
-          if (appError) {
-            console.error('[BugReportAPI] Failed to fetch app data:', appError.message);
-            return;
-          }
-          if (!appData?.created_by_user_id) {
-            console.warn('[BugReportAPI] App has no created_by_user_id, skipping developer notification');
-            return;
-          }
-          console.log('[BugReportAPI] App creator found:', appData.created_by_user_id);
-
-          // Fetch app creator's email directly from auth.users via admin API
-          const { data: { user: creatorUser }, error: userError } = await supabase.auth.admin.getUserById(
-            appData.created_by_user_id
+          // Shared with the reporter-reopen notification, so "who owns this
+          // application" is decided in exactly one place.
+          const owner = await resolveAppOwnerRecipient(
+            supabase,
+            context.application.id
           );
 
-          if (userError || !creatorUser?.email) {
-            console.error('[BugReportAPI] Failed to fetch app creator auth user:', userError?.message);
+          if (!owner) {
+            console.warn('[BugReportAPI] No app owner to notify, skipping developer notification');
             return;
           }
-          const developerName =
-            creatorUser.user_metadata?.full_name ||
-            creatorUser.user_metadata?.name ||
-            undefined;
 
-          console.log('[BugReportAPI] Sending developer notification to:', creatorUser.email);
+          console.log('[BugReportAPI] Sending developer notification to:', owner.email);
 
           const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
           const dashboardUrl = context.organization.slug
@@ -377,8 +359,8 @@ export const POST = withApiKeyAuth(
             : `${appUrl}/bugs/${bugReport.id}`;
 
           await EmailService.sendNewBugNotification({
-            developerEmail: creatorUser.email,
-            developerName,
+            developerEmail: owner.email,
+            developerName: owner.name,
             bugId: bugReport.id,
             bugTitle: body.title,
             bugDescription: body.description,
