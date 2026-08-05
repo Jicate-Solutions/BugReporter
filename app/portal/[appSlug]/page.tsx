@@ -3,6 +3,7 @@ import {
   resolvePortalRequest,
   listReporterBugs,
   countReporterBugsByStatus,
+  isReporterBugSort,
 } from '@/lib/services/bug-portal/server';
 import { PortalShell, PortalNotice } from '../_components/portal-shell';
 import { PortalSearch } from '../_components/portal-search';
@@ -19,6 +20,8 @@ interface PageProps {
     sig?: string;
     q?: string;
     status?: string;
+    reply?: string;
+    sort?: string;
     page?: string;
   }>;
 }
@@ -32,7 +35,20 @@ interface PageProps {
  */
 export default async function PortalPage({ params, searchParams }: PageProps) {
   const { appSlug } = await params;
-  const { u, sig, q = '', status = '', page } = await searchParams;
+  const {
+    u,
+    sig,
+    q = '',
+    status = '',
+    reply,
+    sort: rawSort,
+    page,
+  } = await searchParams;
+
+  const needsReply = reply === '1';
+  // Anything unrecognised falls back to the default rather than 400ing — a
+  // hand-edited URL should degrade, not break a page reporters rely on.
+  const sort = isReporterBugSort(rawSort) ? rawSort : 'newest';
 
   const resolved = await resolvePortalRequest(appSlug, u, sig);
 
@@ -63,12 +79,14 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
     listReporterBugs(application.id, reporterEmail, {
       q,
       status,
+      needsReply,
+      sort,
       page: Number(page) || 1,
     }),
     countReporterBugsByStatus(application.id, reporterEmail),
   ]);
 
-  const isFiltering = Boolean(q || status);
+  const isFiltering = Boolean(q || status || needsReply);
   const identityQuery = `u=${encodeURIComponent(reporterEmail)}${
     sig ? `&sig=${encodeURIComponent(sig)}` : ''
   }`;
@@ -86,6 +104,9 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
           appSlug={application.slug}
           q={q}
           status={status}
+          needsReply={needsReply}
+          sort={sort}
+          needsReplyTotal={result.needsReplyTotal}
           counts={counts}
         />
       )}
@@ -99,7 +120,9 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
             body={
               q
                 ? `Nothing matches "${q}". Try a different word, or part of a report ID like BUG-123.`
-                : 'No reports have that status yet.'
+                : needsReply
+                  ? 'Nothing is waiting on you — the team has your last word on every report here.'
+                  : 'No reports have that status yet.'
             }
           />
         ) : (
@@ -123,7 +146,14 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
 
           <PortalPagination
             appSlug={application.slug}
-            carry={{ u: reporterEmail, sig, q, status }}
+            carry={{
+              u: reporterEmail,
+              sig,
+              q,
+              status,
+              reply: needsReply ? '1' : undefined,
+              sort: sort !== 'newest' ? sort : undefined,
+            }}
             page={result.page}
             totalPages={result.totalPages}
             total={result.total}

@@ -19,6 +19,14 @@ export interface StatusChangedPayload {
   from_status: BugReportStatus | null;
   to_status: BugReportStatus;
   note: string | null;
+  /**
+   * True when this change moved the bug out of a terminal status. A subscribing
+   * app usually wants to treat "reopened" differently from any other transition
+   * — it means someone disagreed with a fix, not that work progressed.
+   */
+  reopened: boolean;
+  /** Who made the change. `reporter` means the person who filed the bug. */
+  actor_kind: 'dashboard_user' | 'api_key' | 'system' | 'reporter';
   occurred_at: string;
 }
 

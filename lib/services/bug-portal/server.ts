@@ -28,12 +28,22 @@ export interface PortalBugSummary {
   noteCount: number;
   /** True when the most recent note came from the team, not the reporter. */
   awaitingReporter: boolean;
+  /** Most recent note, or the report date when the thread is empty. */
+  lastActivityAt: string;
+  /** Times this bug has been pushed back open. 0 for almost every bug. */
+  reopenCount: number;
 }
 
 export interface PortalBugPage {
   bugs: PortalBugSummary[];
   /** Matches after search and status filtering, before paging. */
   total: number;
+  /**
+   * How many of those matches are waiting on the reporter. Scoped to the current
+   * search/status filter rather than the whole account, so the number beside the
+   * toggle always describes the list actually on screen.
+   */
+  needsReplyTotal: number;
   page: number;
   pageSize: number;
   totalPages: number;
@@ -165,11 +175,30 @@ const PORTAL_BUG_LIMIT = 200;
 
 export const PORTAL_PAGE_SIZE = 10;
 
+export type ReporterBugSort = 'newest' | 'oldest' | 'activity';
+
+export const REPORTER_BUG_SORTS: readonly ReporterBugSort[] = [
+  'newest',
+  'oldest',
+  'activity',
+] as const;
+
+export function isReporterBugSort(value: unknown): value is ReporterBugSort {
+  return (
+    typeof value === 'string' &&
+    (REPORTER_BUG_SORTS as readonly string[]).includes(value)
+  );
+}
+
 export interface ReporterBugQuery {
   /** Free text, matched against title, description and display_id. */
   q?: string;
   /** Exact status, or undefined for all. */
   status?: string;
+  /** Only bugs whose last note came from the team. */
+  needsReply?: boolean;
+  /** Ordering. Defaults to newest first. */
+  sort?: ReporterBugSort;
   /** 1-based page number. */
   page?: number;
 }
@@ -185,6 +214,7 @@ export async function listReporterBugs(
   const emptyPage: PortalBugPage = {
     bugs: [],
     total: 0,
+    needsReplyTotal: 0,
     page: 1,
     pageSize: PORTAL_PAGE_SIZE,
     totalPages: 0,
@@ -193,7 +223,7 @@ export async function listReporterBugs(
   let request = supabase
     .from('bug_reports')
     .select(
-      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata, screenshot_url, attachments'
+      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata, screenshot_url, attachments, reopen_count'
     )
     .eq('application_id', applicationId)
     .eq('reporter_email', reporterEmail);
@@ -226,6 +256,8 @@ export async function listReporterBugs(
     attachments: normalizeAttachments(b.attachments),
     noteCount: 0,
     awaitingReporter: false,
+    lastActivityAt: b.created_at,
+    reopenCount: b.reopen_count ?? 0,
   }));
 
   // Text search runs here rather than in the database, deliberately.
@@ -248,6 +280,24 @@ export async function listReporterBugs(
     );
   }
 
+  // Annotated BEFORE paging, not after.
+  //
+  // This used to run on the visible page only, which was cheaper but made
+  // `awaitingReporter` unusable as a filter — you cannot filter a set on a field
+  // that only exists for the ten rows you already chose. The set is bounded at
+  // PORTAL_BUG_LIMIT, so this stays one query regardless.
+  await attachThreadActivity(supabase, bugs);
+
+  // Counted before the filter is applied, so the toggle keeps showing how many
+  // there are once you have switched it on.
+  const needsReplyTotal = bugs.filter((bug) => bug.awaitingReporter).length;
+
+  if (query.needsReply) {
+    bugs = bugs.filter((bug) => bug.awaitingReporter);
+  }
+
+  bugs = sortReporterBugs(bugs, query.sort ?? 'newest');
+
   const total = bugs.length;
   const totalPages = Math.max(1, Math.ceil(total / PORTAL_PAGE_SIZE));
   // Clamp rather than 404: landing on page 5 of a list that shrank after a
@@ -256,11 +306,10 @@ export async function listReporterBugs(
   const start = (page - 1) * PORTAL_PAGE_SIZE;
   const pageBugs = bugs.slice(start, start + PORTAL_PAGE_SIZE);
 
-  await attachThreadActivity(supabase, pageBugs);
-
   return {
     bugs: pageBugs,
     total,
+    needsReplyTotal,
     page,
     pageSize: PORTAL_PAGE_SIZE,
     totalPages: total === 0 ? 0 : totalPages,
@@ -268,12 +317,43 @@ export async function listReporterBugs(
 }
 
 /**
- * Annotate the visible page with note counts and who spoke last.
+ * Order the list.
+ *
+ * `activity` is the interesting one: it surfaces threads that have moved
+ * recently, which is rarely the same as what was filed recently — a bug from
+ * July that the team replied to yesterday is the one the reporter wants to see.
+ * Sorted on a copy so the caller's array is not mutated underneath it.
+ */
+function sortReporterBugs(
+  bugs: PortalBugSummary[],
+  sort: ReporterBugSort
+): PortalBugSummary[] {
+  const byTime = (value: string) => new Date(value).getTime();
+
+  return [...bugs].sort((a, b) => {
+    switch (sort) {
+      case 'oldest':
+        return byTime(a.created_at) - byTime(b.created_at);
+      case 'activity':
+        return byTime(b.lastActivityAt) - byTime(a.lastActivityAt);
+      case 'newest':
+      default:
+        return byTime(b.created_at) - byTime(a.created_at);
+    }
+  });
+}
+
+/**
+ * Annotate bugs with note counts, who spoke last, and when.
  *
  * "Has anyone replied to me?" is the question a reporter opens this page to
  * answer, and it is not something a status badge can express — a bug can sit in
- * `new` while the team asks a question on the thread. Only the current page is
- * annotated, so this stays one small query no matter how many bugs exist.
+ * `new` while the team asks a question on the thread.
+ *
+ * Runs over the whole matched set rather than just the visible page, because
+ * `awaitingReporter` is a filter and a sort key, and neither works on a field
+ * that only exists for the ten rows already chosen. Bounded by
+ * PORTAL_BUG_LIMIT and chunked below, so it stays a handful of small queries.
  */
 async function attachThreadActivity(
   supabase: ReturnType<typeof createAdminClient>,
@@ -281,28 +361,48 @@ async function attachThreadActivity(
 ): Promise<void> {
   if (bugs.length === 0) return;
 
-  const { data, error } = await supabase
-    .from('bug_report_messages')
-    .select('bug_report_id, author_kind, created_at')
-    .in(
-      'bug_report_id',
-      bugs.map((b) => b.id)
-    )
-    .eq('is_internal', false)
-    .eq('is_deleted', false)
-    .order('created_at', { ascending: true });
+  // Chunked because supabase-js serialises `.in()` into the query string. At the
+  // 200-bug limit a single call would put ~7.4 KB of UUIDs in the URL, close
+  // enough to the usual 8 KB proxy header limit to start returning 414s — and it
+  // would only start failing for whichever reporter happened to cross the line.
+  const CHUNK = 50;
+  const rows: { bug_report_id: string; author_kind: string; created_at: string }[] =
+    [];
 
-  if (error) {
-    // Non-fatal: the list is still useful without the reply hint.
-    console.error('[portal] Failed to load thread activity:', error);
-    return;
+  for (let i = 0; i < bugs.length; i += CHUNK) {
+    const ids = bugs.slice(i, i + CHUNK).map((b) => b.id);
+    const { data, error } = await supabase
+      .from('bug_report_messages')
+      .select('bug_report_id, author_kind, created_at')
+      .in('bug_report_id', ids)
+      .eq('is_internal', false)
+      .eq('is_deleted', false)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      // Non-fatal: the list is still useful without the reply hint.
+      console.error('[portal] Failed to load thread activity:', error);
+      return;
+    }
+    rows.push(...(data || []));
   }
 
-  const byBug = new Map<string, { count: number; lastAuthor: string }>();
+  const data = rows;
+
+  const byBug = new Map<
+    string,
+    { count: number; lastAuthor: string; lastAt: string }
+  >();
+  // Rows arrive oldest-first, so the last write per bug wins and is the newest.
   for (const row of data || []) {
-    const entry = byBug.get(row.bug_report_id) ?? { count: 0, lastAuthor: '' };
+    const entry = byBug.get(row.bug_report_id) ?? {
+      count: 0,
+      lastAuthor: '',
+      lastAt: '',
+    };
     entry.count += 1;
     entry.lastAuthor = row.author_kind;
+    entry.lastAt = row.created_at;
     byBug.set(row.bug_report_id, entry);
   }
 
@@ -311,6 +411,9 @@ async function attachThreadActivity(
     if (!entry) continue;
     bug.noteCount = entry.count;
     bug.awaitingReporter = entry.lastAuthor !== 'reporter';
+    // Falls back to created_at, already set at construction, when the thread is
+    // empty — so `activity` sort has a usable value for every bug.
+    bug.lastActivityAt = entry.lastAt || bug.lastActivityAt;
   }
 }
 
@@ -362,7 +465,7 @@ export async function getReporterBug(
   const { data: bug } = await supabase
     .from('bug_reports')
     .select(
-      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata, screenshot_url, attachments'
+      'id, display_id, status, category, description, page_url, created_at, resolved_at, metadata, screenshot_url, attachments, reopen_count'
     )
     .eq('id', bugId)
     .eq('application_id', applicationId)
@@ -407,6 +510,11 @@ export async function getReporterBug(
       awaitingReporter:
         thread.length > 0 &&
         thread[thread.length - 1].author_kind !== 'reporter',
+      lastActivityAt:
+        thread.length > 0
+          ? thread[thread.length - 1].created_at
+          : bug.created_at,
+      reopenCount: bug.reopen_count ?? 0,
     },
     events: (events as PortalStatusEvent[]) || [],
     messages: thread,

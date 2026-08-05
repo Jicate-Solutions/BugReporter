@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
-import { ImageOff, MessageSquare, Paperclip } from 'lucide-react';
+import { ImageOff, MessageSquare, Paperclip, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { PortalStatusBadge } from './portal-status-badge';
 import { isTerminalBugStatus, isBugStatus } from '@boobalan_jkkn/shared';
@@ -94,6 +94,16 @@ export function PortalBugRow({ bug, href }: PortalBugRowProps) {
             &middot;
           </span>
           <span>{age}</span>
+
+          {/* A reopened bug that looks identical to a fresh one is the failure
+              mode worth designing against — it is the reporter's disagreement,
+              and it should not disappear into the list. */}
+          {bug.reopenCount > 0 && (
+            <span className="inline-flex items-center gap-1 font-medium text-amber-700">
+              <RotateCcw className="h-3 w-3" />
+              Reopened{bug.reopenCount > 1 ? ` ${bug.reopenCount}×` : ''}
+            </span>
+          )}
 
           {bug.attachments.length > 0 && (
             <span className="inline-flex items-center gap-1">

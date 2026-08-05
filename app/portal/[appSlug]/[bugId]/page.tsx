@@ -1,14 +1,19 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, RotateCcw } from 'lucide-react';
 import {
   resolvePortalRequest,
   getReporterBug,
 } from '@/lib/services/bug-portal/server';
-import { bugStatusLabel } from '@boobalan_jkkn/shared';
+import {
+  bugStatusLabel,
+  isBugStatus,
+  isTerminalBugStatus,
+} from '@boobalan_jkkn/shared';
 import { PortalStatusBadge } from '../../_components/portal-status-badge';
 import { PortalShell, PortalNotice } from '../../_components/portal-shell';
 import { PortalReplyForm } from '../../_components/portal-reply-form';
+import { PortalReopenForm } from '../../_components/portal-reopen-form';
 import { PortalEvidence } from '../../_components/portal-evidence';
 
 export const dynamic = 'force-dynamic';
@@ -42,6 +47,7 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
   if (!result) notFound();
 
   const { bug, events, messages } = result;
+  const isClosed = isBugStatus(bug.status) && isTerminalBugStatus(bug.status);
   const backHref = `/portal/${application.slug}?u=${encodeURIComponent(
     reporterEmail
   )}${sig ? `&sig=${encodeURIComponent(sig)}` : ''}`;
@@ -60,7 +66,15 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
         <section className="rounded-lg border p-4">
           <div className="mb-3 flex items-center justify-between gap-4">
             <span className="text-sm font-medium">Current status</span>
-            <PortalStatusBadge status={bug.status} />
+            <div className="flex items-center gap-2">
+              {bug.reopenCount > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-800">
+                  <RotateCcw className="h-3 w-3" />
+                  Reopened{bug.reopenCount > 1 ? ` ${bug.reopenCount}×` : ''}
+                </span>
+              )}
+              <PortalStatusBadge status={bug.status} />
+            </div>
           </div>
           <p className="whitespace-pre-wrap text-sm text-muted-foreground">
             {bug.description}
@@ -68,6 +82,17 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
           <p className="mt-3 text-xs text-muted-foreground">
             Reported {new Date(bug.created_at).toLocaleString()} on {bug.page_url}
           </p>
+
+          {/* Only offered on a closed bug: reopening an open one is a no-op the
+              API would refuse, so the control should not be there to click. */}
+          {isClosed && config.allowReporterReopen && (
+            <PortalReopenForm
+              appSlug={application.slug}
+              bugId={bug.id}
+              reporterEmail={reporterEmail}
+              signature={sig}
+            />
+          )}
         </section>
 
         <PortalEvidence
