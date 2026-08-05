@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Cygwin/Git-Bash crash dumps — produced when a shell is killed mid-command,
+# never useful, and easy to sweep into a commit by accident.
+*.stackdump
