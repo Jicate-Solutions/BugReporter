@@ -19,7 +19,12 @@
       "Bash(ls:*)",
       "mcp__supabase__list_tables",
       "Bash(netstat -ano)",
-      "mcp__next-devtools__nextjs_docs"
+      "mcp__next-devtools__nextjs_docs",
+      "Bash(gh pr create --base main --head feat/portal-unread-mark --title 'feat\\(portal\\): mark the reports waiting on the reporter' --body ' *)",
+      "Bash(tar -xzf boobalan_jkkn-bug-reporter-sdk-1.3.2.tgz)",
+      "Bash(gh repo *)",
+      "Bash(grep -n 'data-radix-portal\\\\|querySelector\\(\"body\"\\)\\\\|setTimeout\\(resolve, 800\\)\\\\|foreignObjectRendering' __TRACKED_VAR__/index.mjs)",
+      "Bash(tar -xzf html2canvas-1.4.1.tgz)"
     ]
   },
   "enableAllProjectMcpServers": true,

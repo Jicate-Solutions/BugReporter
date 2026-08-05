@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  body { margin:0; background:#fbfbfa; -webkit-font-smoothing:antialiased; }
+  a { color:#1a1c1f; text-decoration:underline; text-underline-offset:2px; }
+  a:hover { color:#5a5f68; }
+  ::selection { background:#e4e7ff; }
+  @keyframes slideIn { from { transform:translateX(24px); opacity:0 } to { transform:none; opacity:1 } }
+  @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
+</style>
+</helmet>
+
+<div style="min-height:100vh; background:#fbfbfa; font-family:'Public Sans', system-ui, sans-serif; color:#1a1c1f;">
+
+  <div style="position:sticky; top:0; z-index:20; background:rgba(251,251,250,0.88); backdrop-filter:blur(12px); border-bottom:1px solid #ececea;">
+    <div style="max-width:1240px; margin:0 auto; padding:18px 32px; display:flex; align-items:center; gap:20px;">
+      <div style="display:flex; flex-direction:column; gap:2px; margin-right:auto;">
+        <div style="font-family:'Manrope',sans-serif; font-weight:800; font-size:19px; letter-spacing:-0.02em;">Raagam-Export</div>
+        <div style="font-size:12.5px; color:#8b8f96;">Bug reports · sroja@jkkn.ac.in</div>
+      </div>
+      <button onClick="{{ exportList }}" style="height:36px; padding:0 14px; border:1px solid #e2e2df; border-radius:9px; background:#fff; font:500 13.5px 'Public Sans',sans-serif; color:#3a3d43; cursor:pointer;" style-hover="border-color:#c9c9c5; background:#f7f7f5;">Export</button>
+    </div>
+  </div>
+
+  <div style="max-width:1240px; margin:0 auto; padding:28px 32px 80px;">
+
+    <sc-if value="{{ showStats }}" hint-placeholder-val="{{ true }}">
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:24px;">
+        <div style="background:#fff; border:1px solid #ececea; border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:11.5px; letter-spacing:0.06em; text-transform:uppercase; color:#8b8f96; font-weight:600;">Open</div>
+          <div style="font-family:'Manrope',sans-serif; font-weight:700; font-size:28px; letter-spacing:-0.03em;">{{ countOpen }}</div>
+          <div style="font-size:12px; color:#8b8f96;">{{ openNote }}</div>
+        </div>
+        <div style="background:#fff; border:1px solid #ececea; border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:11.5px; letter-spacing:0.06em; text-transform:uppercase; color:#8b8f96; font-weight:600;">In progress</div>
+          <div style="font-family:'Manrope',sans-serif; font-weight:700; font-size:28px; letter-spacing:-0.03em;">{{ countProgress }}</div>
+          <div style="font-size:12px; color:#8b8f96;">being worked on now</div>
+        </div>
+        <div style="background:#fff; border:1px solid #ececea; border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:11.5px; letter-spacing:0.06em; text-transform:uppercase; color:#8b8f96; font-weight:600;">Resolved</div>
+          <div style="font-family:'Manrope',sans-serif; font-weight:700; font-size:28px; letter-spacing:-0.03em;">{{ countResolved }}</div>
+          <div style="font-size:12px; color:#8b8f96;">last 30 days</div>
+        </div>
+        <div style="background:#fff; border:1px solid #ececea; border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:11.5px; letter-spacing:0.06em; text-transform:uppercase; color:#8b8f96; font-weight:600;">Median close</div>
+          <div style="font-family:'Manrope',sans-serif; font-weight:700; font-size:28px; letter-spacing:-0.03em;">6d</div>
+          <div style="font-size:12px; color:#8b8f96;">from report to fix</div>
+        </div>
+      </div>
+    </sc-if>
+
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+      <div style="position:relative; flex:1; min-width:260px;">
+        <span style="position:absolute; left:13px; top:50%; transform:translateY(-50%); width:11px; height:11px; border:1.5px solid #9a9ea5; border-radius:50%;"></span>
+        <input value="{{ query }}" onChange="{{ onSearch }}" placeholder="Search by title, ID, or module…" style="width:100%; box-sizing:border-box; height:40px; padding:0 14px 0 34px; border:1px solid #e2e2df; border-radius:10px; background:#fff; font:400 14px 'Public Sans',sans-serif; color:#1a1c1f; outline:none;" style-focus="border-color:#b8bcc4; box-shadow:0 0 0 3px rgba(26,28,31,0.05);">
+      </div>
+      <select value="{{ severity }}" onChange="{{ onSeverity }}" style="height:40px; padding:0 12px; border:1px solid #e2e2df; border-radius:10px; background:#fff; font:500 13.5px 'Public Sans',sans-serif; color:#3a3d43; cursor:pointer; outline:none;">
+        <option value="all">All severities</option>
+        <option value="Blocker">Blocker</option>
+        <option value="Major">Major</option>
+        <option value="Minor">Minor</option>
+      </select>
+      <select value="{{ moduleFilter }}" onChange="{{ onModule }}" style="height:40px; padding:0 12px; border:1px solid #e2e2df; border-radius:10px; background:#fff; font:500 13.5px 'Public Sans',sans-serif; color:#3a3d43; cursor:pointer; outline:none;">
+        <option value="all">All modules</option>
+        <option value="Categories">Categories</option>
+        <option value="Fabric">Fabric</option>
+        <option value="Forms">Forms</option>
+        <option value="Materials">Materials</option>
+        <option value="Navigation">Navigation</option>
+      </select>
+      <select value="{{ sort }}" onChange="{{ onSort }}" style="height:40px; padding:0 12px; border:1px solid #e2e2df; border-radius:10px; background:#fff; font:500 13.5px 'Public Sans',sans-serif; color:#3a3d43; cursor:pointer; outline:none;">
+        <option value="recent">Newest first</option>
+        <option value="oldest">Oldest first</option>
+        <option value="severity">Severity</option>
+        <option value="activity">Most activity</option>
+      </select>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:18px;">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="6">
+        <button onClick="{{ t.onClick }}" style="display:flex; align-items:center; gap:7px; height:32px; padding:0 13px; border-radius:999px; border:1px solid {{ t.border }}; background:{{ t.bg }}; color:{{ t.fg }}; font:500 13px 'Public Sans',sans-serif; cursor:pointer;">
+          {{ t.label }}
+          <span style="font-variant-numeric:tabular-nums; opacity:0.6; font-size:12px;">{{ t.count }}</span>
+        </button>
+      </sc-for>
+    </div>
+
+    <div style="background:#fff; border:1px solid #ececea; border-radius:14px; overflow:hidden;">
+      <div style="display:grid; grid-template-columns:96px 1fr 132px 108px 128px 96px; gap:16px; padding:11px 20px; border-bottom:1px solid #f0f0ee; background:#fcfcfb; font-size:11.5px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600;">
+        <div>ID</div>
+        <div>Issue</div>
+        <div>Module</div>
+        <div>Severity</div>
+        <div>Status</div>
+        <div style="text-align:right;">Updated</div>
+      </div>
+
+      <sc-for list="{{ rows }}" as="b" hint-placeholder-count="8">
+        <div onClick="{{ b.onOpen }}" style="display:grid; grid-template-columns:96px 1fr 132px 108px 128px 96px; gap:16px; align-items:center; padding:14px 20px; border-bottom:1px solid #f4f4f2; cursor:pointer;" style-hover="background:#fafaf9;">
+          <div style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8b8f96; letter-spacing:-0.01em;">{{ b.id }}</div>
+          <div style="display:flex; flex-direction:column; gap:3px; min-width:0;">
+            <div style="display:flex; align-items:center; gap:9px;">
+              <span style="font-weight:600; font-size:14.5px; letter-spacing:-0.01em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ b.title }}</span>
+              <sc-if value="{{ b.hasThread }}" hint-placeholder-val="{{ false }}">
+                <span style="display:flex; align-items:center; gap:4px; font-size:11.5px; color:#8b8f96; font-family:'IBM Plex Mono',monospace;">
+                  <span style="display:block; width:9px; height:8px; border:1.5px solid #b4b8bf; border-radius:2px;"></span>
+                  {{ b.comments }}
+                </span>
+              </sc-if>
+              <sc-if value="{{ b.hasShots }}" hint-placeholder-val="{{ false }}">
+                <span style="display:block; width:9px; height:9px; border:1.5px solid #b4b8bf; border-radius:50%;"></span>
+              </sc-if>
+            </div>
+            <div style="font-size:13px; color:#8b8f96; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ b.desc }}</div>
+          </div>
+          <div style="font-size:12.5px; color:#5a5f68;">{{ b.module }}</div>
+          <div style="display:flex; align-items:center; gap:7px; font-size:12.5px; color:#3a3d43;">
+            <span style="display:block; width:7px; height:7px; border-radius:50%; background:{{ b.sevColor }};"></span>
+            {{ b.severity }}
+          </div>
+          <div>
+            <span style="display:inline-block; padding:3px 9px; border-radius:6px; font-size:12px; font-weight:600; background:{{ b.statusBg }}; color:{{ b.statusFg }};">{{ b.status }}</span>
+          </div>
+          <div style="text-align:right; font-size:12.5px; color:#9a9ea5; font-variant-numeric:tabular-nums;">{{ b.updated }}</div>
+        </div>
+      </sc-for>
+
+      <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:56px 20px; text-align:center; color:#9a9ea5; font-size:14px;">No reports match these filters.</div>
+      </sc-if>
+
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:13px 20px; background:#fcfcfb;">
+        <div style="font-size:12.5px; color:#8b8f96;">{{ rangeLabel }}</div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button onClick="{{ prevPage }}" style="width:30px; height:30px; border:1px solid #e2e2df; border-radius:8px; background:#fff; color:#5a5f68; cursor:pointer; font-size:13px;" style-hover="background:#f4f4f2;">‹</button>
+          <div style="font-size:12.5px; color:#8b8f96; font-variant-numeric:tabular-nums; min-width:34px; text-align:center;">{{ pageLabel }}</div>
+          <button onClick="{{ nextPage }}" style="width:30px; height:30px; border:1px solid #e2e2df; border-radius:8px; background:#fff; color:#5a5f68; cursor:pointer; font-size:13px;" style-hover="background:#f4f4f2;">›</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:22px; font-size:12.5px; color:#9a9ea5;">Reported from Raagam-Export · <a href="#">open the app</a></div>
+  </div>
+
+  <sc-if value="{{ hasSelection }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeDetail }}" style="position:fixed; inset:0; z-index:40; background:rgba(20,22,25,0.28); animation:fadeIn 140ms ease-out;"></div>
+  </sc-if>
+
+  <sc-if value="{{ hasSelection }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed; top:0; right:0; bottom:0; width:600px; max-width:94vw; z-index:41; background:#fff; border-left:1px solid #ececea; box-shadow:-24px 0 60px rgba(20,22,25,0.10); display:flex; flex-direction:column; animation:slideIn 180ms cubic-bezier(0.2,0.8,0.2,1); font-family:'Public Sans',sans-serif;">
+
+      <div style="display:flex; align-items:flex-start; gap:14px; padding:22px 26px 18px; border-bottom:1px solid #f0f0ee;">
+        <div style="flex:1; display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8b8f96;">{{ sel.id }}</span>
+            <span style="display:inline-block; padding:3px 9px; border-radius:6px; font-size:12px; font-weight:600; background:{{ sel.statusBg }}; color:{{ sel.statusFg }};">{{ sel.status }}</span>
+            <span style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:#5a5f68;">
+              <span style="display:block; width:7px; height:7px; border-radius:50%; background:{{ sel.sevColor }};"></span>
+              {{ sel.severity }}
+            </span>
+          </div>
+          <h2 style="margin:0; font-family:'Manrope',sans-serif; font-weight:700; font-size:21px; letter-spacing:-0.025em; line-height:1.25; text-wrap:pretty;">{{ sel.title }}</h2>
+        </div>
+        <button onClick="{{ closeDetail }}" style="width:30px; height:30px; border:1px solid #e2e2df; border-radius:8px; background:#fff; color:#5a5f68; cursor:pointer; font-size:15px; line-height:1;" style-hover="background:#f4f4f2;">×</button>
+      </div>
+
+      <div style="flex:1; overflow-y:auto; padding:22px 26px 26px;">
+
+        <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:1px; background:#f0f0ee; border:1px solid #f0f0ee; border-radius:10px; overflow:hidden; margin-bottom:24px;">
+          <div style="background:#fff; padding:12px 14px; display:flex; flex-direction:column; gap:4px;">
+            <div style="font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600;">Module</div>
+            <div style="font-size:13.5px;">{{ sel.module }}</div>
+          </div>
+          <div style="background:#fff; padding:12px 14px; display:flex; flex-direction:column; gap:4px;">
+            <div style="font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600;">Version</div>
+            <div style="font-size:13.5px; font-family:'IBM Plex Mono',monospace;">{{ sel.version }}</div>
+          </div>
+          <div style="background:#fff; padding:12px 14px; display:flex; flex-direction:column; gap:4px;">
+            <div style="font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600;">Environment</div>
+            <div style="font-size:13.5px;">{{ sel.env }}</div>
+          </div>
+          <div style="background:#fff; padding:12px 14px; display:flex; flex-direction:column; gap:4px;">
+            <div style="font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600;">Reported</div>
+            <div style="font-size:13.5px;">{{ sel.reported }}</div>
+          </div>
+        </div>
+
+        <div style="font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600; margin-bottom:9px;">Description</div>
+        <p style="margin:0 0 24px; font-size:14.5px; line-height:1.6; color:#3a3d43; text-wrap:pretty;">{{ sel.body }}</p>
+
+        <div style="font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600; margin-bottom:9px;">Attachments</div>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:26px;">
+          <div style="aspect-ratio:4/3; border:1px dashed #dcdcd8; border-radius:9px; background:repeating-linear-gradient(45deg,#fafaf9,#fafaf9 6px,#f4f4f2 6px,#f4f4f2 12px); display:flex; align-items:center; justify-content:center; font:400 10.5px 'IBM Plex Mono',monospace; color:#a8acb3;">screenshot 1</div>
+          <div style="aspect-ratio:4/3; border:1px dashed #dcdcd8; border-radius:9px; background:repeating-linear-gradient(45deg,#fafaf9,#fafaf9 6px,#f4f4f2 6px,#f4f4f2 12px); display:flex; align-items:center; justify-content:center; font:400 10.5px 'IBM Plex Mono',monospace; color:#a8acb3;">screenshot 2</div>
+          <div style="aspect-ratio:4/3; border:1px dashed #dcdcd8; border-radius:9px; display:flex; align-items:center; justify-content:center; font:400 10.5px 'IBM Plex Mono',monospace; color:#a8acb3; cursor:pointer;" style-hover="border-color:#b8bcc4; color:#5a5f68;">+ add</div>
+        </div>
+
+        <div style="font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9a9ea5; font-weight:600; margin-bottom:14px;">Activity</div>
+        <sc-for list="{{ sel.activity }}" as="a" hint-placeholder-count="3">
+          <div style="display:grid; grid-template-columns:26px 1fr; gap:12px; padding-bottom:18px;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:5px;">
+              <div style="width:26px; height:26px; border-radius:50%; background:#f2f2f0; border:1px solid #ececea; display:flex; align-items:center; justify-content:center; font:600 11px 'Public Sans',sans-serif; color:#5a5f68;">{{ a.initials }}</div>
+              <div style="flex:1; width:1px; background:#f0f0ee;"></div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:5px; padding-top:3px;">
+              <div style="display:flex; align-items:baseline; gap:8px;">
+                <span style="font-size:13.5px; font-weight:600;">{{ a.who }}</span>
+                <span style="font-size:12px; color:#9a9ea5;">{{ a.when }}</span>
+              </div>
+              <div style="font-size:13.5px; line-height:1.55; color:#3a3d43; text-wrap:pretty;">{{ a.text }}</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="border-top:1px solid #f0f0ee; padding:14px 26px 18px; background:#fcfcfb;">
+        <textarea value="{{ draft }}" onChange="{{ onDraft }}" placeholder="Add a comment or more detail…" style="width:100%; box-sizing:border-box; min-height:62px; resize:vertical; padding:11px 13px; border:1px solid #e2e2df; border-radius:10px; background:#fff; font:400 13.5px 'Public Sans',sans-serif; color:#1a1c1f; outline:none;" style-focus="border-color:#b8bcc4; box-shadow:0 0 0 3px rgba(26,28,31,0.05);"></textarea>
+        <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+          <button style="height:32px; padding:0 12px; border:1px solid #e2e2df; border-radius:8px; background:#fff; font:500 13px 'Public Sans',sans-serif; color:#5a5f68; cursor:pointer;" style-hover="background:#f4f4f2;">Attach file</button>
+          <div style="margin-left:auto; display:flex; gap:8px;">
+            <button onClick="{{ reopen }}" style="height:32px; padding:0 13px; border:1px solid #e2e2df; border-radius:8px; background:#fff; font:500 13px 'Public Sans',sans-serif; color:#5a5f68; cursor:pointer;" style-hover="background:#f4f4f2;">{{ reopenLabel }}</button>
+            <button onClick="{{ postComment }}" style="height:32px; padding:0 15px; border:none; border-radius:8px; background:#17181b; font:600 13px 'Public Sans',sans-serif; color:#fff; cursor:pointer;" style-hover="background:#000;">Comment</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ toast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed; left:50%; bottom:28px; transform:translateX(-50%); z-index:60; background:#17181b; color:#fff; padding:11px 18px; border-radius:10px; font:500 13.5px 'Public Sans',sans-serif; box-shadow:0 12px 30px rgba(20,22,25,0.25);">{{ toast }}</div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showStats&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Layout&quot;}}">
+const SEV = { Blocker: 'oklch(0.62 0.19 25)', Major: 'oklch(0.72 0.16 65)', Minor: 'oklch(0.72 0.09 240)' };
+const SEV_RANK = { Blocker: 0, Major: 1, Minor: 2 };
+const STATUS = {
+  'New':         { bg: '#eef2ff', fg: '#3b46a8' },
+  'Triaged':     { bg: '#f3f0ff', fg: '#5b46a8' },
+  'In progress': { bg: '#fff4e5', fg: '#8a5a12' },
+  'Resolved':    { bg: '#e9f7ee', fg: '#1f6b3d' },
+  "Won't fix":   { bg: '#f2f2f0', fg: '#6b6f76' }
+};
+
+const TAB_DEFS = [['all','All'],['New','New'],['Triaged','Triaged'],['In progress','In progress'],['Resolved','Resolved'],["Won't fix","Won't fix"]];
+
+const DATA = [
+  { id: 'BUG-601', title: 'Sidebar menu', desc: 'Main module click only expands submenu, page never loads', body: 'The sidebar navigation is currently behaving only as a submenu/accordion. When I click a main module, it only expands the submodules inside the sidebar, but the corresponding module page is not loaded in the content area. Expected: clicking a main module should route to that module\u2019s landing page and expand its submenu.', module: 'Navigation', severity: 'Blocker', status: 'Resolved', updated: '5d ago', reported: '5 days ago', version: '2.4.1', env: 'Chrome 138 / Windows', comments: 4, shots: 2,
+    activity: [ { initials: 'SR', who: 'You', when: '5 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'DK', who: 'Dinesh K.', when: '4 days ago', text: 'Reproduced on staging. Router guard was swallowing the parent route.' }, { initials: 'DK', who: 'Dinesh K.', when: '2 days ago', text: 'Fixed in 2.4.2 \u2014 parent modules now route and expand.' } ] },
+  { id: 'BUG-559', title: 'capital letter is in fields', desc: 'Input fields force uppercase on entry', body: 'Text fields are capitalising every character as it is typed. Expected sentence case, or whatever the user typed.', module: 'Forms', severity: 'Minor', status: 'Resolved', updated: '12d ago', reported: '12 days ago', version: '2.3.9', env: 'Chrome 138 / Windows', comments: 1, shots: 1,
+    activity: [ { initials: 'SR', who: 'You', when: '12 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'AM', who: 'Anitha M.', when: '9 days ago', text: 'Removed the text-transform on shared input styles.' } ] },
+  { id: 'BUG-547', title: 'show the error while typing count name', desc: 'Validation error appears mid-typing in count name', body: 'The validation error is thrown on every keystroke instead of on blur, so the field looks broken while typing.', module: 'Forms', severity: 'Minor', status: 'Resolved', updated: '14d ago', reported: '14 days ago', version: '2.3.9', env: 'Edge 138 / Windows', comments: 2, shots: 0,
+    activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'AM', who: 'Anitha M.', when: '11 days ago', text: 'Moved validation to blur.' } ] },
+  { id: 'BUG-546', title: 'namefield merge both short name and name', desc: 'Short name and name should be one field', body: 'Users type the same value twice. Merge short name and name into one field with an auto-derived short name.', module: 'Forms', severity: 'Major', status: 'In progress', updated: '2d ago', reported: '14 days ago', version: '2.4.0', env: 'Chrome 138 / Windows', comments: 3, shots: 1,
+    activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'PV', who: 'Praveen V.', when: '6 days ago', text: 'Needs a migration for existing rows \u2014 scheduling with 2.5.' }, { initials: 'PV', who: 'Praveen V.', when: '2 days ago', text: 'Migration written, UI change in review.' } ] },
+  { id: 'BUG-545', title: 'item class in category', desc: 'Item class should be a dropdown, not free text', body: 'Item class in the category form is a free text field. It should be a dropdown sourced from the item class master.', module: 'Categories', severity: 'Major', status: 'Triaged', updated: '3d ago', reported: '14 days ago', version: '2.4.0', env: 'Chrome 138 / Windows', comments: 1, shots: 1,
+    activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'DK', who: 'Dinesh K.', when: '3 days ago', text: 'Confirmed. Queued behind the masters refactor.' } ] },
+  { id: 'BUG-544', title: 'code fields', desc: 'Needs to be auto generated', body: 'Code fields are entered by hand and collide across users. They should be auto-generated on save.', module: 'Forms', severity: 'Major', status: 'Triaged', updated: '4d ago', reported: '14 days ago', version: '2.4.0', env: 'Chrome 138 / Windows', comments: 2, shots: 0,
+    activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'DK', who: 'Dinesh K.', when: '4 days ago', text: 'Agreed \u2014 sequence per entity type.' } ] },
+  { id: 'BUG-543', title: 'Delete option', desc: 'In attribute child add delete option', body: 'There is no way to remove an attribute child row once added. Add a delete action per row.', module: 'Materials', severity: 'Minor', status: 'New', updated: '14d ago', reported: '14 days ago', version: '2.4.0', env: 'Chrome 138 / Windows', comments: 0, shots: 0, activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' } ] },
+  { id: 'BUG-542', title: 'yarn table missing', desc: 'Yarn table is missing in material child', body: 'The yarn table does not render inside the material child view. It appears on the parent only.', module: 'Materials', severity: 'Blocker', status: 'In progress', updated: '1d ago', reported: '14 days ago', version: '2.4.1', env: 'Chrome 138 / Windows', comments: 5, shots: 3,
+    activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'PV', who: 'Praveen V.', when: '8 days ago', text: 'Child view is querying the wrong relation.' }, { initials: 'PV', who: 'Praveen V.', when: '1 day ago', text: 'Fix in QA, expect it in 2.4.2.' } ] },
+  { id: 'BUG-541', title: 'shortname - autogenerated value', desc: 'Short name should populate from name', body: 'Short name should be derived from the name field instead of typed manually.', module: 'Forms', severity: 'Minor', status: 'New', updated: '14d ago', reported: '14 days ago', version: '2.4.0', env: 'Chrome 138 / Windows', comments: 0, shots: 0, activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' } ] },
+  { id: 'BUG-540', title: 'Fabric type - curd function', desc: 'Remove curd function from fabric type fields', body: 'In fabric type fields the CRUD controls are exposed to all roles. They need to be removed for standard users.', module: 'Fabric', severity: 'Major', status: 'New', updated: '14d ago', reported: '14 days ago', version: '2.4.0', env: 'Chrome 138 / Windows', comments: 1, shots: 0, activity: [ { initials: 'SR', who: 'You', when: '14 days ago', text: 'Reported from Raagam-Export.' } ] },
+  { id: 'BUG-538', title: 'Duplicate rows on save', desc: 'Saving twice creates two identical material rows', body: 'A double click on Save creates two records. The button should disable while the request is in flight.', module: 'Materials', severity: 'Blocker', status: 'New', updated: '16d ago', reported: '16 days ago', version: '2.3.9', env: 'Chrome 138 / Windows', comments: 2, shots: 1, activity: [ { initials: 'SR', who: 'You', when: '16 days ago', text: 'Reported from Raagam-Export.' } ] },
+  { id: 'BUG-535', title: 'Export ignores active filter', desc: 'CSV export returns all rows regardless of filters', body: 'When a filter is applied and Export is clicked, the CSV contains the unfiltered set.', module: 'Categories', severity: 'Minor', status: "Won't fix", updated: '19d ago', reported: '19 days ago', version: '2.3.8', env: 'Firefox 129 / Windows', comments: 1, shots: 0, activity: [ { initials: 'SR', who: 'You', when: '19 days ago', text: 'Reported from Raagam-Export.' }, { initials: 'DK', who: 'Dinesh K.', when: '15 days ago', text: 'Export is intentionally full-set for audit. Documenting instead.' } ] }
+];
+
+const PER_PAGE = 8;
+const ORDER = DATA.map(b => b.id);
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { query: '', status: 'all', severity: 'all', module: 'all', sort: 'recent', page: 0, selected: null, draft: '', toast: '', data: DATA };
+    this._openH = {};
+    this._tabH = {};
+    this.h = {
+      onSearch: e => this.set({ query: e.target.value }),
+      onSeverity: e => this.set({ severity: e.target.value }),
+      onModule: e => this.set({ module: e.target.value }),
+      onSort: e => this.set({ sort: e.target.value }),
+      onDraft: e => this.setState({ draft: e.target.value }),
+      closeDetail: () => this.setState({ selected: null }),
+      prevPage: () => this.setState(s => ({ page: Math.max(0, s.page - 1) })),
+      nextPage: () => this.setState(s => ({ page: s.page + 1 })),
+      exportList: () => this.flash('Exported ' + this.filtered().length + ' reports to CSV'),
+      reopen: () => this.reopen(),
+      postComment: () => this.postComment()
+    };
+  }
+
+  set(patch) { this.setState(Object.assign({ page: 0 }, patch)); }
+
+  flash(msg) {
+    this.setState({ toast: msg });
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this.setState({ toast: '' }), 2200);
+  }
+
+  componentWillUnmount() { clearTimeout(this._t); }
+
+  openHandler(id) {
+    if (!this._openH[id]) this._openH[id] = () => this.setState({ selected: id, draft: '' });
+    return this._openH[id];
+  }
+
+  tabHandler(value) {
+    if (!this._tabH[value]) this._tabH[value] = () => this.set({ status: value });
+    return this._tabH[value];
+  }
+
+  current() { return this.state.selected ? this.state.data.find(b => b.id === this.state.selected) : null; }
+
+  reopen() {
+    const raw = this.current();
+    if (!raw) return;
+    if (raw.status !== 'Resolved') { this.flash('Marked as duplicate'); return; }
+    this.setState(s => ({ data: s.data.map(b => b.id === raw.id ? Object.assign({}, b, { status: 'New', updated: 'just now' }) : b) }));
+    this.flash(raw.id + ' reopened');
+  }
+
+  postComment() {
+    const raw = this.current();
+    const text = this.state.draft.trim();
+    if (!raw || !text) return;
+    this.setState(s => ({
+      draft: '',
+      data: s.data.map(b => b.id === raw.id ? Object.assign({}, b, { comments: b.comments + 1, updated: 'just now', activity: b.activity.concat([{ initials: 'SR', who: 'You', when: 'just now', text: text }]) }) : b)
+    }));
+  }
+
+  decorate(b) {
+    const st = STATUS[b.status] || STATUS['New'];
+    return Object.assign({}, b, { statusBg: st.bg, statusFg: st.fg, sevColor: SEV[b.severity], hasThread: b.comments > 0, hasShots: b.shots > 0, onOpen: this.openHandler(b.id) });
+  }
+
+  filtered() {
+    const s = this.state;
+    const q = s.query.trim().toLowerCase();
+    let out = s.data.filter(b => {
+      if (s.status !== 'all' && b.status !== s.status) return false;
+      if (s.severity !== 'all' && b.severity !== s.severity) return false;
+      if (s.module !== 'all' && b.module !== s.module) return false;
+      if (q && (b.title + ' ' + b.id + ' ' + b.module + ' ' + b.desc).toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    });
+    if (s.sort === 'oldest') out = out.slice().reverse();
+    else if (s.sort === 'severity') out = out.slice().sort((a, b) => (SEV_RANK[a.severity] - SEV_RANK[b.severity]) || (ORDER.indexOf(a.id) - ORDER.indexOf(b.id)));
+    else if (s.sort === 'activity') out = out.slice().sort((a, b) => b.comments - a.comments);
+    return out;
+  }
+
+  renderVals() {
+    const s = this.state;
+    const all = s.data;
+    const count = st => all.filter(b => b.status === st).length;
+    const list = this.filtered();
+    const pages = Math.max(1, Math.ceil(list.length / PER_PAGE));
+    const page = Math.min(s.page, pages - 1);
+    const slice = list.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
+    const raw = this.current();
+
+    return Object.assign({}, this.h, {
+      showStats: this.props.showStats ?? true,
+      countOpen: all.filter(b => b.status === 'New' || b.status === 'Triaged').length,
+      openNote: count('New') + ' awaiting triage',
+      countProgress: count('In progress'),
+      countResolved: count('Resolved'),
+      query: s.query,
+      severity: s.severity,
+      moduleFilter: s.module,
+      sort: s.sort,
+      tabs: TAB_DEFS.map(d => {
+        const on = s.status === d[0];
+        return { label: d[1], count: d[0] === 'all' ? all.length : count(d[0]), bg: on ? '#17181b' : '#fff', fg: on ? '#fff' : '#3a3d43', border: on ? '#17181b' : '#e2e2df', onClick: this.tabHandler(d[0]) };
+      }),
+      rows: slice.map(b => this.decorate(b)),
+      isEmpty: list.length === 0,
+      rangeLabel: list.length ? ((page * PER_PAGE + 1) + '\u2013' + Math.min(list.length, page * PER_PAGE + PER_PAGE) + ' of ' + list.length) : '0 reports',
+      pageLabel: (page + 1) + ' / ' + pages,
+      hasSelection: !!raw,
+      sel: raw ? this.decorate(raw) : { activity: [] },
+      draft: s.draft,
+      reopenLabel: raw && raw.status === 'Resolved' ? 'Reopen' : 'Mark duplicate',
+      toast: s.toast
+    });
+  }
+}
+</script>
+</body>
+</html>
