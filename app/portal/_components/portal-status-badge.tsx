@@ -21,6 +21,21 @@ const CHIP: Record<BugReportStatus, { bg: string; fg: string }> = {
   wont_fix: { bg: '#f2f2f0', fg: '#6b6f76' },
 };
 
+const UNKNOWN_CHIP = { bg: '#f2f2f0', fg: '#6b6f76' };
+
+/**
+ * The chip colours for a status, for anything that needs to look like a badge
+ * without being one.
+ *
+ * PortalStatusControl renders the same chip as a button, and it has to be
+ * indistinguishable from this at rest — a reporter should not be able to tell
+ * which of their reports is editable by looking at two different-coloured
+ * chips.
+ */
+export function portalStatusChip(status: string): { bg: string; fg: string } {
+  return isBugStatus(status) ? CHIP[status] : UNKNOWN_CHIP;
+}
+
 export function PortalStatusBadge({
   status,
   className = '',
@@ -28,9 +43,7 @@ export function PortalStatusBadge({
   status: string;
   className?: string;
 }) {
-  const chip = isBugStatus(status)
-    ? CHIP[status]
-    : { bg: '#f2f2f0', fg: '#6b6f76' };
+  const chip = portalStatusChip(status);
   const label = isBugStatus(status) ? BUG_STATUS_LABELS[status] : status;
 
   return (

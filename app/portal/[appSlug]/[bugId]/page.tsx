@@ -68,7 +68,14 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
 
       <div className="rounded-[14px] border border-[var(--p-line)] bg-[var(--p-card)] p-6">
         <div className="mb-5 border-b border-[var(--p-line-soft)] pb-5">
-          <PortalDetailHeader bug={bug} />
+          <PortalDetailHeader
+            appSlug={application.slug}
+            bug={bug}
+            reporterEmail={reporterEmail}
+            signature={sig}
+            canSetStatus={config.allowReporterStatus}
+            canReopen={config.allowReporterReopen}
+          />
         </div>
 
         <PortalDetailBody

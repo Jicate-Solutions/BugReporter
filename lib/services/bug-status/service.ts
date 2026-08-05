@@ -9,6 +9,7 @@ import { enqueueWebhook } from '@/lib/webhooks/events';
 import {
   isBugStatus,
   isTerminalBugStatus,
+  isReopenTransition,
   isValidStatusTransition,
   bugStatusLabel,
   type BugReportStatus,
@@ -138,8 +139,7 @@ export async function applyStatusChange(
   // display value only; bug_status_events is the authoritative trail, and a
   // reopen requires the bug to be terminal, so the team must act between any two
   // of them. Not worth an RPC to serialise.
-  const isReopen =
-    isTerminalBugStatus(fromStatus) && !isTerminalBugStatus(toStatus);
+  const isReopen = isReopenTransition(fromStatus, toStatus);
   if (isReopen) {
     updatePayload.reopened_at = occurredAt;
     updatePayload.reopen_count = (bug.reopen_count ?? 0) + 1;
@@ -251,23 +251,48 @@ export async function applyStatusChange(
   // who made the change, that emails them about their own click and tells the
   // team nothing — so a reopen would land in an empty room. Reporter-driven
   // changes go to the app owner instead.
+  //
+  // Which email they get keys on the EVENT, not the actor. When a reporter could
+  // only ever reopen, those were the same question and this branch answered both
+  // at once. They are not the same question now that a reporter can set any
+  // status: sending the reopen template for a reporter marking their own bug
+  // resolved would tell the owner someone disagrees with a fix, which is the
+  // precise inverse of what happened.
   if (actor.kind === 'reporter') {
-    notifyAppOwnerOfReopen({
-      supabase,
-      applicationId: bug.application_id,
-      bugId: bug.id,
-      displayId: bug.display_id,
-      bugTitle,
-      reason: trimmedNote,
-      reporterEmail: actor.email,
-      appName: application?.name || 'App',
-      orgName: organization?.name || 'Organization',
-      orgSlug: organization?.slug,
-      pageUrl: bug.page_url || '',
-      reopenCount: (updatedBug?.reopen_count as number) ?? 1,
-      newStatus: toStatus,
-    }).catch((err) =>
-      console.error('[bug-status] Reopen email failed:', err)
+    const notify = isReopen
+      ? notifyAppOwnerOfReopen({
+          supabase,
+          applicationId: bug.application_id,
+          bugId: bug.id,
+          displayId: bug.display_id,
+          bugTitle,
+          reason: trimmedNote,
+          reporterEmail: actor.email,
+          appName: application?.name || 'App',
+          orgName: organization?.name || 'Organization',
+          orgSlug: organization?.slug,
+          pageUrl: bug.page_url || '',
+          reopenCount: (updatedBug?.reopen_count as number) ?? 1,
+          newStatus: toStatus,
+        })
+      : notifyAppOwnerOfReporterStatusChange({
+          supabase,
+          applicationId: bug.application_id,
+          bugId: bug.id,
+          displayId: bug.display_id,
+          bugTitle,
+          fromStatus,
+          toStatus,
+          note: trimmedNote,
+          reporterEmail: actor.email,
+          appName: application?.name || 'App',
+          orgName: organization?.name || 'Organization',
+          orgSlug: organization?.slug,
+          pageUrl: bug.page_url || '',
+        });
+
+    notify.catch((err) =>
+      console.error('[bug-status] Reporter status email failed:', err)
     );
   } else if (reporterEmail) {
     EmailService.sendStatusUpdateNotification({
@@ -325,12 +350,8 @@ async function notifyAppOwnerOfReopen(input: {
     return;
   }
 
-  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') || '';
-  const dashboardUrl = input.orgSlug
-    ? `${base}/org/${input.orgSlug}/bugs/${input.bugId}`
-    : `${base}/bugs/${input.bugId}`;
-
   await EmailService.sendBugReopenedNotification({
+    dashboardUrl: buildDashboardUrl(input.orgSlug, input.bugId),
     developerEmail: owner.email,
     developerName: owner.name,
     bugId: input.bugId,
@@ -341,10 +362,70 @@ async function notifyAppOwnerOfReopen(input: {
     appName: input.appName,
     orgName: input.orgName,
     pageUrl: input.pageUrl,
-    dashboardUrl,
     reopenCount: input.reopenCount,
     newStatus: input.newStatus,
   });
+}
+
+/**
+ * The same, for a reporter status change that is not a reopen.
+ *
+ * Split from notifyAppOwnerOfReopen rather than branching inside it because the
+ * two send genuinely different emails — see the comment on
+ * sendReporterStatusChangeNotification. The plumbing either side of the send is
+ * identical on purpose: same owner resolution, same early return, same
+ * fire-and-forget contract with the caller.
+ */
+async function notifyAppOwnerOfReporterStatusChange(input: {
+  supabase: ReturnType<typeof createAdminClient>;
+  applicationId: string;
+  bugId: string;
+  displayId: string;
+  bugTitle: string;
+  fromStatus: string;
+  toStatus: string;
+  note: string | null;
+  reporterEmail: string;
+  appName: string;
+  orgName: string;
+  orgSlug?: string;
+  pageUrl: string;
+}): Promise<void> {
+  const owner = await resolveAppOwnerRecipient(
+    input.supabase,
+    input.applicationId
+  );
+  if (!owner) {
+    console.warn(
+      `[bug-status] No app owner to notify about reporter status change on ${input.displayId}`
+    );
+    return;
+  }
+
+  await EmailService.sendReporterStatusChangeNotification({
+    dashboardUrl: buildDashboardUrl(input.orgSlug, input.bugId),
+    developerEmail: owner.email,
+    developerName: owner.name,
+    bugId: input.bugId,
+    displayId: input.displayId,
+    bugTitle: input.bugTitle,
+    fromStatus: input.fromStatus,
+    toStatus: input.toStatus,
+    // Passed through as-is. Unlike a reopen there is no "No reason given."
+    // fallback — the note is optional here, and the template omits the block
+    // entirely rather than narrating the absence.
+    note: input.note,
+    reporterEmail: input.reporterEmail,
+    appName: input.appName,
+    orgName: input.orgName,
+    pageUrl: input.pageUrl,
+  });
+}
+
+/** Deep link into the dashboard's view of a bug, for the team's own emails. */
+function buildDashboardUrl(orgSlug: string | undefined, bugId: string): string {
+  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') || '';
+  return orgSlug ? `${base}/org/${orgSlug}/bugs/${bugId}` : `${base}/bugs/${bugId}`;
 }
 
 /**

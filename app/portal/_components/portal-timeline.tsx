@@ -53,12 +53,19 @@ export function PortalTimeline({
   ];
 
   for (const event of events) {
+    // Attribution follows the actor, not the surface. A status event used to be
+    // hard-coded to the team, which was already a lie for a reopen — the
+    // reporter's own "it's still broken" came back to them as "The team moved
+    // from Resolved to Seen". Now that a reporter can set any status it would be
+    // the routine case.
+    const mine = event.actor_kind === 'reporter';
+
     entries.push({
       key: `event-${event.id}`,
       at: event.created_at,
-      who: 'The team',
-      initials: '··',
-      mine: false,
+      who: mine ? 'You' : 'The team',
+      initials: mine ? initialsFor(reporterEmail) : '··',
+      mine,
       body: (
         <span>
           {event.from_status ? (

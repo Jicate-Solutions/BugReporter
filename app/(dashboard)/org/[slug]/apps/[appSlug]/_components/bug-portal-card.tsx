@@ -52,6 +52,7 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
   const [enabled, setEnabled] = useState(initial.enabled);
   const [allowNotes, setAllowNotes] = useState(initial.allowReporterNotes);
   const [allowReopen, setAllowReopen] = useState(initial.allowReporterReopen);
+  const [allowStatus, setAllowStatus] = useState(initial.allowReporterStatus);
   const [requireSignature, setRequireSignature] = useState(
     initial.requireSignature
   );
@@ -106,6 +107,7 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
           enabled,
           allow_reporter_notes: allowNotes,
           allow_reporter_reopen: allowReopen,
+          allow_reporter_status: allowStatus,
           require_signature: requireSignature,
           webhook_enabled: webhookEnabled,
           webhook_secret:
@@ -241,6 +243,15 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
                 onChange={setAllowReopen}
                 disabled={!allowNotes}
                 disabledHint="Needs replies turned on — a reopen carries a written reason."
+              />
+              <ToggleRow
+                id="allow-status"
+                label="Let reporters set the status"
+                description="Reporters can move their own reports to any status, including Resolved and Won't Fix. Off by default — this lets someone close a report your team has not fixed, and their close date counts towards your typical fix time."
+                checked={allowStatus}
+                onChange={setAllowStatus}
+                disabled={!allowNotes}
+                disabledHint="Needs replies turned on — a status change carries a note."
               />
               <ToggleRow
                 id="require-signature"

@@ -7,6 +7,8 @@ export interface BugPortalConfig {
   allowReporterNotes: boolean;
   /** Lets a reporter push a closed bug back open with a reason. */
   allowReporterReopen: boolean;
+  /** Lets a reporter move their own report to any status, not just reopen it. */
+  allowReporterStatus: boolean;
   requireSignature: boolean;
   webhookEnabled: boolean;
   webhookSecret: string | null;
@@ -42,6 +44,17 @@ export function getBugPortalConfig(
     // settings UI and the API cannot disagree about it.
     allowReporterReopen:
       allowReporterNotes && portal?.allow_reporter_reopen !== false,
+    // Opt-in (`=== true`), not opt-out like the two above. Reopening is narrow
+    // and can only ask for more work; setting an arbitrary status can claim work
+    // is done — `resolved` stamps resolved_at, empties the bug out of the team's
+    // queue, and moves the portal's median fix time. An app that enabled the
+    // portal months ago must not acquire that behaviour by upgrading.
+    //
+    // Gated on notes for the same reason reopen is: the "why" is posted to the
+    // thread as a reporter message, and with notes off there is nowhere for it
+    // to land.
+    allowReporterStatus:
+      allowReporterNotes && portal?.allow_reporter_status === true,
     requireSignature: portal?.require_signature === true,
     webhookEnabled: portal?.webhook_enabled === true,
     webhookSecret: portal?.webhook_secret ?? null,

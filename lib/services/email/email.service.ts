@@ -178,6 +178,23 @@ interface BugReopenedNotificationParams {
   newStatus: string;
 }
 
+interface ReporterStatusChangeNotificationParams {
+  developerEmail: string;
+  developerName?: string;
+  bugId: string;
+  displayId: string;
+  bugTitle: string;
+  fromStatus: string;
+  toStatus: string;
+  /** Optional here, unlike a reopen's reason. Omitted from the email when null. */
+  note: string | null;
+  reporterEmail: string;
+  appName: string;
+  orgName: string;
+  pageUrl: string;
+  dashboardUrl: string;
+}
+
 // ---------------------------------------------------------------------------
 // EmailService
 // ---------------------------------------------------------------------------
@@ -554,6 +571,115 @@ export class EmailService {
       }
     } catch (err) {
       console.error('[EmailService] sendBugReopenedNotification unexpected error:', err);
+    }
+  }
+
+  /**
+   * Tell the team a reporter moved their own report to a new status.
+   *
+   * The neutral sibling of sendBugReopenedNotification, and separate from it on
+   * purpose. That template asserts a specific thing — you closed this and the
+   * reporter disagrees — in its subject, its alert bar and its quote block. Once
+   * a reporter can set any status, most of what they do is not that: marking a
+   * report resolved because they found the workaround, or won't-fix because they
+   * were mistaken. Sending the reopen template for those would tell the owner the
+   * exact opposite of what happened.
+   *
+   * So this one states the fact and stops: who moved it, from what, to what, and
+   * what they said if they said anything. No alert bar, no reopen count.
+   */
+  static async sendReporterStatusChangeNotification(
+    params: ReporterStatusChangeNotificationParams
+  ): Promise<void> {
+    const {
+      developerEmail,
+      developerName,
+      bugId,
+      displayId,
+      bugTitle,
+      fromStatus,
+      toStatus,
+      note,
+      reporterEmail,
+      appName,
+      orgName,
+      pageUrl,
+      dashboardUrl,
+    } = params;
+
+    const greeting = developerName ? `Hi ${developerName},` : 'Hi there,';
+    const toLabel = STATUS_LABELS[toStatus] ?? toStatus;
+
+    const bodyContent = `
+      <p style="margin:0 0 28px;font-size:14px;color:#64748b;line-height:1.6;">${greeting} <strong style="color:#0f172a;">${escapeHtml(reporterEmail)}</strong> changed the status of their own report in <strong style="color:#0f172a;">${escapeHtml(appName)}</strong>, from ${statusBadge(fromStatus)} to ${statusBadge(toStatus)}.</p>
+
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;">
+        <tr>
+          <td style="padding-bottom:10px;">
+            <p style="margin:0;font-size:17px;font-weight:700;color:#0f172a;line-height:1.4;">${escapeHtml(bugTitle)}</p>
+          </td>
+        </tr>
+      </table>
+
+      ${
+        // Rendered only when there is something to render. A "no reason given"
+        // placeholder would invent a silence into a refusal — the note is
+        // optional on this path, so most of these will legitimately have none.
+        note
+          ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
+        <tr>
+          <td style="background-color:#fafafa;border-left:4px solid #cbd5e1;border-radius:0 8px 8px 0;padding:14px 18px;">
+            <p style="margin:0 0 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.6px;color:#64748b;">What they said</p>
+            <p style="margin:0;font-size:14px;color:#374151;line-height:1.6;">${escapeHtml(note)}</p>
+          </td>
+        </tr>
+      </table>`
+          : ''
+      }
+
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:28px;">
+        ${infoRow('Report', escapeHtml(displayId))}
+        ${infoRow('Reported by', escapeHtml(reporterEmail))}
+        ${infoRow('Application', escapeHtml(appName))}
+        ${infoRow('Organization', escapeHtml(orgName))}
+        ${infoRow('Page URL', `<a href="${escapeHtml(pageUrl)}" style="color:#7c3aed;text-decoration:none;font-size:13px;">${escapeHtml(pageUrl.length > 55 ? pageUrl.slice(0, 55) + '…' : pageUrl)}</a>`)}
+      </table>
+
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td>${ctaButton(dashboardUrl, 'Open the bug report')}</td></tr>
+      </table>
+    `;
+
+    const html = baseLayout(
+      `${toLabel}: ${bugTitle}`,
+      `${displayId} was moved to ${toLabel} by the reporter`,
+      bodyContent
+    );
+
+    try {
+      const resend = getResendClient();
+      const { error } = await resend.emails.send({
+        from: getSenderAddress(),
+        to: developerEmail,
+        subject: `[${toLabel}] ${displayId} — updated by the reporter`,
+        html,
+      });
+
+      if (error) {
+        console.error(
+          '[EmailService] sendReporterStatusChangeNotification resend error:',
+          error
+        );
+      } else {
+        console.info(
+          `[EmailService] Reporter status change sent to ${developerEmail} for bug #${bugId}`
+        );
+      }
+    } catch (err) {
+      console.error(
+        '[EmailService] sendReporterStatusChangeNotification unexpected error:',
+        err
+      );
     }
   }
 }
