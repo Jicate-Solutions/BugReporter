@@ -2,6 +2,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { RotateCcw } from 'lucide-react';
 import { isBugStatus, isTerminalBugStatus } from '@boobalan_jkkn/shared';
 import { PortalStatusBadge } from './portal-status-badge';
+import { PortalStatusControl } from './portal-status-control';
 import { PortalEvidence } from './portal-evidence';
 import { PortalTimeline, SectionLabel } from './portal-timeline';
 import { PortalComposer } from './portal-composer';
@@ -30,9 +31,20 @@ interface PortalDetailProps {
  * drawer is the same content in a different frame, not a summary of it.
  */
 export function PortalDetailHeader({
+  appSlug,
   bug,
+  reporterEmail,
+  signature,
+  canSetStatus,
+  canReopen,
 }: {
+  appSlug: string;
   bug: PortalBugSummary;
+  reporterEmail: string;
+  signature?: string;
+  /** Whether this application lets reporters set the status themselves. */
+  canSetStatus: boolean;
+  canReopen: boolean;
 }) {
   return (
     <div className="flex flex-1 flex-col gap-2">
@@ -40,7 +52,20 @@ export function PortalDetailHeader({
         <span className="portal-mono text-[12px] text-[var(--p-muted)]">
           {bug.display_id}
         </span>
-        <PortalStatusBadge status={bug.status} />
+        {/* The control takes the badge's exact slot, so the header reads the
+            same whether or not this application has opted in. */}
+        {canSetStatus ? (
+          <PortalStatusControl
+            appSlug={appSlug}
+            bugId={bug.id}
+            status={bug.status}
+            reporterEmail={reporterEmail}
+            signature={signature}
+            canReopen={canReopen}
+          />
+        ) : (
+          <PortalStatusBadge status={bug.status} />
+        )}
         {bug.reopenCount > 0 && (
           <span className="inline-flex items-center gap-1 rounded-md bg-[#fff4e5] px-[9px] py-[3px] text-[12px] font-semibold text-[#8a5a12]">
             <RotateCcw className="h-3 w-3" />

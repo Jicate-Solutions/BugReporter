@@ -75,6 +75,7 @@ const applicationFormSchema = z.object({
         enabled: z.boolean().optional(),
         allow_reporter_notes: z.boolean().optional(),
         allow_reporter_reopen: z.boolean().optional(),
+        allow_reporter_status: z.boolean().optional(),
         require_signature: z.boolean().optional(),
         webhook_enabled: z.boolean().optional(),
         webhook_secret: z.string().optional()

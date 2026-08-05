@@ -96,6 +96,27 @@ export function isTerminalBugStatus(status: BugReportStatus): boolean {
   return TERMINAL_BUG_STATUSES.includes(status);
 }
 
+/**
+ * Whether a status change is a reopen: leaving a closed status for an open one.
+ *
+ * The single definition of that question. Three places need to agree on it and
+ * they are not near each other — applyStatusChange stamps `reopened_at` and
+ * bumps `reopen_count`, the portal's status route requires a written reason and
+ * checks the reopen permission, and the portal's status control decides whether
+ * its note field is optional. If any of them disagreed, a reporter could reopen
+ * a bug through a door that does not record why.
+ *
+ * Note this is about the transition, not the actor. A developer changing their
+ * mind and a reporter saying "still broken" are the same event to this function,
+ * which is what lets the callers treat them identically.
+ */
+export function isReopenTransition(
+  from: BugReportStatus,
+  to: BugReportStatus
+): boolean {
+  return isTerminalBugStatus(from) && !isTerminalBugStatus(to);
+}
+
 export function bugStatusLabel(status: string): string {
   return isBugStatus(status) ? BUG_STATUS_LABELS[status] : status;
 }

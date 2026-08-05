@@ -41,6 +41,18 @@ export interface Application {
        */
       allow_reporter_reopen?: boolean;
       /**
+       * Whether a reporter may set their own report to any of the five statuses
+       * from the portal, not just push a closed one back open.
+       *
+       * Defaults OFF, unlike its two neighbours, and is gated on
+       * allow_reporter_notes. Reopening can only ever ask for more work; this can
+       * claim work is done — writing `resolved` stamps `resolved_at`, drops the
+       * bug out of the team's queue, and moves the portal's "typical fix" median.
+       * An app that already turned the portal on should not acquire that
+       * silently.
+       */
+      allow_reporter_status?: boolean;
+      /**
        * Require a server-minted HMAC on the portal handoff. Off by default so an
        * app can adopt the portal with a plain link and no backend changes; turn
        * it on once the app mints signed links.

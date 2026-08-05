@@ -61,6 +61,8 @@ export interface PortalStatusEvent {
   from_status: string | null;
   to_status: string;
   note: string | null;
+  /** 'reporter' | 'dashboard_user' | 'api_key' | 'system'. Decides attribution. */
+  actor_kind: string;
   created_at: string;
 }
 
@@ -556,7 +558,7 @@ export async function getReporterBug(
   const [{ data: events }, { data: messages }] = await Promise.all([
     supabase
       .from('bug_status_events')
-      .select('id, from_status, to_status, note, created_at')
+      .select('id, from_status, to_status, note, actor_kind, created_at')
       .eq('bug_report_id', bugId)
       .order('created_at', { ascending: true }),
     supabase

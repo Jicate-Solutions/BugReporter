@@ -46,7 +46,18 @@ export default async function PortalBugDrawer({
   const { bug, events, messages } = result;
 
   return (
-    <PortalDrawer header={<PortalDetailHeader bug={bug} />}>
+    <PortalDrawer
+      header={
+        <PortalDetailHeader
+          appSlug={application.slug}
+          bug={bug}
+          reporterEmail={reporterEmail}
+          signature={sig}
+          canSetStatus={config.allowReporterStatus}
+          canReopen={config.allowReporterReopen}
+        />
+      }
+    >
       <PortalDetailBody
         appSlug={application.slug}
         bug={bug}
