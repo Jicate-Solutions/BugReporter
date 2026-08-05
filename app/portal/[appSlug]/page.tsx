@@ -1,14 +1,19 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ExternalLink } from 'lucide-react';
+import { Download } from 'lucide-react';
 import {
   resolvePortalRequest,
   listReporterBugs,
   countReporterBugsByStatus,
+  isReporterBugSort,
 } from '@/lib/services/bug-portal/server';
 import { PortalShell, PortalNotice } from '../_components/portal-shell';
-import { PortalSearch } from '../_components/portal-search';
-import { PortalBugRow } from '../_components/portal-bug-row';
+import { PortalStats } from '../_components/portal-stats';
+import { PortalFilters } from '../_components/portal-filters';
+import { PortalTabs } from '../_components/portal-tabs';
+import { PortalTable } from '../_components/portal-table';
 import { PortalPagination } from '../_components/portal-pagination';
+import { identityQuery, type PortalView } from '../_components/portal-url';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +24,9 @@ interface PageProps {
     sig?: string;
     q?: string;
     status?: string;
+    area?: string;
+    reply?: string;
+    sort?: string;
     page?: string;
   }>;
 }
@@ -32,9 +40,9 @@ interface PageProps {
  */
 export default async function PortalPage({ params, searchParams }: PageProps) {
   const { appSlug } = await params;
-  const { u, sig, q = '', status = '', page } = await searchParams;
+  const sp = await searchParams;
 
-  const resolved = await resolvePortalRequest(appSlug, u, sig);
+  const resolved = await resolvePortalRequest(appSlug, sp.u, sp.sig);
 
   if (!resolved.ok) {
     if (resolved.reason === 'not_found') notFound();
@@ -44,13 +52,13 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
         <PortalNotice
           title={
             resolved.reason === 'missing_reporter'
-              ? 'Who are you?'
+              ? 'This page needs to know who you are'
               : 'This link is not valid'
           }
           body={
             resolved.reason === 'missing_reporter'
-              ? 'This page needs to know which reporter you are. Open it from within the application you reported the bug in, so it can identify you.'
-              : 'This application requires signed portal links, and this link is missing a valid signature. Open the portal from within the application rather than pasting the address directly.'
+              ? 'Open it from inside the application you reported the bug in, so it can identify you.'
+              : 'This application requires signed portal links, and this one has no valid signature. Open the portal from inside the application rather than pasting the address directly.'
           }
         />
       </PortalShell>
@@ -59,80 +67,120 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
 
   const { application, reporterEmail } = resolved;
 
-  const [result, counts] = await Promise.all([
+  // Anything unrecognised falls back to the default rather than 400ing — a
+  // hand-edited URL should degrade, not break a page reporters rely on.
+  const view: PortalView = {
+    u: reporterEmail,
+    sig: sp.sig,
+    q: sp.q ?? '',
+    status: sp.status ?? '',
+    area: sp.area ?? '',
+    reply: sp.reply === '1',
+    sort: isReporterBugSort(sp.sort) ? sp.sort : 'newest',
+    page: Number(sp.page) || 1,
+  };
+
+  const [result, stats] = await Promise.all([
     listReporterBugs(application.id, reporterEmail, {
-      q,
-      status,
-      page: Number(page) || 1,
+      q: view.q,
+      status: view.status,
+      area: view.area,
+      needsReply: view.reply,
+      sort: view.sort,
+      page: view.page,
     }),
     countReporterBugsByStatus(application.id, reporterEmail),
   ]);
 
-  const isFiltering = Boolean(q || status);
-  const identityQuery = `u=${encodeURIComponent(reporterEmail)}${
-    sig ? `&sig=${encodeURIComponent(sig)}` : ''
-  }`;
+  const identity = identityQuery(view);
+  const isFiltering = Boolean(view.q || view.status || view.area || view.reply);
+
+  if (stats.total === 0) {
+    return (
+      <PortalShell
+        title={application.name}
+        subtitle={`Bug reports · ${reporterEmail}`}
+        wide
+      >
+        <PortalNotice
+          title="Nothing here yet"
+          body={`You haven't reported any bugs in ${application.name}. When you do, they'll appear here with whatever the team has done about them.`}
+        />
+      </PortalShell>
+    );
+  }
 
   return (
     <PortalShell
-      title={`${application.name} — your bug reports`}
-      subtitle={reporterEmail}
+      title={application.name}
+      subtitle={`Bug reports · ${reporterEmail}`}
+      wide
+      action={
+        <a
+          href={`/api/portal/${application.slug}/export?${identity}`}
+          className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[9px] border border-[var(--p-line-ctrl)] bg-[var(--p-card)] px-3.5 text-[13.5px] font-medium text-[var(--p-body)] transition-colors hover:border-[#c9c9c5] hover:bg-[#f7f7f5]"
+        >
+          <Download className="h-[15px] w-[15px]" />
+          Export
+        </a>
+      }
     >
-      {counts.total > 0 && (
-        <PortalSearch
-          identity={{ u: reporterEmail, sig }}
-          appSlug={application.slug}
-          q={q}
-          status={status}
-          counts={counts}
-        />
-      )}
+      <PortalStats stats={stats} />
+
+      <PortalFilters appSlug={application.slug} view={view} areas={stats.areas} />
+
+      <PortalTabs
+        appSlug={application.slug}
+        view={view}
+        total={stats.total}
+        byStatus={stats.byStatus}
+        needsReplyTotal={result.needsReplyTotal}
+      />
 
       {result.bugs.length === 0 ? (
-        // Two different situations, two different messages. Telling someone who
-        // just searched that they have never reported a bug would be wrong.
-        isFiltering ? (
-          <PortalNotice
-            title="No reports match"
-            body={
-              q
-                ? `Nothing matches "${q}". Try a different word, or part of a report ID like BUG-123.`
-                : 'No reports have that status yet.'
-            }
-          />
-        ) : (
-          <PortalNotice
-            title="Nothing here yet"
-            body={`You haven't reported any bugs in ${application.name}. When you do, they'll appear here with their current status.`}
-          />
-        )
+        // Telling someone who just searched that they have never reported a bug
+        // would be wrong, so the two situations get two different messages.
+        <PortalNotice
+          title="No reports match"
+          body={
+            view.q
+              ? `Nothing matches "${view.q}". Try a different word, or part of a report ID like BUG-601.`
+              : view.reply
+                ? 'Nothing is waiting on you — the team has your last word on every report here.'
+                : 'Nothing matches these filters. Clear them to see everything again.'
+          }
+        />
       ) : (
-        <>
-          <ul className="space-y-3">
-            {result.bugs.map((bug) => (
-              <li key={bug.id}>
-                <PortalBugRow
-                  bug={bug}
-                  href={`/portal/${application.slug}/${bug.id}?${identityQuery}`}
-                />
-              </li>
-            ))}
-          </ul>
-
+        <PortalTable
+          bugs={result.bugs}
+          hrefFor={(bug) =>
+            `/portal/${application.slug}/${bug.id}?${identity}`
+          }
+        >
           <PortalPagination
             appSlug={application.slug}
-            carry={{ u: reporterEmail, sig, q, status }}
+            view={view}
             page={result.page}
             totalPages={result.totalPages}
             total={result.total}
             pageSize={result.pageSize}
           />
-        </>
+        </PortalTable>
       )}
 
-      <p className="mt-8 flex items-center gap-1 text-xs text-muted-foreground">
-        <ExternalLink className="h-3 w-3" />
+      <p className="mt-[22px] text-[12.5px] text-[var(--p-faint)]">
         Reported from {application.name}
+        {isFiltering && (
+          <>
+            {' · '}
+            <Link
+              href={`/portal/${application.slug}?${identity}`}
+              className="underline underline-offset-2 hover:text-[var(--p-body)]"
+            >
+              show everything
+            </Link>
+          </>
+        )}
       </p>
     </PortalShell>
   );

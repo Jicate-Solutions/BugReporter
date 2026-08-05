@@ -36,6 +36,11 @@ export interface Application {
       /** Whether reporters may reply on the thread, or only read it. */
       allow_reporter_notes?: boolean;
       /**
+       * Whether a reporter may push a closed bug back open with a reason. The
+       * bug returns to `seen` and the app owner is emailed. Defaults on.
+       */
+      allow_reporter_reopen?: boolean;
+      /**
        * Require a server-minted HMAC on the portal handoff. Off by default so an
        * app can adopt the portal with a plain link and no backend changes; turn
        * it on once the app mints signed links.

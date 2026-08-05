@@ -29,6 +29,21 @@ export const TERMINAL_BUG_STATUSES: readonly BugReportStatus[] = [
   'wont_fix',
 ] as const;
 
+/**
+ * Where a bug lands when its reporter says it is still broken.
+ *
+ * `seen` is the honest answer. `new` would erase the fact that the team already
+ * engaged with this bug once — a reopen is not a fresh report. `in_progress`
+ * would claim someone has picked it up, which nobody has yet, and would make the
+ * in-progress count unreliable. `seen` says exactly what is true: acknowledged,
+ * not closed, not started.
+ *
+ * Declared here rather than at the call site so the choice sits beside the
+ * vocabulary it belongs to — the six-disagreeing-declarations problem this file
+ * exists to solve started the same way.
+ */
+export const REOPEN_TARGET_STATUS: BugReportStatus = 'seen';
+
 export const BUG_STATUS_LABELS: Record<BugReportStatus, string> = {
   new: 'New',
   seen: 'Seen',

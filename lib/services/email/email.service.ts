@@ -153,6 +153,29 @@ interface StatusUpdateNotificationParams {
   orgName: string;
   developerNote?: string;
   bugViewUrl?: string;
+  /**
+   * Whether this application lets reporters push a closed bug back open. Changes
+   * the closing call-to-action from a vague "contact support" to the thing they
+   * can actually do.
+   */
+  canReopen?: boolean;
+}
+
+interface BugReopenedNotificationParams {
+  developerEmail: string;
+  developerName?: string;
+  bugId: string;
+  displayId: string;
+  bugTitle: string;
+  /** The reporter's own words. Required — a reopen with no reason is noise. */
+  reason: string;
+  reporterEmail: string;
+  appName: string;
+  orgName: string;
+  pageUrl: string;
+  dashboardUrl: string;
+  reopenCount: number;
+  newStatus: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +307,7 @@ export class EmailService {
       orgName,
       developerNote,
       bugViewUrl,
+      canReopen = false,
     } = params;
 
     const greeting = reporterName ? `Hi ${reporterName},` : 'Hi there,';
@@ -330,9 +354,21 @@ export class EmailService {
       ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:20px;">
           <tr>
             <td style="background-color:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:16px 18px;">
-              <p style="margin:0 0 6px;font-size:13px;font-weight:600;color:#78350f;">Is your issue still unresolved?</p>
-              <p style="margin:0 0 14px;font-size:13px;color:#92400e;line-height:1.5;">If the problem persists, please provide more details and contact the support team.</p>
-              ${bugViewUrl ? ctaButton(bugViewUrl, 'Contact Support', false) : ''}
+              <p style="margin:0 0 6px;font-size:13px;font-weight:600;color:#78350f;">Is this still happening to you?</p>
+              <p style="margin:0 0 14px;font-size:13px;color:#92400e;line-height:1.5;">${
+                canReopen
+                  ? 'If the problem has not gone away, you can reopen this report and tell the team what is still wrong. It goes straight back to them.'
+                  : 'If the problem persists, please provide more details and contact the support team.'
+              }</p>
+              ${
+                bugViewUrl
+                  ? ctaButton(
+                      bugViewUrl,
+                      canReopen ? "It's still broken" : 'Contact Support',
+                      false
+                    )
+                  : ''
+              }
             </td>
           </tr>
         </table>`
@@ -419,6 +455,105 @@ export class EmailService {
       }
     } catch (err) {
       console.error('[EmailService] sendStatusUpdateNotification unexpected error:', err);
+    }
+  }
+
+  /**
+   * Tell the team a reporter has said a closed bug is still broken.
+   *
+   * Deliberately not sendNewBugNotification: this is not a new bug, and telling a
+   * developer it is would lose the single most useful fact — that they already
+   * called this one fixed and the person who filed it disagrees. That is the
+   * whole signal, so it leads.
+   */
+  static async sendBugReopenedNotification(
+    params: BugReopenedNotificationParams
+  ): Promise<void> {
+    const {
+      developerEmail,
+      developerName,
+      bugId,
+      displayId,
+      bugTitle,
+      reason,
+      reporterEmail,
+      appName,
+      orgName,
+      pageUrl,
+      dashboardUrl,
+      reopenCount,
+      newStatus,
+    } = params;
+
+    const greeting = developerName ? `Hi ${developerName},` : 'Hi there,';
+    const timesLabel =
+      reopenCount > 1 ? `Reopened ${reopenCount} times` : 'Reopened';
+
+    const bodyContent = `
+      <!-- Alert bar -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
+        <tr>
+          <td style="background-color:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:14px 18px;">
+            <p style="margin:0;font-size:13px;font-weight:600;color:#78350f;">&#8617;&nbsp; ${escapeHtml(timesLabel)} by the reporter &mdash; they say it is still broken.</p>
+          </td>
+        </tr>
+      </table>
+
+      <p style="margin:0 0 28px;font-size:14px;color:#64748b;line-height:1.6;">${greeting} A bug you closed in <strong style="color:#0f172a;">${escapeHtml(appName)}</strong> has been reopened by the person who reported it. It is now ${statusBadge(newStatus)}.</p>
+
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;">
+        <tr>
+          <td style="padding-bottom:10px;">
+            <p style="margin:0;font-size:17px;font-weight:700;color:#0f172a;line-height:1.4;">${escapeHtml(bugTitle)}</p>
+          </td>
+        </tr>
+      </table>
+
+      <!-- The reporter's own words. The reason this email exists. -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
+        <tr>
+          <td style="background-color:#fafafa;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0;padding:14px 18px;">
+            <p style="margin:0 0 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.6px;color:#b45309;">Why they reopened it</p>
+            <p style="margin:0;font-size:14px;color:#374151;line-height:1.6;">${escapeHtml(reason)}</p>
+          </td>
+        </tr>
+      </table>
+
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:28px;">
+        ${infoRow('Report', escapeHtml(displayId))}
+        ${infoRow('Reported by', escapeHtml(reporterEmail))}
+        ${infoRow('Application', escapeHtml(appName))}
+        ${infoRow('Organization', escapeHtml(orgName))}
+        ${infoRow('Page URL', `<a href="${escapeHtml(pageUrl)}" style="color:#7c3aed;text-decoration:none;font-size:13px;">${escapeHtml(pageUrl.length > 55 ? pageUrl.slice(0, 55) + '…' : pageUrl)}</a>`)}
+      </table>
+
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td>${ctaButton(dashboardUrl, 'Open the bug report')}</td></tr>
+      </table>
+    `;
+
+    const html = baseLayout(
+      `Reopened: ${bugTitle}`,
+      `${displayId} was reopened by the reporter — they say it is still broken`,
+      bodyContent
+    );
+
+    try {
+      const resend = getResendClient();
+      const { error } = await resend.emails.send({
+        from: getSenderAddress(),
+        to: developerEmail,
+        subject: `[Reopened] ${displayId} — ${bugTitle}`,
+        html,
+      });
+
+      if (error) {
+        console.error('[EmailService] sendBugReopenedNotification resend error:', error);
+      } else {
+        console.info(`[EmailService] Reopen notification sent to ${developerEmail} for bug #${bugId}`);
+      }
+    } catch (err) {
+      console.error('[EmailService] sendBugReopenedNotification unexpected error:', err);
     }
   }
 }
