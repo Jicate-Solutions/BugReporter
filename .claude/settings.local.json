@@ -29,7 +29,10 @@
       "Bash(gh pr *)",
       "Read(//d/Github/raagam/**)",
       "Read(//d/Github/raagam/node_modules/@boobalan_jkkn/**)",
-      "Read(//d/Github/raagam/node_modules/html2canvas/**)"
+      "Read(//d/Github/raagam/node_modules/html2canvas/**)",
+      "Bash(rm -f /d/Github/raagam/node_modules/@boobalan_jkkn/shared/src/annotator/*.ts)",
+      "Bash(cp /d/doc/GitHub/BugReporter/packages/shared/dist/annotator/*.js /d/Github/raagam/node_modules/@boobalan_jkkn/shared/src/annotator/)",
+      "Bash(cp /d/doc/GitHub/BugReporter/packages/shared/dist/annotator/*.d.ts /d/Github/raagam/node_modules/@boobalan_jkkn/shared/src/annotator/)"
     ]
   },
   "enableAllProjectMcpServers": true,
