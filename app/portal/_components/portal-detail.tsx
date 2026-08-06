@@ -1,6 +1,10 @@
 import { formatDistanceToNow } from 'date-fns';
 import { RotateCcw } from 'lucide-react';
-import { isBugStatus, isTerminalBugStatus } from '@boobalan_jkkn/shared';
+import {
+  isBugStatus,
+  isTerminalBugStatus,
+  type AnnotationTool,
+} from '@boobalan_jkkn/shared';
 import { PortalStatusBadge } from './portal-status-badge';
 import { PortalStatusControl } from './portal-status-control';
 import { PortalEvidence } from './portal-evidence';
@@ -21,6 +25,9 @@ interface PortalDetailProps {
   signature?: string;
   allowNotes: boolean;
   allowReopen: boolean;
+  /** Whether this application lets reporters mark up their own screenshot. */
+  canAnnotate: boolean;
+  annotationTools: AnnotationTool[];
 }
 
 /**
@@ -89,6 +96,8 @@ export function PortalDetailBody({
   signature,
   allowNotes,
   allowReopen,
+  canAnnotate,
+  annotationTools,
 }: PortalDetailProps) {
   const isClosed = isBugStatus(bug.status) && isTerminalBugStatus(bug.status);
 
@@ -102,6 +111,21 @@ export function PortalDetailBody({
         reporter is trying to tell you.
       */}
       <dl className="mb-6 grid grid-cols-2 gap-px overflow-hidden rounded-[10px] border border-[var(--p-line-soft)] bg-[var(--p-line-soft)]">
+        {/*
+          Who filed it gets the full width of the first row rather than half of
+          one. Partly because a name and an address together outrun a half-width
+          cell, and partly because the gaps in this grid are the borders — an odd
+          fifth cell would leave a hole in the lattice instead of a hairline.
+        */}
+        <Fact
+          label="Reported by"
+          value={
+            bug.reporterName
+              ? `${bug.reporterName} · ${reporterEmail}`
+              : reporterEmail
+          }
+          className="col-span-2"
+        />
         <Fact label="Where" value={bug.area} />
         <Fact
           label="Reported"
@@ -121,6 +145,17 @@ export function PortalDetailBody({
       <PortalEvidence
         screenshotUrl={bug.screenshot_url}
         attachments={bug.attachments}
+        annotate={
+          canAnnotate
+            ? {
+                appSlug,
+                bugId: bug.id,
+                reporterEmail,
+                signature,
+                tools: annotationTools,
+              }
+            : undefined
+        }
       />
 
       <div className="mt-6">
@@ -128,6 +163,7 @@ export function PortalDetailBody({
           events={events}
           messages={messages}
           reporterEmail={reporterEmail}
+          reporterName={bug.reporterName}
           createdAt={bug.created_at}
         />
       </div>
@@ -150,13 +186,17 @@ function Fact({
   label,
   value,
   mono = false,
+  className = '',
 }: {
   label: string;
   value: string | null;
   mono?: boolean;
+  className?: string;
 }) {
   return (
-    <div className="flex flex-col gap-1 bg-[var(--p-card)] px-3.5 py-3">
+    <div
+      className={`flex flex-col gap-1 bg-[var(--p-card)] px-3.5 py-3 ${className}`}
+    >
       <dt className="text-[11px] font-semibold uppercase tracking-[0.05em] text-[var(--p-faint)]">
         {label}
       </dt>

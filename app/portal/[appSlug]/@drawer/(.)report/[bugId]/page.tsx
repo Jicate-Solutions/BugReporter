@@ -3,11 +3,11 @@ import {
   resolvePortalRequest,
   getReporterBug,
 } from '@/lib/services/bug-portal/server';
-import { PortalDrawer } from '../../../_components/portal-drawer';
+import { PortalDrawer } from '../../../../_components/portal-drawer';
 import {
   PortalDetailHeader,
   PortalDetailBody,
-} from '../../../_components/portal-detail';
+} from '../../../../_components/portal-detail';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +47,7 @@ export default async function PortalBugDrawer({
 
   return (
     <PortalDrawer
+      bugId={bug.id}
       header={
         <PortalDetailHeader
           appSlug={application.slug}
@@ -67,6 +68,8 @@ export default async function PortalBugDrawer({
         signature={sig}
         allowNotes={config.allowReporterNotes}
         allowReopen={config.allowReporterReopen}
+        canAnnotate={resolved.canAnnotate}
+        annotationTools={resolved.annotationTools}
       />
     </PortalDrawer>
   );

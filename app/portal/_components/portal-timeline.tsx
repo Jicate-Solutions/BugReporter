@@ -9,6 +9,8 @@ interface PortalTimelineProps {
   events: PortalStatusEvent[];
   messages: PortalMessage[];
   reporterEmail: string;
+  /** The reporter's own name, when they filed under one. */
+  reporterName?: string | null;
   createdAt: string;
 }
 
@@ -39,14 +41,17 @@ export function PortalTimeline({
   events,
   messages,
   reporterEmail,
+  reporterName,
   createdAt,
 }: PortalTimelineProps) {
+  const mineInitials = initialsFor(reporterEmail, reporterName);
+
   const entries: Entry[] = [
     {
       key: 'reported',
       at: createdAt,
       who: 'You',
-      initials: initialsFor(reporterEmail),
+      initials: mineInitials,
       mine: true,
       body: <span className="text-[var(--p-second)]">Reported this.</span>,
     },
@@ -64,7 +69,7 @@ export function PortalTimeline({
       key: `event-${event.id}`,
       at: event.created_at,
       who: mine ? 'You' : 'The team',
-      initials: mine ? initialsFor(reporterEmail) : '··',
+      initials: mine ? mineInitials : '··',
       mine,
       body: (
         <span>
@@ -100,10 +105,35 @@ export function PortalTimeline({
       key: `message-${message.id}`,
       at: message.created_at,
       who: mine ? 'You' : 'The team',
-      initials: mine ? initialsFor(reporterEmail) : '··',
+      initials: mine ? mineInitials : '··',
       mine,
       body: (
-        <span className="whitespace-pre-wrap">{message.message_text}</span>
+        <>
+          <span className="whitespace-pre-wrap">{message.message_text}</span>
+          {/* A marked-up screenshot, sent from here. Shown at a size where the
+              marks are readable but the entry does not become the page — the
+              full-size version is one click away, as everywhere else in the
+              portal. */}
+          {message.attachment_url && (
+            <a
+              href={message.attachment_url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 block max-w-[360px] overflow-hidden rounded-[9px] border border-[var(--p-line)] transition-colors hover:border-[#c9c9c5]"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={message.attachment_url}
+                alt="The screenshot, marked up"
+                loading="lazy"
+                className="max-h-[260px] w-full bg-white object-contain object-top"
+              />
+              <span className="block border-t border-[var(--p-line-soft)] bg-[var(--p-sunken)] px-2.5 py-1.5 text-[11px] text-[var(--p-muted)]">
+                Marked-up screenshot · open full size
+              </span>
+            </a>
+          )}
+        </>
       ),
     });
   }
@@ -164,8 +194,22 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Initials from an email local part: "sroja@jkkn.ac.in" -> "SR". */
-function initialsFor(email: string): string {
+/**
+ * Initials for the reporter's avatar.
+ *
+ * A real name beats an address whenever there is one: "Roja Sundharam" gives RS,
+ * where the address it was filed from would have given SR. The email is still
+ * the fallback, because most reports arrive without a name attached.
+ */
+function initialsFor(email: string, name?: string | null): string {
+  const words = name?.trim().split(/\s+/).filter(Boolean) ?? [];
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+
   const local = email.split('@')[0] ?? '';
   const parts = local.split(/[._-]+/).filter(Boolean);
   if (parts.length >= 2) {

@@ -1,7 +1,11 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { isBugStatus } from '@boobalan_jkkn/shared';
+import { isBugStatus, type AnnotationTool } from '@boobalan_jkkn/shared';
 import { getBugPortalConfig, normalizeReporterEmail } from './config';
+import {
+  canAnnotateFromPortal,
+  getAnnotationConfig,
+} from '@/lib/services/annotation/config';
 import { deriveArea, deriveEnvironment } from './derive';
 import type { BugPortalConfig } from './config';
 
@@ -22,6 +26,8 @@ export interface PortalBugSummary {
   created_at: string;
   resolved_at: string | null;
   title: string;
+  /** The name the reporter gave at intake. Null when the SDK sent none. */
+  reporterName: string | null;
   /** The screenshot the reporter captured when filing. Public storage URL. */
   screenshot_url: string | null;
   attachments: PortalAttachment[];
@@ -72,10 +78,26 @@ export interface PortalMessage {
   author_kind: string;
   author_email: string | null;
   created_at: string;
+  /** Set when the note carries an image — currently, a marked-up screenshot. */
+  attachment_url: string | null;
+  attachment_type: string | null;
 }
 
 export type PortalResolution =
-  | { ok: true; application: PortalApplication; reporterEmail: string; config: BugPortalConfig }
+  | {
+      ok: true;
+      application: PortalApplication;
+      reporterEmail: string;
+      config: BugPortalConfig;
+      /**
+       * Whether this reporter may mark up a screenshot from the portal.
+       *
+       * Resolved here, alongside the portal config, so the two pages that render
+       * the button and the route that accepts the upload all read one answer.
+       */
+      canAnnotate: boolean;
+      annotationTools: AnnotationTool[];
+    }
   | { ok: false; reason: 'not_found' | 'disabled' | 'missing_reporter' | 'bad_signature' };
 
 export interface PortalApplication {
@@ -135,6 +157,8 @@ export async function resolvePortalRequest(
     },
     reporterEmail,
     config,
+    canAnnotate: canAnnotateFromPortal(application.settings),
+    annotationTools: getAnnotationConfig(application.settings).tools,
   };
 }
 
@@ -177,6 +201,19 @@ function normalizeAttachments(raw: unknown): PortalAttachment[] {
       filesize: typeof a.filesize === 'number' ? a.filesize : undefined,
       filetype: typeof a.filetype === 'string' ? a.filetype : undefined,
     }));
+}
+
+/**
+ * The reporter's own name, as they gave it at intake.
+ *
+ * Never a column: the SDK writes it into the metadata JSONB alongside the title,
+ * so every reader has to dig it out the same way and defend against the same
+ * drift. Whitespace and empty strings mean the same thing as absent — a name of
+ * " " would otherwise render as a blank where a name should be.
+ */
+function reporterNameFrom(metadata: unknown): string | null {
+  const raw = (metadata as { reporter_name?: unknown } | null)?.reporter_name;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
 }
 
 /** How many of a reporter's bugs we will ever load for one application. */
@@ -269,6 +306,7 @@ export async function listReporterBugs(
     created_at: b.created_at,
     resolved_at: b.resolved_at,
     title: b.metadata?.title || 'Bug report',
+    reporterName: reporterNameFrom(b.metadata),
     screenshot_url: b.screenshot_url ?? null,
     attachments: normalizeAttachments(b.attachments),
     noteCount: 0,
@@ -459,6 +497,13 @@ export interface ReporterStats {
   /** Distinct areas across all of this reporter's bugs, for the filter. */
   areas: string[];
   /**
+   * The name this reporter filed under most recently, for the page header.
+   * Resolved here rather than per-bug because the header outlives any one
+   * report — and a reporter who changed their name mid-history should be
+   * greeted by the current one.
+   */
+  reporterName: string | null;
+  /**
    * Median days from report to close, across this reporter's closed bugs.
    * Null when nothing has closed yet — a median of one number is not a median,
    * and "0d" would read as a claim rather than an absence.
@@ -475,9 +520,15 @@ export async function countReporterBugsByStatus(
 
   const { data, error } = await supabase
     .from('bug_reports')
-    .select('status, page_url, created_at, resolved_at')
+    // The name is lifted out with an arrow select rather than by fetching
+    // `metadata`: this query spans up to a thousand rows and has no business
+    // pulling a JSONB blob per row to read one string off it.
+    .select(
+      'status, page_url, created_at, resolved_at, reporter_name:metadata->>reporter_name'
+    )
     .eq('application_id', applicationId)
     .eq('reporter_email', reporterEmail)
+    .order('created_at', { ascending: false })
     .limit(1000);
 
   if (error) {
@@ -486,6 +537,7 @@ export async function countReporterBugsByStatus(
       total: 0,
       byStatus: {},
       areas: [],
+      reporterName: null,
       medianCloseDays: null,
       closedCount: 0,
     };
@@ -495,9 +547,15 @@ export async function countReporterBugsByStatus(
   const byStatus: Record<string, number> = {};
   const areaSet = new Set<string>();
   const closeDurations: number[] = [];
+  // Rows arrive newest first, so the first name seen is the most recent one.
+  let reporterName: string | null = null;
 
   for (const row of rows) {
     byStatus[row.status] = (byStatus[row.status] || 0) + 1;
+
+    if (!reporterName && typeof row.reporter_name === 'string') {
+      reporterName = row.reporter_name.trim() || null;
+    }
 
     const area = deriveArea(row.page_url);
     if (area) areaSet.add(area);
@@ -516,6 +574,7 @@ export async function countReporterBugsByStatus(
     total: rows.length,
     byStatus,
     areas: [...areaSet].sort(),
+    reporterName,
     medianCloseDays: median(closeDurations),
     closedCount: closeDurations.length,
   };
@@ -563,7 +622,9 @@ export async function getReporterBug(
       .order('created_at', { ascending: true }),
     supabase
       .from('bug_report_messages')
-      .select('id, message_text, author_kind, author_email, created_at')
+      .select(
+        'id, message_text, author_kind, author_email, created_at, attachment_url, attachment_type'
+      )
       .eq('bug_report_id', bugId)
       // Internal notes stay with the dev team.
       .eq('is_internal', false)
@@ -584,6 +645,7 @@ export async function getReporterBug(
       created_at: bug.created_at,
       resolved_at: bug.resolved_at,
       title: bug.metadata?.title || 'Bug report',
+      reporterName: reporterNameFrom(bug.metadata),
       screenshot_url: bug.screenshot_url ?? null,
       attachments: normalizeAttachments(bug.attachments),
       // Derived from the thread already loaded here — no extra query.

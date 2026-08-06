@@ -65,7 +65,7 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
     );
   }
 
-  const { application, reporterEmail } = resolved;
+  const { application, reporterEmail, config } = resolved;
 
   // Anything unrecognised falls back to the default rather than 400ing — a
   // hand-edited URL should degrade, not break a page reporters rely on.
@@ -95,11 +95,19 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
   const identity = identityQuery(view);
   const isFiltering = Boolean(view.q || view.status || view.area || view.reply);
 
+  // The address alone was all this header ever said about who is reading it.
+  // When the reports carry a name, lead with it and keep the address in
+  // brackets — the address is still what the page is scoped by, so dropping it
+  // would take away the one thing that explains why these reports and no others.
+  const who = stats.reporterName
+    ? `${stats.reporterName} (${reporterEmail})`
+    : reporterEmail;
+
   if (stats.total === 0) {
     return (
       <PortalShell
         title={application.name}
-        subtitle={`Bug reports · ${reporterEmail}`}
+        subtitle={`Bug reports · ${who}`}
         wide
       >
         <PortalNotice
@@ -113,7 +121,7 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
   return (
     <PortalShell
       title={application.name}
-      subtitle={`Bug reports · ${reporterEmail}`}
+      subtitle={`Bug reports · ${who}`}
       wide
       action={
         <a
@@ -154,7 +162,20 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
         <PortalTable
           bugs={result.bugs}
           hrefFor={(bug) =>
-            `/portal/${application.slug}/${bug.id}?${identity}`
+            `/portal/${application.slug}/report/${bug.id}?${identity}`
+          }
+          // Absent unless the application opted in, which is what makes the
+          // rows fall back to plain badges rather than to a control that
+          // renders and then fails at the API.
+          editStatus={
+            config.allowReporterStatus
+              ? {
+                  appSlug: application.slug,
+                  reporterEmail,
+                  signature: sp.sig,
+                  canReopen: config.allowReporterReopen,
+                }
+              : undefined
           }
         >
           <PortalPagination

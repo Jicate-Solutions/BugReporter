@@ -5,6 +5,10 @@ export interface EnhancedBugReportMessage {
   sender_user_id: string;
   message_text: string;
   message_type?: string;
+  /** 'reporter' | 'dashboard_user' | 'api_key' | 'system'. Decides attribution. */
+  author_kind?: string | null;
+  /** Set when the author has no dashboard account — a reporter, via the portal. */
+  author_email?: string | null;
   attachment_url?: string | null;
   attachment_type?: string | null;
   is_internal?: boolean;

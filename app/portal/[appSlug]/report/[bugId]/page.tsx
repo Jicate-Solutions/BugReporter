@@ -5,11 +5,11 @@ import {
   resolvePortalRequest,
   getReporterBug,
 } from '@/lib/services/bug-portal/server';
-import { PortalShell, PortalNotice } from '../../_components/portal-shell';
+import { PortalShell, PortalNotice } from '../../../_components/portal-shell';
 import {
   PortalDetailHeader,
   PortalDetailBody,
-} from '../../_components/portal-detail';
+} from '../../../_components/portal-detail';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,7 +56,9 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
   return (
     <PortalShell
       title={application.name}
-      subtitle={`${bug.display_id} · ${reporterEmail}`}
+      subtitle={`${bug.display_id} · ${
+        bug.reporterName ? `${bug.reporterName} (${reporterEmail})` : reporterEmail
+      }`}
     >
       <Link
         href={`/portal/${application.slug}?${identity}`}
@@ -87,6 +89,8 @@ export default async function PortalBugPage({ params, searchParams }: PageProps)
           signature={sig}
           allowNotes={config.allowReporterNotes}
           allowReopen={config.allowReporterReopen}
+          canAnnotate={resolved.canAnnotate}
+          annotationTools={resolved.annotationTools}
         />
       </div>
     </PortalShell>

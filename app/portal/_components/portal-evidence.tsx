@@ -1,10 +1,24 @@
 import { Paperclip } from 'lucide-react';
+import type { AnnotationTool } from '@boobalan_jkkn/shared';
 import { SectionLabel } from './portal-timeline';
+import { PortalAnnotateButton } from './portal-annotator';
 import type { PortalAttachment } from '@/lib/services/bug-portal/server';
 
 interface PortalEvidenceProps {
   screenshotUrl: string | null;
   attachments: PortalAttachment[];
+  /**
+   * Present only when this application lets reporters mark up a screenshot.
+   * Absent means no button at all, not a disabled one — a control that cannot
+   * ever be used is worse than no control.
+   */
+  annotate?: {
+    appSlug: string;
+    bugId: string;
+    reporterEmail: string;
+    signature?: string;
+    tools: AnnotationTool[];
+  };
 }
 
 function formatSize(bytes?: number): string | null {
@@ -31,6 +45,7 @@ function formatSize(bytes?: number): string | null {
 export function PortalEvidence({
   screenshotUrl,
   attachments,
+  annotate,
 }: PortalEvidenceProps) {
   if (!screenshotUrl && attachments.length === 0) return null;
 
@@ -41,7 +56,12 @@ export function PortalEvidence({
 
   return (
     <section>
-      <SectionLabel>What you sent</SectionLabel>
+      <div className="flex items-center justify-between gap-3">
+        <SectionLabel>What you sent</SectionLabel>
+        {screenshotUrl && annotate && (
+          <PortalAnnotateButton screenshotUrl={screenshotUrl} {...annotate} />
+        )}
+      </div>
 
       {screenshotUrl && (
         <a

@@ -131,7 +131,12 @@ export class BugReportClientService {
           `
           *,
           application:applications(id, name, slug),
-          organization:organizations(id, name)
+          organization:organizations(id, name),
+          messages:bug_report_messages(
+            id, bug_report_id, message_text, message_type, attachment_url,
+            attachment_type, author_kind, author_email, sender_user_id,
+            is_internal, is_deleted, created_at
+          )
         `
         )
         .eq('id', id)
@@ -148,6 +153,16 @@ export class BugReportClientService {
       // Extract metadata fields to top level
       const transformedData = {
         ...data,
+        // Oldest first, so the thread reads as a conversation. PostgREST returns
+        // an embedded relation in no guaranteed order, and a screenshot the
+        // reporter marked up in reply to a question is meaningless above it.
+        messages: (data.messages || [])
+          .filter((m: { is_deleted?: boolean }) => !m.is_deleted)
+          .sort(
+            (a: { created_at: string }, b: { created_at: string }) =>
+              new Date(a.created_at).getTime() -
+              new Date(b.created_at).getTime()
+          ),
         title: data.metadata?.title || 'Untitled',
         reporter_name: data.metadata?.reporter_name || null,
         reporter_email: data.metadata?.reporter_email || null,

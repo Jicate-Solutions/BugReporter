@@ -65,6 +65,14 @@ const applicationFormSchema = z.object({
         allowed_tasks: z.array(z.string()).optional()
       })
       .optional(),
+    // Screenshot annotation. Edited from its own Settings card, NOT from this
+    // form — registered here for the same reason as bug_portal below.
+    annotation: z
+      .object({
+        enabled: z.boolean().optional(),
+        tools: z.array(z.string()).optional()
+      })
+      .optional(),
     // Bug Status Portal. Edited from its own Settings card, NOT from this form —
     // but it must still be registered here, for exactly the reason above: this
     // form submits the whole `settings` object, so an unregistered bug_portal
@@ -120,8 +128,9 @@ export function ApplicationForm({
           allowed_tasks: application?.settings?.ai?.allowed_tasks || []
         },
         // Passed straight through so saving this form preserves whatever the
-        // Bug Status Portal card has configured.
-        bug_portal: application?.settings?.bug_portal ?? undefined
+        // Bug Status Portal and Screenshot annotation cards have configured.
+        bug_portal: application?.settings?.bug_portal ?? undefined,
+        annotation: application?.settings?.annotation ?? undefined
       }
     }
   });

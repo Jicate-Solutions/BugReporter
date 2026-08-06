@@ -1,3 +1,4 @@
+import type { EnhancedBugReportMessage } from './messaging';
 import type { NetworkRequest, Attachment } from './api';
 import type { BugReportStatus } from '../constants/bug-status';
 
@@ -83,7 +84,7 @@ export interface BugReport {
     email: string;
     raw_user_meta_data?: any;
   };
-  messages?: BugReportMessage[];
+  messages?: EnhancedBugReportMessage[];
 }
 
 export interface BugReportMessage {

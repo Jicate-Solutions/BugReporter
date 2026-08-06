@@ -104,7 +104,7 @@ function Pill({
     'inline-flex h-8 items-center gap-[7px] rounded-full border px-[13px] text-[13px] font-medium transition-colors';
 
   const styles = active
-    ? 'border-[#17181b] bg-[#17181b] text-white'
+    ? 'border-[var(--p-accent)] bg-[var(--p-accent)] text-white'
     : tone === 'attention'
       ? 'border-[#f0d9a8] bg-[#fff9ed] text-[#8a5a12] hover:bg-[#fef3dd]'
       : 'border-[var(--p-line-ctrl)] bg-[var(--p-card)] text-[var(--p-body)] hover:bg-[#f7f7f5]';
