@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ArrowLeft, ExternalLink, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBugReport } from '@/hooks/bug-reports/use-bug-reports';
@@ -240,13 +241,39 @@ export default function BugDetailPage() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2 text-sm">
                       <span className="font-medium">
-                        {message.user?.[0]?.email || 'Unknown'}
+                        {message.author_kind === 'reporter'
+                          ? message.author_email || 'Reporter'
+                          : 'Your team'}
                       </span>
                       <span className="text-muted-foreground">
                         {new Date(message.created_at).toLocaleString()}
                       </span>
+                      {message.is_internal && (
+                        <Badge variant="outline">Internal</Badge>
+                      )}
                     </div>
-                    <p className="mt-1 text-sm">{message.message}</p>
+                    <p className="mt-1 text-sm whitespace-pre-wrap">
+                      {message.message_text}
+                    </p>
+                    {/* A screenshot the reporter marked up. This is usually the
+                        whole content of the note — the words above it are often
+                        just "remove this" — so it is shown, not linked. */}
+                    {message.attachment_url && (
+                      <a
+                        href={message.attachment_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 block max-w-md overflow-hidden rounded-md border transition-colors hover:border-foreground/30"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={message.attachment_url}
+                          alt="The screenshot, marked up by the reporter"
+                          loading="lazy"
+                          className="max-h-72 w-full bg-white object-contain object-top"
+                        />
+                      </a>
+                    )}
                   </div>
                 </div>
               ))}

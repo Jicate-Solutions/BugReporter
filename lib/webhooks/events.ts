@@ -42,6 +42,15 @@ export interface NoteAddedPayload {
     text: string;
     author_kind: string;
     author_email: string | null;
+    /**
+     * Set when the note carries an image — a screenshot the reporter marked up.
+     *
+     * Additive on the existing event rather than an event of its own: an
+     * annotation IS a note that happens to have a picture attached, and minting
+     * `bug.annotation_added` would mean every consumer had to subscribe to a
+     * second event just to keep seeing notes it already receives.
+     */
+    attachment_url?: string | null;
   };
   occurred_at: string;
 }

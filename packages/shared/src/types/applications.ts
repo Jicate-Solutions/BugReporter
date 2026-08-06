@@ -23,6 +23,29 @@ export interface Application {
       allowed_tasks?: string[];
     };
     /**
+     * Screenshot annotation: letting a reporter draw on the capture — box the
+     * broken element, label what should change, cover anything private — instead
+     * of describing it in prose.
+     *
+     * Its own namespace rather than a key under `bug_portal`, because the
+     * feature has two surfaces and only one of them is the portal. The capture
+     * widget reads this same switch through /api/v1/public/config, and it should
+     * not have to consult a portal flag to decide whether to draw a toolbar.
+     *
+     * ⚠️ Any key added here must ALSO be registered in the zod schema in
+     * app/(dashboard)/org/[slug]/apps/_components/application-form.tsx, which
+     * strips unregistered settings keys on every save.
+     */
+    annotation?: {
+      /** Master switch. OFF until the app's own developer turns it on. */
+      enabled?: boolean;
+      /**
+       * Which of the five tools the reporter gets. Omitted means all of them —
+       * an app that opts in should not have to pick a menu as well.
+       */
+      tools?: string[];
+    };
+    /**
      * Bug Status Portal: the reporter-facing return path. Opt-in per application
      * and OFF until the app's own developer enables it from the Settings tab.
      *

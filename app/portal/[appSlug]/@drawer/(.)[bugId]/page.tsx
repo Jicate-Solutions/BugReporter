@@ -47,6 +47,7 @@ export default async function PortalBugDrawer({
 
   return (
     <PortalDrawer
+      bugId={bug.id}
       header={
         <PortalDetailHeader
           appSlug={application.slug}
@@ -67,6 +68,8 @@ export default async function PortalBugDrawer({
         signature={sig}
         allowNotes={config.allowReporterNotes}
         allowReopen={config.allowReporterReopen}
+        canAnnotate={resolved.canAnnotate}
+        annotationTools={resolved.annotationTools}
       />
     </PortalDrawer>
   );

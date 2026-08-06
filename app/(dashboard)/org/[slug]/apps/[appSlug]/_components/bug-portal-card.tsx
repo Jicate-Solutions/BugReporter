@@ -21,6 +21,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { createClient } from '@/lib/supabase/client';
 import { ApplicationClientService } from '@/lib/services/applications/client';
 import { getBugPortalConfig } from '@/lib/services/bug-portal/config';
+import { SettingsToggleRow } from './settings-toggle-row';
 import type { Application } from '@boobalan_jkkn/shared';
 
 interface BugPortalCardProps {
@@ -228,14 +229,14 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
             <Separator />
 
             <div className="space-y-4">
-              <ToggleRow
+              <SettingsToggleRow
                 id="allow-notes"
                 label="Let reporters reply"
                 description="Reporters can post notes on their own bugs. Turn off to make the portal read-only."
                 checked={allowNotes}
                 onChange={setAllowNotes}
               />
-              <ToggleRow
+              <SettingsToggleRow
                 id="allow-reopen"
                 label="Let reporters say it's still broken"
                 description="A reporter can push a bug you closed back to Seen, with a required reason. You get an email; the original resolved date is kept. Turn off to own the status outright."
@@ -244,7 +245,7 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
                 disabled={!allowNotes}
                 disabledHint="Needs replies turned on — a reopen carries a written reason."
               />
-              <ToggleRow
+              <SettingsToggleRow
                 id="allow-status"
                 label="Let reporters set the status"
                 description="Reporters can move their own reports to any status, including Resolved and Won't Fix. Off by default — this lets someone close a report your team has not fixed, and their close date counts towards your typical fix time."
@@ -253,14 +254,14 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
                 disabled={!allowNotes}
                 disabledHint="Needs replies turned on — a status change carries a note."
               />
-              <ToggleRow
+              <SettingsToggleRow
                 id="require-signature"
                 label="Require signed links"
                 description="Reject portal links without a valid HMAC signature. Only turn on once your app mints signed links, or the portal will stop opening."
                 checked={requireSignature}
                 onChange={setRequireSignature}
               />
-              <ToggleRow
+              <SettingsToggleRow
                 id="webhook-enabled"
                 label="Send webhooks"
                 description="POST to your endpoint whenever a status changes or a note is added."
@@ -328,44 +329,5 @@ export function BugPortalCard({ application, onSaved }: BugPortalCardProps) {
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function ToggleRow({
-  id,
-  label,
-  description,
-  checked,
-  onChange,
-  disabled = false,
-  disabledHint,
-}: {
-  id: string;
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-  disabledHint?: string;
-}) {
-  return (
-    <div
-      className={`flex items-start justify-between gap-4 ${
-        disabled ? 'opacity-60' : ''
-      }`}
-    >
-      <div className="space-y-0.5">
-        <Label htmlFor={id}>{label}</Label>
-        <p className="text-xs text-muted-foreground">
-          {disabled && disabledHint ? disabledHint : description}
-        </p>
-      </div>
-      <Switch
-        id={id}
-        checked={checked && !disabled}
-        onCheckedChange={onChange}
-        disabled={disabled}
-      />
-    </div>
   );
 }
