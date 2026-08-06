@@ -177,6 +177,14 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
                 }
               : undefined
           }
+          // The thumbnail becomes a way in only where the editor will actually
+          // open. Same rule as the status chip: no control that cannot be used.
+          annotateHrefFor={
+            resolved.canAnnotate
+              ? (bug) =>
+                  `/portal/${application.slug}/report/${bug.id}?${identity}&annotate=1`
+              : undefined
+          }
         >
           <PortalPagination
             appSlug={application.slug}

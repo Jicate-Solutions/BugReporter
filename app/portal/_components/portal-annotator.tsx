@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowUpRight,
   EyeOff,
@@ -497,14 +497,41 @@ interface PortalAnnotateButtonProps {
   tools: AnnotationTool[];
 }
 
+/** The query flag that opens the editor on arrival. */
+export const ANNOTATE_PARAM = 'annotate';
+
 /**
  * The one client island inside PortalEvidence, which is otherwise a server
  * component — it exists to own `open` and nothing else.
+ *
+ * It also answers `?annotate=1`, which is what makes markup reachable in one
+ * click from anywhere that can produce a URL: a thumbnail in the list, a link in
+ * a mail. Without it the only way in is to open a report, scroll to the evidence
+ * section and find a button — three deliberate steps for the thing a reporter
+ * most wants to do, which is point at what is wrong.
  */
 export function PortalAnnotateButton(props: PortalAnnotateButtonProps) {
   // No mounted guard is needed around the portal below: this only opens on a
   // click, so the overlay never renders on the server pass in the first place.
   const [open, setOpen] = useState(false);
+  const searchParams = useSearchParams();
+  const autoOpened = useRef(false);
+
+  // Once per arrival, not once per render. Without the ref, closing the editor
+  // while `?annotate=1` is still on the URL would immediately reopen it and the
+  // close button would look broken.
+  //
+  // It has to be an effect rather than the initial state, which is what the rule
+  // below would prefer. The overlay reaches for `document` to find its portal
+  // host, so rendering it during SSR throws — `open` must be false through the
+  // server pass and become true only once there is a document to render into.
+  useEffect(() => {
+    if (autoOpened.current) return;
+    if (searchParams.get(ANNOTATE_PARAM) !== '1') return;
+    autoOpened.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
+    setOpen(true);
+  }, [searchParams]);
 
   return (
     <>
