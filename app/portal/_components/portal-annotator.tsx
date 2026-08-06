@@ -261,18 +261,38 @@ export function PortalAnnotator({
 
   // ----------------------------------------------------------------- rendering
 
+  /*
+   * Opaque, and every colour in here is a solid hex.
+   *
+   * This was a 62%-black scrim carrying white-on-alpha chrome, and it shipped
+   * unreadable: the toolbar, the stroke-width dots and the footer all washed
+   * out against the page showing through, with the report behind legible at
+   * full contrast where the scrim should have been.
+   *
+   * The class itself compiles — that was checked, it is in the stylesheet — so
+   * the interesting failure is not a missing style but a fragile design. Every
+   * control's legibility rested on one translucent layer landing over content
+   * nobody had checked it against, which leaves no margin when anything about
+   * the stacking, the host page, or the compositing is not what was assumed.
+   *
+   * A solid surface cannot fail that way. Each control's contrast is now fixed
+   * where it is written and does not depend on what is behind it. That costs
+   * the glimpse of the page underneath, which was never worth much here — the
+   * screenshot in the middle is the thing being worked on, and the report it
+   * belongs to is one Escape away.
+   */
   const overlay = (
     <div
-      className="fixed inset-0 z-[80] flex flex-col bg-[rgba(20,22,25,0.62)]"
+      className="fixed inset-0 z-[80] flex flex-col bg-[#101114]"
       role="dialog"
       aria-modal="true"
       aria-label="Mark up the screenshot"
     >
-      <header className="flex flex-wrap items-center gap-3 border-b border-[rgba(255,255,255,0.12)] px-4 py-3">
+      <header className="flex flex-wrap items-center gap-3 border-b border-[#2c2f35] px-4 py-3">
         <span className="portal-display text-[15px] font-bold text-white">
           Mark up the screenshot
         </span>
-        <span className="hidden text-[12.5px] text-[rgba(255,255,255,0.62)] sm:inline">
+        <span className="hidden text-[12.5px] text-[#a9aeb8] sm:inline">
           {ANNOTATION_TOOL_HINTS[tool]}
         </span>
         <button
@@ -280,7 +300,7 @@ export function PortalAnnotator({
           onClick={() => (dirty ? setConfirmDiscard(true) : close())}
           disabled={sending}
           aria-label="Close"
-          className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-50"
+          className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#c3c7cf] transition-colors hover:bg-[#25282e] hover:text-[#ffffff] disabled:opacity-50"
         >
           <X className="h-4 w-4" />
         </button>
@@ -288,7 +308,7 @@ export function PortalAnnotator({
 
       {/* Toolbar above the image, not floating over it — a full-page capture is
           tall enough that a floating bar is always covering something. */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[rgba(255,255,255,0.12)] px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[#2c2f35] px-4 py-2.5">
         <div className="flex items-center gap-1">
           {tools.map((option) => {
             const Icon = TOOL_ICONS[option];
@@ -303,7 +323,7 @@ export function PortalAnnotator({
                 className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-medium transition-colors ${
                   active
                     ? 'bg-white text-[#17181b]'
-                    : 'text-white/75 hover:bg-white/10 hover:text-white'
+                    : 'text-[#d2d6dd] hover:bg-[#25282e] hover:text-[#ffffff]'
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />
@@ -327,7 +347,7 @@ export function PortalAnnotator({
                 style={{ background: swatch }}
                 className={`h-5 w-5 rounded-full transition-transform ${
                   swatch === color
-                    ? 'scale-110 ring-2 ring-white ring-offset-2 ring-offset-[#3a3d42]'
+                    ? 'scale-110 ring-2 ring-white ring-offset-2 ring-offset-[#101114]'
                     : 'hover:scale-110'
                 }`}
               />
@@ -345,7 +365,7 @@ export function PortalAnnotator({
                 aria-label={`Stroke ${option}`}
                 aria-pressed={option === width}
                 className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                  option === width ? 'bg-white/20' : 'hover:bg-white/10'
+                  option === width ? 'bg-[#33373e]' : 'hover:bg-[#25282e]'
                 }`}
               >
                 <span
@@ -363,7 +383,7 @@ export function PortalAnnotator({
             onClick={() => annotatorRef.current?.undo()}
             disabled={!dirty}
             title="Undo the last mark"
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-medium text-white/75 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-medium text-[#d2d6dd] transition-colors hover:bg-[#25282e] hover:text-[#ffffff] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
             <Undo2 className="h-3.5 w-3.5" />
             Undo
@@ -373,7 +393,7 @@ export function PortalAnnotator({
             onClick={() => annotatorRef.current?.clear()}
             disabled={!dirty}
             title="Remove every mark"
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-medium text-white/75 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-medium text-[#d2d6dd] transition-colors hover:bg-[#25282e] hover:text-[#ffffff] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
             <Trash2 className="h-3.5 w-3.5" />
             Start over
@@ -389,7 +409,7 @@ export function PortalAnnotator({
         ) : (
           <div className="mx-auto w-full max-w-[1100px]">
             {!ready && (
-              <p className="flex items-center justify-center gap-2 py-10 text-[13px] text-white/70">
+              <p className="flex items-center justify-center gap-2 py-10 text-[13px] text-[#c3c7cf]">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Opening the screenshot…
               </p>
@@ -398,7 +418,7 @@ export function PortalAnnotator({
               ref={canvasRef}
               // touch-none, or a drag on a phone scrolls the page instead of
               // drawing on the image.
-              className={`w-full touch-none rounded-[10px] bg-white ${
+              className={`w-full touch-none rounded-[10px] bg-white ring-1 ring-[#3a3e45] ${
                 ready ? 'block' : 'hidden'
               } ${tool === 'text' ? 'cursor-text' : 'cursor-crosshair'}`}
             />
@@ -429,7 +449,7 @@ export function PortalAnnotator({
         />
       )}
 
-      <footer className="flex flex-wrap items-center gap-2.5 border-t border-[rgba(255,255,255,0.12)] px-4 py-3">
+      <footer className="flex flex-wrap items-center gap-2.5 border-t border-[#2c2f35] px-4 py-3">
         <label htmlFor="annotation-note" className="sr-only">
           Add a note with your markup
         </label>
@@ -439,13 +459,13 @@ export function PortalAnnotator({
           onChange={(event) => setNote(event.target.value)}
           disabled={sending}
           placeholder="Say what should change — optional"
-          className="h-9 min-w-[200px] flex-1 rounded-lg border border-[rgba(255,255,255,0.18)] bg-[rgba(255,255,255,0.08)] px-3 text-[13.5px] text-white outline-none transition-colors placeholder:text-white/45 focus:border-white/40 disabled:opacity-60"
+          className="h-9 min-w-[200px] flex-1 rounded-lg border border-[#3a3e45] bg-[#1b1d22] px-3 text-[13.5px] text-white outline-none transition-colors placeholder:text-[#868b95] focus:border-[#6b7079] disabled:opacity-60"
         />
         <button
           type="button"
           onClick={() => (dirty ? setConfirmDiscard(true) : close())}
           disabled={sending}
-          className="inline-flex h-9 items-center rounded-lg border border-[rgba(255,255,255,0.18)] px-3.5 text-[13px] font-medium text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
+          className="inline-flex h-9 items-center rounded-lg border border-[#3a3e45] px-3.5 text-[13px] font-medium text-[#d2d6dd] transition-colors hover:bg-[#25282e] disabled:opacity-50"
         >
           Cancel
         </button>
@@ -469,7 +489,7 @@ export function PortalAnnotator({
           <button
             type="button"
             onClick={() => setConfirmDiscard(false)}
-            className="inline-flex h-8 items-center rounded-lg border border-[rgba(255,255,255,0.2)] px-3 text-[13px] font-medium text-white/85 transition-colors hover:bg-white/10"
+            className="inline-flex h-8 items-center rounded-lg border border-[#3a3e45] px-3 text-[13px] font-medium text-[#e6e8ec] transition-colors hover:bg-[#25282e]"
           >
             Keep editing
           </button>

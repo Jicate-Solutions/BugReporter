@@ -107,11 +107,16 @@ const STYLE = `
 /*
   Opaque, while the stage behind stays a translucent scrim.
 
-  The portal's version of this can be translucent throughout because it sits on
-  a background the portal chose. This one opens on top of whoever installed the
-  widget, and white-on-scrim over an unknown page is a coin toss: against a dark
-  chart the controls read fine, against a white form card the stroke-width dots
-  disappear completely. Solid chrome, translucent middle.
+  This opens on top of whoever installed the widget, and white-on-scrim over an
+  unknown page is a coin toss: against a dark chart the controls read fine,
+  against a white form card the stroke-width dots disappear completely. Solid
+  chrome, translucent middle.
+
+  The portal's React version of this editor was once translucent throughout, on
+  the reasoning that it sits on a background the portal itself chose. It shipped
+  with an unreadable toolbar anyway, and is fully opaque now. Do not "simplify"
+  either one back to a scrim: a control's contrast should be decided where it is
+  written, not by whatever ends up composited beneath it.
 */
 .bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
