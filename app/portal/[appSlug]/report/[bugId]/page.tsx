@@ -5,11 +5,11 @@ import {
   resolvePortalRequest,
   getReporterBug,
 } from '@/lib/services/bug-portal/server';
-import { PortalShell, PortalNotice } from '../../_components/portal-shell';
+import { PortalShell, PortalNotice } from '../../../_components/portal-shell';
 import {
   PortalDetailHeader,
   PortalDetailBody,
-} from '../../_components/portal-detail';
+} from '../../../_components/portal-detail';
 
 export const dynamic = 'force-dynamic';
 

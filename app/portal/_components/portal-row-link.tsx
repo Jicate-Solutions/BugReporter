@@ -18,8 +18,17 @@ import { usePathname } from 'next/navigation';
  * lands on the list no matter how long the reader browsed.
  *
  * "Is one already open" is read off the path rather than passed down: a report
- * URL is /portal/:appSlug/:bugId, three segments, where the list is two. The
- * alternative is threading a flag from a layout that does not know either.
+ * URL is /portal/:appSlug/report/:bugId and the list is /portal/:appSlug, so the
+ * `report` segment is the whole test. The alternative is threading a flag down
+ * from a layout that does not know either.
+ *
+ * That segment is not decoration. The panel is an intercepting route, and Next
+ * rewrites the intercepted path by prefixing the `(.)` marker onto it — with a
+ * bare `(.)[bugId]` the rewritten `/(.)<id>` matches `[bugId]` all over again,
+ * because a dynamic segment matches the marker too. The rewrite then runs away,
+ * the RSC request 500s, and Next falls back to a hard navigation that cannot be
+ * intercepted at all. A static segment is what stops the pattern matching its
+ * own output.
  */
 export function PortalRowLink({
   href,
@@ -31,7 +40,7 @@ export function PortalRowLink({
   'aria-label': string;
 }) {
   const pathname = usePathname();
-  const panelOpen = pathname.split('/').filter(Boolean).length >= 3;
+  const panelOpen = pathname.includes('/report/');
 
   return (
     <Link

@@ -3,11 +3,11 @@ import {
   resolvePortalRequest,
   getReporterBug,
 } from '@/lib/services/bug-portal/server';
-import { PortalDrawer } from '../../../_components/portal-drawer';
+import { PortalDrawer } from '../../../../_components/portal-drawer';
 import {
   PortalDetailHeader,
   PortalDetailBody,
-} from '../../../_components/portal-detail';
+} from '../../../../_components/portal-detail';
 
 export const dynamic = 'force-dynamic';
 

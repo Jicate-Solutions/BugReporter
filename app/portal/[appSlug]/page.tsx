@@ -162,7 +162,7 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
         <PortalTable
           bugs={result.bugs}
           hrefFor={(bug) =>
-            `/portal/${application.slug}/${bug.id}?${identity}`
+            `/portal/${application.slug}/report/${bug.id}?${identity}`
           }
           // Absent unless the application opted in, which is what makes the
           // rows fall back to plain badges rather than to a control that
