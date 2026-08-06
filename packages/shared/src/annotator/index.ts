@@ -1,14 +1,16 @@
 /*
-  Relative specifiers carry the `.js` extension on purpose, even though these are
-  `.ts` files and `moduleResolution: bundler` does not require it.
+  Extensionless on purpose, and the published output does not match this.
 
-  TypeScript rewrites neither: whatever is written here is what lands in the
-  emitted JavaScript. Extensionless, that output is resolvable by bundlers and by
-  nothing else — Node's ESM loader requires a real path and answers
-  ERR_MODULE_NOT_FOUND. Since this package is published for an SDK we do not
-  control the bundling of, the imports are written the way the runtime needs and
-  TypeScript maps them back to the `.ts` files itself.
+  This package is consumed two ways. Here it is a `file:` dependency read as raw
+  TypeScript, and Turbopack resolves `./types` to `types.ts` but does NOT resolve
+  `./types.js` to it — writing the specifier the way Node's ESM loader wants
+  breaks `next build` outright, with `isAnnotationTool` silently missing from the
+  barrel. Published, it is compiled JavaScript, and there Node needs the
+  extension or answers ERR_MODULE_NOT_FOUND.
+
+  Both are true at once, so the specifier is written for the source consumer and
+  `scripts/add-esm-extensions.mjs` rewrites it for the published one after tsc.
 */
-export * from './types.js';
-export * from './engine.js';
-export * from './widget.js';
+export * from './types';
+export * from './engine';
+export * from './widget';

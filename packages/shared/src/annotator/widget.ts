@@ -6,8 +6,8 @@ import {
   type AnnotationTool,
   type Annotator,
   type Point,
-} from './types.js';
-import { createAnnotator } from './engine.js';
+} from './types';
+import { createAnnotator } from './engine';
 
 /** Authored against a 1000px-wide image; the engine scales them to the real one. */
 const STROKE_WIDTHS = [2, 4, 8];

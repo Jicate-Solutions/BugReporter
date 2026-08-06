@@ -5,7 +5,7 @@ import {
   type Annotator,
   type AnnotatorOptions,
   type Point,
-} from './types.js';
+} from './types';
 
 /**
  * Ceiling on the canvas backing store, in pixels.
