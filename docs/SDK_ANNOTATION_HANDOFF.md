@@ -85,12 +85,37 @@ Header: X-API-Key: <the application's key>
 CORS is open, same as the submit endpoint. `enabled` is opt-in per application
 and defaults to **false**.
 
-### 3. A reference implementation
+### 3. The editor itself — you no longer have to build it
 
-`app/portal/_components/portal-annotator.tsx` in this repo is a complete wrapper
-around the engine — toolbar, colour swatches, stroke widths, the text input,
-undo/clear, and a discard guard. It is about 200 lines over the engine and the
-capture-time version is the same component with a different footer.
+`@boobalan_jkkn/shared` also exports `mountAnnotator`, the whole capture-time
+editor as one call. Toolbar, colour swatches, stroke widths, the text input,
+undo/clear, the discard guard and the export are all inside it. It is
+framework-free and renders into a shadow root, so the host application's CSS
+cannot reach in and nothing it does leaks out.
+
+```ts
+import { mountAnnotator } from '@boobalan_jkkn/shared';
+
+mountAnnotator({
+  image: capturedDataUrl,        // what captureScreenshot() resolved with
+  tools: config.annotation.tools, // from /api/v1/public/config, order respected
+  onDone: (dataUrl) => {
+    // send this as screenshot_data_url. If nothing was drawn it is the string
+    // you passed in, byte for byte — no pointless re-encode of a clean capture.
+    setScreenshot(dataUrl);
+  },
+  onCancel: () => {},            // optional; never fires after onDone
+});
+```
+
+It unmounts itself before `onDone`/`onCancel` fire, so there is nothing to clean
+up. The returned handle has a `destroy()` if you need to tear it down yourself
+(the reporter navigated away mid-edit, say); it is idempotent.
+
+`app/portal/_components/portal-annotator.tsx` is still there and is still the
+React equivalent, but you should not need to read it — it exists because the
+portal is React and wants its own palette, not because the widget needs a
+reference to copy.
 
 ---
 
@@ -109,9 +134,10 @@ capture-time version is the same component with a different footer.
 
 3. **Show the editor after capture, before the form.** Today
    `handleOpenWidget()` captures and drops the result into an 80px-tall cropped
-   thumbnail with no zoom, no retake, and no edit. Replace that thumbnail with
-   the editor (or with the thumbnail plus a "Mark up" button opening it — the
-   portal uses the second shape, and it keeps the fast path fast).
+   thumbnail with no zoom, no retake, and no edit. Keep that thumbnail and put a
+   "Mark up" button beside it that calls `mountAnnotator` — the portal uses that
+   shape and it keeps the fast path fast, since most reports do not need a mark.
+   This is now a handful of lines, not a component: see section 3 above.
 
 4. **Submit `annotator.exportDataUrl()` as `screenshot_data_url`.** The request
    shape does not change at all: `POST /api/v1/public/bug-reports` already takes
@@ -121,6 +147,49 @@ capture-time version is the same component with a different footer.
 
 5. **Only offer the tools the config returned**, in the order given. An app that
    has turned off `text` should not see a text button.
+
+---
+
+## While you are in there: the border shorthand warning
+
+Unrelated to annotation, but it lives in the same file you will be editing and it
+fires on every category click in the widget today (seen on v1.3.2):
+
+```
+Removing a style property during rerender (borderColor) when a conflicting
+property is set (border) can lead to styling bugs.
+Removing a style property during rerender (borderWidth) ...
+```
+
+React manages inline styles by diffing the object it last applied. A base style
+that sets the `border` **shorthand** and a modifier that sets the `borderColor` /
+`borderWidth` **longhands** cannot be diffed coherently: when the modifier comes
+off, React removes the longhands while the shorthand is still there, and which
+border you end up with is down to property ordering.
+
+Three pairs in the styles object do this. In each case the fix is to split the
+shorthand in the **base** into longhands — not to change the modifier:
+
+| Base | Currently | Modifier that conflicts |
+|---|---|---|
+| `categoryCard` | `border: '1.5px solid #e5e7eb'` | `categoryCardSelected` → `borderColor`, `borderWidth` |
+| `filterButton` | `border: '1px solid #e5e7eb'` | `filterButtonActive` → `borderColor` |
+| `bugCard` | `border: '1px solid #e5e7eb'` | `bugCardHover` → `borderColor` |
+
+```diff
+  categoryCard: {
+-   border: '1.5px solid #e5e7eb',
++   borderWidth: '1.5px',
++   borderStyle: 'solid',
++   borderColor: '#e5e7eb',
+    borderRadius: '0.5rem',
+```
+
+The same applies to the `onMouseEnter` / `onMouseLeave` handlers that write
+`e.currentTarget.style.borderColor` directly. Those do not warn, because they
+bypass React — but they are the same latent bug: React's next style diff owns
+that element's `border` and will overwrite whatever the handler set. Prefer
+driving hover from state, or at minimum split the base there too.
 
 ---
 

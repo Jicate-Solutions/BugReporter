@@ -1,7 +1,7 @@
 {
   "name": "@boobalan_jkkn/shared",
-  "version": "1.0.0",
-  "private": true,
+  "version": "1.1.0",
+  "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -9,8 +9,31 @@
     "./types": "./src/types/index.ts",
     "./annotator": "./src/annotator/index.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./types": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/types/index.js"
+      },
+      "./annotator": {
+        "types": "./dist/annotator/index.d.ts",
+        "default": "./dist/annotator/index.js"
+      }
+    }
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "typescript": "^5.3.3"
