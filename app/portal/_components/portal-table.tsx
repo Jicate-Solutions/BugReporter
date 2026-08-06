@@ -1,5 +1,6 @@
+import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
-import { Image as ImageIcon, MessageSquare, RotateCcw } from 'lucide-react';
+import { Image as ImageIcon, MessageSquare, Pencil, RotateCcw } from 'lucide-react';
 import { PortalRowLink } from './portal-row-link';
 import { PortalStatusBadge } from './portal-status-badge';
 import { PortalStatusControl } from './portal-status-control';
@@ -24,6 +25,12 @@ interface PortalTableProps {
   bugs: PortalBugSummary[];
   hrefFor: (bug: PortalBugSummary) => string;
   editStatus?: PortalTableEditStatus;
+  /**
+   * Where a row's "mark up this screenshot" link goes. Absent when the
+   * application has not turned annotation on, in which case the thumbnail stays
+   * a picture and nothing suggests otherwise.
+   */
+  annotateHrefFor?: (bug: PortalBugSummary) => string;
   children?: React.ReactNode;
 }
 
@@ -48,6 +55,7 @@ export function PortalTable({
   bugs,
   hrefFor,
   editStatus,
+  annotateHrefFor,
   children,
 }: PortalTableProps) {
   return (
@@ -68,6 +76,7 @@ export function PortalTable({
           bug={bug}
           href={hrefFor(bug)}
           editStatus={editStatus}
+          annotateHref={annotateHrefFor?.(bug)}
         />
       ))}
 
@@ -80,10 +89,12 @@ function Row({
   bug,
   href,
   editStatus,
+  annotateHref,
 }: {
   bug: PortalBugSummary;
   href: string;
   editStatus?: PortalTableEditStatus;
+  annotateHref?: string;
 }) {
   const updated = formatDistanceToNow(new Date(bug.lastActivityAt), {
     addSuffix: false,
@@ -166,13 +177,47 @@ function Row({
             name, and there is nothing truthful to say about the picture that the
             title does not already say.
           */
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={thumb}
-            alt=""
-            loading="lazy"
-            className="h-[52px] w-[84px] shrink-0 rounded-[7px] border border-[var(--p-line)] bg-[var(--p-sunken)] object-cover object-left-top"
-          />
+          <span className="relative block h-[52px] w-[84px] shrink-0">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={thumb}
+              alt=""
+              loading="lazy"
+              className="h-full w-full rounded-[7px] border border-[var(--p-line)] bg-[var(--p-sunken)] object-cover object-left-top"
+            />
+
+            {annotateHref && (
+              /*
+                The picture is the button.
+
+                Marking up a screenshot used to mean opening the report and
+                finding a control below the fold — three steps for the thing a
+                reporter most wants to do, which is point at what is wrong. The
+                thumbnail is already the most recognisable thing in the row, so
+                it is what you click.
+
+                z-10 for the same reason the status chip has it: the row's link
+                is a transparent overlay painted above the cells, and anything
+                meant to be clickable has to sit above that in turn.
+
+                The pencil is always drawn rather than revealed on hover — a
+                hover-only affordance does not exist on a phone, and this has to
+                be findable, which is the entire point of moving it here.
+              */
+              <Link
+                href={annotateHref}
+                prefetch={false}
+                title="Mark up this screenshot"
+                aria-label={`Mark up the screenshot for ${bug.display_id}`}
+                className="group absolute inset-0 z-10 rounded-[7px] outline-none"
+              >
+                <span className="absolute inset-0 rounded-[7px] bg-[rgba(20,22,25,0.45)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                <span className="absolute bottom-1 right-1 flex h-[18px] w-[18px] items-center justify-center rounded-[5px] bg-[rgba(20,22,25,0.72)] transition-colors group-hover:bg-[var(--p-accent)]">
+                  <Pencil className="h-2.5 w-2.5 text-white" />
+                </span>
+              </Link>
+            )}
+          </span>
         )}
 
       <div className="min-w-0 flex-1">
