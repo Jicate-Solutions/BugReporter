@@ -15,12 +15,19 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getCatalogEntry } from './catalog';
+import { isProbeable } from '../uptime/probe';
 
 export interface RoutineContext {
   admin: SupabaseClient;
   organizationId: string;
   applicationId: string | null; // null = fleet-level (org-wide)
   routineId: string; // used to build a stable per-routine dedupe key
+  /**
+   * Epoch ms after which this caller will be killed by its platform timeout.
+   * Set by the cron dispatcher (maxDuration=60); omitted by run-now
+   * (maxDuration=90), which can afford the full per-call budget.
+   */
+  deadlineAt?: number;
 }
 
 export interface RoutineInput {
@@ -163,32 +170,103 @@ const APP_BRIEF: RoutineKind = {
 // synchronous compute requests to the app itself. Do not "fix" this by wiring a
 // queue: there is no consumer for these tasks on the Door side.
 
-const BUILDWISE_JOB_TIMEOUT_MS = 60000;
-const BUILDWISE_ERROR_BODY_MAX = 2000; // keep run.error readable, not a body dump
+const BUILDWISE_JOB_TIMEOUT_MS = 60000; // ceiling for one call (run-now can afford it)
+const BUILDWISE_MIN_CALL_MS = 5000; // below this, don't start a call we can't finish
+const BUILDWISE_ERROR_BODY_MAX = 300; // keep run.error readable, not a body dump
+
+/**
+ * Decide whether the shared jobs secret may be sent to this application's URL.
+ *
+ * applications.app_url is org-admin editable (apps/_components/application-form.tsx)
+ * and the Routines UI lets an admin attach any catalogue kind to any application in
+ * the org — so the URL on the row is untrusted input, not a constant. Unguarded, an
+ * admin could register an app pointing at a host they control, attach a buildwise.*
+ * routine, press Run Now and be handed BUILDWISE_JOBS_SECRET.
+ *
+ * The gate is an operator-set host, NOT the app slug: slug is editable in the same
+ * form as app_url, so slug-gating would stop nobody. Unset host = refuse (fail closed).
+ */
+export function resolveBuildWiseJobUrl(
+  appUrl: string | null | undefined,
+  jobName: string,
+  expectedHost: string | undefined
+): { ok: true; url: string } | { ok: false; error: string } {
+  if (!appUrl) return { ok: false, error: 'The application has no app_url to call.' };
+
+  const expected = (expectedHost ?? '').trim().toLowerCase();
+  if (!expected) {
+    return {
+      ok: false,
+      error: 'BUILDWISE_JOBS_HOST is not configured — refusing to send the jobs secret to an unverified host.'
+    };
+  }
+  // Reuse the uptime probe's private/malformed-host guard rather than a second copy.
+  if (!isProbeable(appUrl)) {
+    return { ok: false, error: 'The app_url is localhost/private/malformed — refusing to send the jobs secret there.' };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(appUrl);
+  } catch {
+    return { ok: false, error: 'The application has no usable app_url to call.' };
+  }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, error: `Refusing to send the jobs secret over ${parsed.protocol}// — https is required.` };
+  }
+  if (parsed.hostname.toLowerCase() !== expected) {
+    return {
+      ok: false,
+      error: `Refusing to send the jobs secret to unexpected host "${parsed.hostname}" (expected "${expected}").`
+    };
+  }
+
+  // Build from the parsed URL so the authority can never be rewritten by the suffix.
+  parsed.pathname = `${parsed.pathname.replace(/\/+$/, '')}/api/jobs/${jobName}`;
+  return { ok: true, url: parsed.toString() };
+}
 
 async function runBuildWiseJob(ctx: RoutineContext, jobName: string): Promise<DirectRunOutcome> {
   if (!ctx.applicationId) {
     return { ok: false, error: 'BuildWise routines are app-scoped — attach the routine to an application, not the fleet.' };
   }
-  const secret = process.env.BUILDWISE_JOBS_SECRET;
-  if (!secret) return { ok: false, error: 'BUILDWISE_JOBS_SECRET is not configured on the platform.' };
 
   const { data: app, error: appErr } = await ctx.admin
     .from('applications')
     .select('app_url')
     .eq('id', ctx.applicationId)
     .single();
-  const appUrl = (app?.app_url as string | null) ?? null;
-  if (appErr || !appUrl) return { ok: false, error: 'The application has no app_url to call.' };
+  if (appErr) return { ok: false, error: 'The application has no app_url to call.' };
 
-  const url = `${appUrl.replace(/\/+$/, '')}/api/jobs/${jobName}`;
+  // Destination is validated BEFORE the secret is read — nothing to leak on refusal.
+  const target = resolveBuildWiseJobUrl(
+    (app?.app_url as string | null) ?? null,
+    jobName,
+    process.env.BUILDWISE_JOBS_HOST
+  );
+  if (!target.ok) return { ok: false, error: target.error };
+
+  const secret = process.env.BUILDWISE_JOBS_SECRET;
+  if (!secret) return { ok: false, error: 'BUILDWISE_JOBS_SECRET is not configured on the platform.' };
+
+  // Never run past the caller's own deadline: being killed mid-call leaves no run
+  // row at all (silent disappearance), which is worse than a recorded timeout.
+  const budgetMs = ctx.deadlineAt
+    ? Math.min(BUILDWISE_JOB_TIMEOUT_MS, ctx.deadlineAt - Date.now())
+    : BUILDWISE_JOB_TIMEOUT_MS;
+  if (budgetMs < BUILDWISE_MIN_CALL_MS) {
+    return { ok: false, error: 'Not enough time left in this dispatcher run to call BuildWise; deferred to the next tick.' };
+  }
+
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetch(target.url, {
       method: 'POST',
       headers: { 'x-jobs-secret': secret },
       cache: 'no-store',
-      signal: AbortSignal.timeout(BUILDWISE_JOB_TIMEOUT_MS)
+      // A 3xx must never carry the secret header onward to a host we didn't vet.
+      redirect: 'error',
+      signal: AbortSignal.timeout(budgetMs)
     });
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : `BuildWise unreachable (${jobName})` };
@@ -214,11 +292,14 @@ function buildwiseKind(catalogId: string, jobName: string): DirectRoutineKind {
   return {
     ...getCatalogEntry(catalogId)!, // id, name, whatItDoes, default cadence
     mode: 'direct',
-    // readOnly here means: nothing THIS PLATFORM can be blamed for reaches a human.
-    // The BuildWise job may write DRAFT alert rows inside BuildWise itself (its own
-    // data, never sent to anyone). Nothing user-facing is sent by this routine —
-    // that is the dispatcher invariant ("can't close a bug or message a human"),
-    // and it holds. Flagged in the PR body for the maintainer to judge.
+    // readOnly here means ONLY: this routine changes nothing in the reporter's own
+    // data. It does NOT mean the run is side-effect-free at the far end.
+    //
+    // cash-digest / budget-watchdog / anomaly-scan call writeAlerts() in BuildWise,
+    // which calls notifyAlertPush() on every new HIGH-severity row — a push
+    // notification to the managing director's phone. Only buildwise.reconcile is
+    // genuinely silent. Scheduling one of the first three is scheduling a message
+    // to a human; treat any new buildwise.* kind the same way until proven silent.
     readOnly: true,
     execute: (ctx) => runBuildWiseJob(ctx, jobName)
   };

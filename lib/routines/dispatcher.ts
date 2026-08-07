@@ -8,10 +8,17 @@
  *   COLLECT — poll fresh in-flight runs (bounded concurrency, short timeout) and
  *             force-fail stale ones (> TTL) so their routine becomes re-claimable.
  *
- * Safety: only read-only routine kinds exist in the registry — nothing here can
- * close a bug or message a human. Isolation stays per-org (reporter-<orgId>).
- * Direct-compute kinds (buildwise.*) hold the same boundary: the target app may
- * write DRAFT rows inside itself, but nothing user-facing is ever sent.
+ * Safety: only read-only routine kinds exist in the registry — nothing here
+ * closes a bug, and nothing in the reporter's own data is mutated. Isolation
+ * stays per-org (reporter-<orgId>).
+ *
+ * That invariant stops at this platform's edge. Direct-compute kinds call another
+ * app, and three of the buildwise.* kinds (cash-digest, budget-watchdog,
+ * anomaly-scan) reach writeAlerts() over there, which pushes a notification to the
+ * managing director's phone for every new high-severity finding. Only
+ * buildwise.reconcile is silent. So: "cannot message a human" is TRUE of the
+ * reporter and FALSE of what a direct routine can trigger downstream. Say so when
+ * adding a kind — do not restore the old blanket claim.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -51,9 +58,16 @@ const POLL_TIMEOUT_MS = 8000; // short: hung polls must not blow the 60s cron bu
 const STALE_RUN_MS = 45 * 60 * 1000; // a run in-flight longer than this is force-failed
 const COLLECT_LIMIT = 40;
 const POLL_BATCH = 5; // bounded concurrency
-const FIRE_DEADLINE_MS = 45000; // wall-clock headroom under maxDuration=60
+const FIRE_DEADLINE_MS = 45000; // stop STARTING routines this long after the request began
+// Hard wall for a direct call, measured from the same instant. maxDuration=60, so a
+// call aborted at 52s still leaves ~8s to insert its run row and let COLLECT bail.
+// Worst case is now 45s (last permitted start) + 7s budget = 52s, not 45 + 60 = 105s.
+const DIRECT_DEADLINE_MS = 52000;
 
 export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSummary> {
+  // Anchor every wall-clock budget to the REQUEST start, not to post-PRUNE: a slow
+  // prune used to push the FIRE window (and with it the direct call) past maxDuration.
+  const dispatchStartedAt = Date.now();
   const summary: DispatchSummary = {
     claimed: 0,
     enqueued: 0,
@@ -76,9 +90,8 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
   const routines = (due ?? []) as RoutineRow[];
   summary.claimed = routines.length;
 
-  const fireStartedAt = Date.now();
   for (const r of routines) {
-    if (Date.now() - fireStartedAt > FIRE_DEADLINE_MS) {
+    if (Date.now() - dispatchStartedAt > FIRE_DEADLINE_MS) {
       // Out of wall-clock budget — leave the rest claimed. They re-claim after the
       // 30-min window (last_run_at unstamped, so nothing is lost, just deferred).
       console.warn('[dispatcher] FIRE deadline reached; deferring remaining routines');
@@ -104,14 +117,16 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
       // Direct-compute kinds (e.g. the buildwise.* lane): the target app does the
       // work over HTTPS and the answer arrives in this same request. No engine
       // job is enqueued, so the run row is terminal here — COLLECT never sees it.
-      // The call is bounded by the kind's own fetch timeout; the FIRE deadline
-      // check above keeps a slow app from starving the rest of the batch.
+      // deadlineAt caps the call so it cannot outlive this function: without it a
+      // routine starting just under FIRE_DEADLINE could run 60s more and be killed
+      // before recordRun, leaving no run row and no error — a silent disappearance.
       if (kind.mode === 'direct') {
         const outcome = await kind.execute({
           admin,
           organizationId: r.organization_id,
           applicationId: r.application_id,
-          routineId: r.id
+          routineId: r.id,
+          deadlineAt: dispatchStartedAt + DIRECT_DEADLINE_MS
         });
         if (outcome.ok) {
           const nowIso = new Date().toISOString();

@@ -30,13 +30,22 @@ export const ROUTINE_CATALOG: RoutineCatalogEntry[] = [
   },
   // ── BuildWise lane — the app computes, the console keeps the receipt ─────────
   // These call BuildWise's own /api/jobs/* endpoints over HTTPS and file the
-  // returned summary here. Any alerts they cause are DRAFT rows inside BuildWise
-  // itself — this platform never sends anything to a human.
+  // returned summary here.
+  //
+  // NOT side-effect-free: cash-digest, budget-watchdog and anomaly-scan write
+  // alert rows in BuildWise, and a new HIGH-severity row pushes a notification to
+  // the managing director's phone. Only reconcile is silent. Scheduling one of the
+  // first three schedules a message to a human — keep the copy below honest.
+  //
+  // BuildWise has a fifth job, push-flush, deliberately NOT listed here: it is the
+  // delivery path (it releases queued notifications), not a read. Adding it would
+  // turn this lane from "ask for a summary" into "make the platform send", which is
+  // a different safety review. Leave it out.
   {
     id: 'buildwise.cash-digest',
     name: 'BuildWise: daily cash digest',
     whatItDoes:
-      "Asks BuildWise for the day's cash picture — money in, money out, where balances stand — and files the summary here.",
+      "Asks BuildWise for the day's cash picture — money in, money out, where balances stand — and files the summary here. A high-severity finding also pushes a notification to the managing director's phone.",
     defaultDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
     defaultMinuteOfDay: 890, // 14:50 UTC ≈ 20:20 IST
     direct: true
@@ -45,7 +54,7 @@ export const ROUTINE_CATALOG: RoutineCatalogEntry[] = [
     id: 'buildwise.budget-watchdog',
     name: 'BuildWise: budget watchdog',
     whatItDoes:
-      'Has BuildWise compare spend against each project budget and draft internal alerts for lines running hot. Drafts stay inside BuildWise — nothing is sent to anyone.',
+      "Has BuildWise compare spend against each project budget and raise alerts for lines running hot. A high-severity alert also pushes a notification to the managing director's phone.",
     defaultDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
     defaultMinuteOfDay: 905, // 15:05 UTC ≈ 20:35 IST
     direct: true
@@ -54,7 +63,7 @@ export const ROUTINE_CATALOG: RoutineCatalogEntry[] = [
     id: 'buildwise.anomaly-scan',
     name: 'BuildWise: anomaly scan',
     whatItDoes:
-      'Weekly sweep where BuildWise looks for transactions that break its usual patterns and drafts internal flags for review. Summary lands here.',
+      "Weekly sweep where BuildWise looks for transactions that break its usual patterns and raises flags for review. A high-severity flag also pushes a notification to the managing director's phone. Summary lands here.",
     defaultDaysOfWeek: [0], // Sundays (0=Sun, matching Postgres DOW)
     defaultMinuteOfDay: 920, // 15:20 UTC ≈ 20:50 IST
     direct: true
