@@ -31,5 +31,13 @@
     "**/*.mts",
     "./packages/shared/src/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // Its own package, with its own tsconfig, dependencies and build. The
+    // app's include globs (**/*.ts) would otherwise compile it, and it
+    // resolves imports like html2canvas from its own node_modules — which is
+    // gitignored and never installed on a deploy, so the app built locally
+    // and failed on Vercel.
+    "packages/bug-reporter-sdk"
+  ]
 }
