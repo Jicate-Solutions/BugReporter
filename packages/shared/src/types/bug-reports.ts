@@ -1,6 +1,7 @@
 import type { EnhancedBugReportMessage } from './messaging';
 import type { NetworkRequest, Attachment } from './api';
 import type { BugReportStatus } from '../constants/bug-status';
+import type { BugReportCategory } from '../constants/bug-category';
 
 // Status lives in ../constants/bug-status.ts, which is the single source of truth
 // and matches the database CHECK constraint. This module previously declared its
@@ -10,12 +11,11 @@ export type { BugReportStatus };
 
 export type BugReportPriority = 'low' | 'medium' | 'high' | 'critical';
 
-export type BugReportCategory =
-  | 'ui'
-  | 'functionality'
-  | 'performance'
-  | 'security'
-  | 'other';
+// Category lives in ../constants/bug-category.ts, which is the single source
+// of truth. This module previously declared its own union
+// (`ui | functionality | ...`) that the database has never held — re-exported
+// here so existing importers keep working.
+export type { BugReportCategory };
 
 export interface BugReport {
   id: string;
@@ -130,13 +130,7 @@ export interface BugReportStats {
     high: number;
     critical: number;
   };
-  by_category: {
-    ui: number;
-    functionality: number;
-    performance: number;
-    security: number;
-    other: number;
-  };
+  by_category: Record<BugReportCategory, number>;
   recent_count: number;
 }
 
