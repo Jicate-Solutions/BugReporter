@@ -128,7 +128,8 @@ export interface SubmitBugReportRequest {
     language?: string;
   };
   console_logs?: Array<{
-    level: 'log' | 'warn' | 'error' | 'info';
+    // 'debug' included: the widget patches console.debug and ships it too.
+    level: 'log' | 'warn' | 'error' | 'info' | 'debug';
     message: string;
     timestamp: string;
   }>;

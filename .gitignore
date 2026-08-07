@@ -46,3 +46,7 @@ next-env.d.ts
 
 # build output of the local packages (produced by prepublishOnly)
 packages/*/dist
+
+# /node_modules above is anchored to the repo root, so a package with its own
+# dependencies was not covered by it.
+packages/*/node_modules

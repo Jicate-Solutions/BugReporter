@@ -1,6 +1,10 @@
 import { createClient } from '@/lib/supabase/server';
 import type { BugReport, BugReportStats, BugReportStatus } from '@boobalan_jkkn/shared';
-import { BUG_STATUSES } from '@boobalan_jkkn/shared';
+import {
+  BUG_REPORT_CATEGORIES,
+  BUG_STATUSES,
+  type BugReportCategory,
+} from '@boobalan_jkkn/shared';
 
 export class BugReportServerService {
   /**
@@ -118,13 +122,18 @@ export class BugReportServerService {
           high: 0,
           critical: 0,
         },
-        by_category: {
-          ui: bugs?.filter((b) => b.category === 'ui').length || 0,
-          functionality: bugs?.filter((b) => b.category === 'functionality').length || 0,
-          performance: bugs?.filter((b) => b.category === 'performance').length || 0,
-          security: bugs?.filter((b) => b.category === 'security').length || 0,
-          other: bugs?.filter((b) => b.category === 'other').length || 0,
-        },
+        // Driven by the constant, like by_status above, so it cannot drift from
+        // the vocabulary again. The hand-written version counted `ui` and
+        // `functionality` — neither of which the database has ever held — and
+        // omitted `bug`, `ui_design` and `feature_request`, which between them
+        // are 91% of every report ever filed.
+        by_category: BUG_REPORT_CATEGORIES.reduce(
+          (acc, category) => ({
+            ...acc,
+            [category]: bugs?.filter((b) => b.category === category).length || 0,
+          }),
+          {} as Record<BugReportCategory, number>
+        ),
         recent_count:
           bugs?.filter((b) => {
             const weekAgo = new Date();
