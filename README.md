@@ -36,8 +36,11 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `BUILDWISE_JOBS_SECRET` | Yes, for the `buildwise.*` routines | Shared secret sent as the `x-jobs-secret` header when the routine dispatcher (and the run-now route) POSTs BuildWise's `/api/jobs/<name>` endpoints. Must match the value BuildWise itself is deployed with. Without it, every `buildwise.*` run records an error. |
+| `BUILDWISE_JOBS_HOST` | Yes, for the `buildwise.*` routines | The one hostname the secret above may be sent to, e.g. `buildwise.example.com` (host only — no scheme, no path). The destination comes from `applications.app_url`, which any org admin can edit, so the call is refused unless that URL is `https://` and its hostname matches this exactly. Unset means every `buildwise.*` run refuses — deliberate, not a bug. |
 
 The `buildwise.*` routines are direct HTTPS compute calls to the target app (resolved from `applications.app_url`) — they never go through the MyJKKN AI engine.
+
+**These runs are not side-effect-free.** `cash-digest`, `budget-watchdog` and `anomaly-scan` raise alerts inside BuildWise, and a new high-severity alert pushes a notification to the managing director's phone. Only `reconcile` is silent. BuildWise's fifth job, `push-flush`, is deliberately absent from the catalog because it is the notification delivery path rather than a read.
 
 ## Deploy on Vercel
 
