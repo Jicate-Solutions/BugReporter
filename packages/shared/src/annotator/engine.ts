@@ -315,6 +315,18 @@ export function createAnnotator(options: AnnotatorOptions): Annotator {
     const at = toImageSpace(event.clientX, event.clientY);
 
     if (tool === 'text') {
+      // Before handing the point over, not after.
+      //
+      // A pointerdown's default action moves focus, and the wrapper's response
+      // to this callback is to show an input and focus it. Without the
+      // preventDefault the browser then takes that focus straight back for the
+      // canvas, the input blurs, and a wrapper that commits on blur erases its
+      // own field — the box appears and vanishes in the same frame, and the
+      // tool looks broken. A wrapper that happens to focus a tick later (React
+      // in an effect, say) survives this by luck; one that focuses synchronously
+      // does not, and neither should have to care.
+      event.preventDefault();
+
       // The engine owns the mark, the wrapper owns the input — a canvas cannot
       // be typed into.
       onRequestText?.(at, { x: event.clientX, y: event.clientY });
