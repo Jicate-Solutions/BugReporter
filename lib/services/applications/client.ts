@@ -2,6 +2,8 @@
 
 import { createClient } from '@/lib/supabase/client';
 import { generateApiKey } from '@/lib/utils/api-key-generator';
+import { AI_TASK_KEYS } from '@/lib/ai/tasks';
+import { getCatalogEntry } from '@/lib/routines/catalog';
 import type {
   Application,
   CreateApplicationPayload,
