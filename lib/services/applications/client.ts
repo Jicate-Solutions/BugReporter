@@ -102,7 +102,16 @@ export class ApplicationClientService {
           app_url: payload.app_url,
           api_key: apiKey,
           created_by_user_id: user.id,
-          settings: payload.settings || {},
+          settings: {
+            ...(payload.settings || {}),
+            // A new app arrives with its AI door open on the full task menu, so
+            // the org /ai page shows it wired without a second setup step. A
+            // caller that passes its own settings.ai keeps it.
+            ai: payload.settings?.ai ?? {
+              enabled: true,
+              allowed_tasks: [...AI_TASK_KEYS],
+            },
+          },
         })
         .select()
         .single();
@@ -110,6 +119,30 @@ export class ApplicationClientService {
       if (error) {
         console.error('[ApplicationClientService] Create error:', error);
         throw new Error(error.message);
+      }
+
+      // Auto-wire the default routine (org /routines page). Enabled from birth is
+      // safe: routine kinds are read-only by invariant, and app.brief skips the
+      // engine entirely while the app has zero bugs. Best-effort — the app row is
+      // the deliverable; a wiring failure warns but never rolls back creation.
+      const brief = getCatalogEntry('app.brief');
+      if (brief) {
+        const { error: routineError } = await supabase
+          .from('app_ai_routines')
+          .insert({
+            organization_id: payload.organization_id,
+            application_id: data.id,
+            routine_kind: brief.id,
+            enabled: true,
+            days_of_week: brief.defaultDaysOfWeek,
+            minute_of_day: brief.defaultMinuteOfDay,
+          });
+        if (routineError && !/duplicate|unique/i.test(routineError.message)) {
+          console.warn(
+            '[ApplicationClientService] App created but routine auto-wiring failed:',
+            routineError.message
+          );
+        }
       }
 
       console.log('[ApplicationClientService] Created application:', data.name);
