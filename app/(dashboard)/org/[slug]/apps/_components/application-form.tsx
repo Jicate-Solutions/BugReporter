@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -17,7 +18,7 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { AllowedDomainsInput } from './allowed-domains-input';
-import { AVAILABLE_AI_TASKS } from '@/lib/ai/tasks';
+import { FALLBACK_AI_TASKS, type AiTask } from '@/lib/ai/tasks';
 import type { Application } from '@boobalan_jkkn/shared';
 
 const applicationFormSchema = z.object({
@@ -105,6 +106,34 @@ export function ApplicationForm({
   onSubmit,
   submitLabel = 'Create Application'
 }: ApplicationFormProps) {
+  // The tick-list below must offer the tasks MyJKKN actually allows, not a copy
+  // that drifts. This component and both its parent pages are client
+  // components, so there is no server parent to read the catalogue and pass it
+  // in — it comes from /api/internal/ai/job-types, which reads MyJKKN
+  // server-side (the engine key never reaches the browser). Seeded with the
+  // offline snapshot so the list is never momentarily empty, and left on that
+  // snapshot if the engine is unreachable.
+  const [availableTasks, setAvailableTasks] = useState<AiTask[]>(() =>
+    FALLBACK_AI_TASKS.map((t) => ({ ...t }))
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/internal/ai/job-types', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { tasks?: AiTask[] } | null) => {
+        if (!cancelled && Array.isArray(data?.tasks) && data.tasks.length > 0) {
+          setAvailableTasks(data.tasks);
+        }
+      })
+      .catch(() => {
+        /* keep the snapshot — a menu is better than an empty list */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const form = useForm<ApplicationFormValues>({
     resolver: zodResolver(applicationFormSchema),
     defaultValues: {
@@ -398,7 +427,7 @@ export function ApplicationForm({
                   <code>task_not_permitted</code>.
                 </FormDescription>
                 <div className='mt-3 space-y-3'>
-                  {AVAILABLE_AI_TASKS.map((task) => {
+                  {availableTasks.map((task) => {
                     const selected = field.value ?? [];
                     const checked = selected.includes(task.key);
                     return (
