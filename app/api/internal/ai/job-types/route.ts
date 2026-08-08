@@ -1,7 +1,12 @@
 /**
  * Internal AI route — the live task catalogue, for the dashboard's own UI.
  *
- *   GET /api/internal/ai/job-types → { tasks: [{ key, label, description }] }
+ *   GET /api/internal/ai/job-types
+ *     → { tasks: [{ key, label, description, enabled }], live: boolean }
+ *
+ * `live` says whether the tasks came from MyJKKN (true) or from the offline
+ * snapshot (false). The caller needs it to tell "this app is approved for a
+ * task MyJKKN has withdrawn" apart from "we simply couldn't reach MyJKKN".
  *
  * WHY THIS EXISTS. The application form (apps/_components/application-form.tsx)
  * renders the "Approved AI tasks" tick-list, and it is a client component — as
@@ -41,6 +46,9 @@ export async function GET() {
 
   // Never throws: falls back to the offline snapshot if MyJKKN is unreachable,
   // so the tick-list always renders something usable.
-  const tasks = await getAvailableAiTasks();
-  return NextResponse.json({ tasks }, { headers: { 'Cache-Control': 'no-store' } });
+  const { tasks, live } = await getAvailableAiTasks();
+  return NextResponse.json(
+    { tasks, live },
+    { headers: { 'Cache-Control': 'no-store' } }
+  );
 }
