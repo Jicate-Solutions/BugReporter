@@ -1,6 +1,12 @@
 'use client';
 
-import { useState, type CSSProperties, type MouseEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+} from 'react';
 import {
   AlertCircle,
   Bug,
@@ -39,6 +45,15 @@ const styles: Record<string, CSSProperties> = {
     justifyContent: 'center',
     transition: 'all 0.3s ease',
     padding: 0,
+
+    // Menu libraries park `pointer-events: none` on <body> while a layer is
+    // open — Radix's dismissable-layer does exactly this — which makes every
+    // element under the body un-hittable, this button included. The press then
+    // lands on <html> instead, the library reads that as a click outside its
+    // layer and closes the dropdown, and the button never hears about it at
+    // all. pointer-events is inherited, but an explicit `auto` on a descendant
+    // re-enables hit testing for that element regardless of the ancestor.
+    pointerEvents: 'auto',
   },
   modal: {
     position: 'fixed',
@@ -51,6 +66,11 @@ const styles: Record<string, CSSProperties> = {
     zIndex: 10000,
     padding: '1rem',
     animation: 'fadeIn 0.2s ease-in',
+
+    // Same reason as the button. releaseBlockedPage() normally clears the
+    // host's layer before this ever renders, but a layer that ignores Escape
+    // would otherwise leave the whole report form unclickable.
+    pointerEvents: 'auto',
   },
   card: {
     backgroundColor: 'white',
@@ -308,6 +328,41 @@ const WIDGET_CSS = `
         `;
 
 /**
+ * Hand the page back to the reporter once the shot is taken.
+ *
+ * A library that blocks outside pointer events restores <body> only when its
+ * layer unmounts. Leave the dropdown open and our own form inherits the block:
+ * the reporter could see the fields but not type in them. Escape is the
+ * dismissal those libraries listen for themselves, so the layer comes down
+ * through its normal path and puts back the style it saved — far safer than
+ * clearing document.body.style.pointerEvents behind the library's back, which
+ * would leave its bookkeeping pointing at a value that is no longer there.
+ *
+ * Only fires when the page is actually blocked, so an ordinary report on an
+ * ordinary page never dispatches a stray Escape.
+ */
+function releaseBlockedPage(): void {
+  if (document.body.style.pointerEvents !== 'none') return;
+
+  const target =
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : document.body;
+
+  target.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      // Long-deprecated, still what some older menu libraries branch on.
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+      cancelable: true,
+    } as KeyboardEventInit)
+  );
+}
+
+/**
  * The floating bug button and the report form behind it.
  *
  * Reconstructed from the published 1.3.2 bundle. The screenshot is taken when
@@ -325,6 +380,74 @@ export function BugReporterWidget() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const { apiClient, config } = useBugReporter();
 
+  // The window-level listeners below are registered once and never rebound, so
+  // they reach the current handler through a ref rather than closing over a
+  // stale one.
+  const openRef = useRef<() => void>(() => {});
+
+  // Menu libraries — Radix, Headless UI, MUI — dismiss their open layer from a
+  // document-level listener on any press landing outside it. That fires well
+  // before our onClick does, so by capture time the dropdown the reporter was
+  // trying to show us has already unmounted. Swallowing the press on the way
+  // down, in the capture phase at window level, gets in front of every document
+  // listener in either phase, so none of them ever sees it.
+  //
+  // click is swallowed too, which means React's own delegated onClick — bound
+  // on the root container, well below window — never runs. Activation happens
+  // here instead. The two paths are mutually exclusive by construction: if this
+  // listener ran, propagation stopped; if it never bound, onClick still works.
+  useEffect(() => {
+    const isOnButton = (event: Event) =>
+      event.target instanceof Element &&
+      event.target.closest('.bug-reporter-floating-btn') !== null;
+
+    const swallow = (event: Event) => {
+      if (isOnButton(event)) event.stopPropagation();
+    };
+
+    // preventDefault on mousedown keeps focus where it was, so layers that
+    // close on blur stay open too. Deliberately not done for pointerdown or
+    // touchstart — there it would cancel the compatibility click and leave the
+    // button dead on touch devices.
+    const swallowMouseDown = (event: Event) => {
+      if (!isOnButton(event)) return;
+      event.stopPropagation();
+      event.preventDefault();
+    };
+
+    const activate = (event: Event) => {
+      if (!isOnButton(event)) return;
+      event.stopPropagation();
+      event.preventDefault();
+      openRef.current();
+    };
+
+    const opts = { capture: true } as const;
+    const swallowed = [
+      'pointerdown',
+      'pointerup',
+      'touchstart',
+      'touchend',
+      'mouseup',
+      // Nothing should move focus onto this button, but a keyboard reporter
+      // tabbing to it would, and a layer that closes on focus-out would go
+      // with it.
+      'focusin',
+    ];
+
+    swallowed.forEach((type) => window.addEventListener(type, swallow, opts));
+    window.addEventListener('mousedown', swallowMouseDown, opts);
+    window.addEventListener('click', activate, opts);
+
+    return () => {
+      swallowed.forEach((type) =>
+        window.removeEventListener(type, swallow, opts)
+      );
+      window.removeEventListener('mousedown', swallowMouseDown, opts);
+      window.removeEventListener('click', activate, opts);
+    };
+  }, []);
+
   const resetForm = () => {
     setIsOpen(false);
     setTitle('');
@@ -335,14 +458,26 @@ export function BugReporterWidget() {
   };
 
   const handleOpenWidget = async () => {
+    // A press that lands while a capture is already running, or while the form
+    // is already up, would shoot the same page twice. The button carries no
+    // `disabled` prop to lean on — see the comment on it below — so the guard
+    // lives here.
+    if (isCapturing || isOpen) return;
+
     setIsCapturing(true);
     try {
       const captured = await captureScreenshot();
       setScreenshot(captured);
+
+      // Only after the shot: the dropdown has to survive the capture, and it
+      // has to be gone before the form needs the page back.
+      releaseBlockedPage();
+
       setIsOpen(true);
       toast.success('Screenshot captured successfully!');
     } catch (error) {
       console.error('[BugReporter SDK] Screenshot failed:', error);
+      releaseBlockedPage();
       toast.error('Failed to capture screenshot. Please try again.', {
         duration: 5000,
       });
@@ -350,6 +485,14 @@ export function BugReporterWidget() {
       setIsCapturing(false);
     }
   };
+
+  // No dependency array: rebound after every commit so the listeners always
+  // call the latest closure, with current isCapturing/isOpen values.
+  useEffect(() => {
+    openRef.current = () => {
+      void handleOpenWidget();
+    };
+  });
 
   const handleSubmit = async () => {
     if (!apiClient) {
@@ -437,7 +580,11 @@ export function BugReporterWidget() {
 
       <button
         onClick={handleOpenWidget}
-        disabled={isCapturing}
+        // Deliberately not `disabled`. A disabled control fires no pointer
+        // events at all — the press would retarget to an ancestor, slip past
+        // the swallowing above, and close the very dropdown being captured.
+        // handleOpenWidget guards the re-entry instead.
+        aria-busy={isCapturing}
         style={{
           ...styles.floatingButton,
           ...(isCapturing ? { transform: 'scale(0.9)' } : {}),
