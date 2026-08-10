@@ -3,28 +3,51 @@
 -- =============================================
 -- GENERATE DISPLAY ID FOR BUG REPORTS
 -- =============================================
+-- Sequence-backed. The previous version derived the number from COUNT(*) and
+-- formatted it with LPAD(count::TEXT, 3, '0'), which wedged the whole table once
+-- it passed 999 rows: lpad() truncates anything wider than its target, so
+-- lpad('1000', 3, '0') is '100' — an id that already existed. The uniqueness
+-- WHILE loop then recomputed that identical taken value forever and every INSERT
+-- died at the statement timeout. See
+-- migrations/20260810_fix_bug_display_id_overflow.sql.
+
+CREATE SEQUENCE IF NOT EXISTS public.bug_display_id_seq AS bigint;
 
 CREATE OR REPLACE FUNCTION generate_bug_display_id()
-RETURNS TEXT AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public AS $$
 DECLARE
-  new_id TEXT;
-  count INTEGER;
+  n         BIGINT;
+  candidate TEXT;
 BEGIN
-  -- Get count of existing bugs + 1
-  SELECT COUNT(*) + 1 INTO count FROM bug_reports;
+  IF NEW.display_id IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
 
-  -- Format as BUG-001, BUG-002, etc.
-  new_id := 'BUG-' || LPAD(count::TEXT, 3, '0');
+  -- Bounded, so an exhausted or contended namespace surfaces as an error rather
+  -- than as a hang. The sequence makes collisions essentially impossible; this
+  -- only covers ids introduced outside it (restored dumps, hand-written rows).
+  FOR i IN 1..50 LOOP
+    n := nextval('public.bug_display_id_seq');
 
-  -- Ensure uniqueness
-  WHILE EXISTS (SELECT 1 FROM bug_reports WHERE display_id = new_id) LOOP
-    count := count + 1;
-    new_id := 'BUG-' || LPAD(count::TEXT, 3, '0');
+    -- Pad only while the number fits the width; never truncate.
+    -- BUG-999 is followed by BUG-1000.
+    candidate := 'BUG-' || CASE
+      WHEN n < 1000 THEN LPAD(n::TEXT, 3, '0')
+      ELSE n::TEXT
+    END;
+
+    IF NOT EXISTS (SELECT 1 FROM bug_reports WHERE display_id = candidate) THEN
+      NEW.display_id := candidate;
+      RETURN NEW;
+    END IF;
   END LOOP;
 
-  RETURN new_id;
+  RAISE EXCEPTION
+    'bug_reports.display_id: no free identifier after 50 attempts (sequence at %)', n;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 -- =============================================
 -- GENERATE API KEY FOR APPLICATIONS
