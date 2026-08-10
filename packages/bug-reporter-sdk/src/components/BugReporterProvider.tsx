@@ -153,6 +153,10 @@ export function BugReporterProvider({
       {enabled && apiClient && <BugReporterWidget />}
       <Toaster
         position="top-right"
+        // The container has no stable class of its own, and screenshots now
+        // keep the page's overlays. Tag it so it is still recognised as ours
+        // and stays out of the capture.
+        containerClassName="bug-reporter-sdk"
         toastOptions={{
           duration: 3000,
           style: {
