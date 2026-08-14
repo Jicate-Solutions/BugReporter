@@ -6,7 +6,6 @@ export interface PortalView {
   sig?: string;
   q?: string;
   status?: string;
-  area?: string;
   reply?: boolean;
   sort?: ReporterBugSort;
   page?: number;
@@ -36,7 +35,6 @@ export function portalHref(
   if (next.sig) params.set('sig', next.sig);
   if (next.q) params.set('q', next.q);
   if (next.status) params.set('status', next.status);
-  if (next.area) params.set('area', next.area);
   if (next.reply) params.set('reply', '1');
   if (next.sort && next.sort !== 'newest') params.set('sort', next.sort);
   if (next.page && next.page > 1) params.set('page', String(next.page));

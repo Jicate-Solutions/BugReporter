@@ -67,18 +67,34 @@ export async function POST(
 
     const { application, reporterEmail, config } = resolved;
 
-    if (!config.allowReporterStatus) {
-      return NextResponse.json(
-        { message: 'Changing the status is turned off for this application.' },
-        { status: 403 }
-      );
-    }
-
     const toStatus = body.status;
     if (!isBugStatus(toStatus)) {
       return NextResponse.json(
         { message: `Status must be one of: ${BUG_STATUSES.join(', ')}.` },
         { status: 400 }
+      );
+    }
+
+    // Two different permissions, because they are two different powers.
+    //
+    // Closing is the reporter's half of the verification handoff: it only works
+    // from ready_for_testing, it only ever means "I agree the fix works", and it
+    // is on by default. Setting an arbitrary status is the broad power that lets
+    // a reporter declare their own bug resolved without anyone looking at it —
+    // off by default, and the reason 26 reports on this platform went straight
+    // from New to Resolved with no developer involved.
+    const permitted =
+      toStatus === 'closed' ? config.allowReporterClose : config.allowReporterStatus;
+
+    if (!permitted) {
+      return NextResponse.json(
+        {
+          message:
+            toStatus === 'closed'
+              ? 'Closing reports is turned off for this application.'
+              : 'Changing the status is turned off for this application.',
+        },
+        { status: 403 }
       );
     }
 
@@ -146,8 +162,17 @@ export async function POST(
     });
 
     if (!result.ok) {
+      // FORBIDDEN_ACTOR is a permission answer, not a malformed request: the
+      // reporter asked for a status that is the team's to set. 403 so the portal
+      // can tell "you may not" apart from "that made no sense".
       const status =
-        result.code === 'NOT_FOUND' ? 404 : result.code === 'DB_ERROR' ? 500 : 400;
+        result.code === 'NOT_FOUND'
+          ? 404
+          : result.code === 'FORBIDDEN_ACTOR'
+            ? 403
+            : result.code === 'DB_ERROR'
+              ? 500
+              : 400;
       console.error('[portal/status] Status change refused:', result);
       return NextResponse.json({ message: result.message }, { status });
     }
