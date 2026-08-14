@@ -17,17 +17,57 @@ export const BUG_STATUSES = [
   'new',
   'seen',
   'in_progress',
+  'ready_for_testing',
   'resolved',
+  'closed',
   'wont_fix',
 ] as const;
 
 export type BugReportStatus = (typeof BUG_STATUSES)[number];
 
-/** Statuses that close a bug and stamp `resolved_at`. */
+/**
+ * Statuses that close a bug and stamp `resolved_at`.
+ *
+ * `ready_for_testing` is deliberately NOT here. The developer has finished, but
+ * the bug is not done until the client says so — marking it terminal would stamp
+ * a resolution time before anyone verified the fix, drop it out of the team's
+ * open queue, and pull the median time-to-fix toward whatever the developer
+ * believed rather than what actually held up.
+ *
+ * `resolved` stays terminal because 399 existing rows carry it and their
+ * `resolved_at` is already stamped. It is legacy — see the comment on
+ * BUG_STATUS_PROGRESSION.
+ */
 export const TERMINAL_BUG_STATUSES: readonly BugReportStatus[] = [
+  'closed',
   'resolved',
   'wont_fix',
 ] as const;
+
+/**
+ * Who is allowed to move a bug INTO each status.
+ *
+ * The point of splitting "done" in two is that each half belongs to a different
+ * person, and a rule that lives only in the UI is a rule anyone can skip by
+ * calling the API. `applyStatusChange` is the single write path, so this map is
+ * enforced there for the dashboard, the portal and the public API at once.
+ *
+ * `closed` lists both actors on purpose. The client closing is the intended
+ * path, but on an application whose reporters have never once opened the portal,
+ * a client-only rule would leave every fix parked in `ready_for_testing`
+ * forever. A developer closing is recorded in bug_status_events like any other
+ * change, so "who accepted this" stays answerable.
+ *
+ * Statuses absent from this map are open to anyone — the triage states are not
+ * claims about whether the work is finished.
+ */
+export const STATUS_ACTOR_RULES: Partial<
+  Record<BugReportStatus, readonly ('dashboard_user' | 'reporter' | 'api_key' | 'system')[]>
+> = {
+  ready_for_testing: ['dashboard_user', 'api_key', 'system'],
+  closed: ['reporter', 'dashboard_user'],
+  wont_fix: ['dashboard_user', 'api_key', 'system'],
+};
 
 /**
  * Where a bug lands when its reporter says it is still broken.
@@ -48,7 +88,11 @@ export const BUG_STATUS_LABELS: Record<BugReportStatus, string> = {
   new: 'New',
   seen: 'Seen',
   in_progress: 'In Progress',
+  // Named for what it asks of the reader, not for what the developer did.
+  // "Fixed" would be the team's claim; this is the request that follows it.
+  ready_for_testing: 'Ready for Testing',
   resolved: 'Resolved',
+  closed: 'Closed',
   wont_fix: "Won't Fix",
 };
 
@@ -57,7 +101,13 @@ export const BUG_STATUS_BADGE_CLASS: Record<BugReportStatus, string> = {
   new: 'bg-blue-100 text-blue-800 border-blue-200',
   seen: 'bg-amber-100 text-amber-800 border-amber-200',
   in_progress: 'bg-orange-100 text-orange-800 border-orange-200',
+  // Cyan, because it is the only status that is a question rather than a
+  // report — it must not read as either in-progress amber or finished green.
+  ready_for_testing: 'bg-cyan-100 text-cyan-800 border-cyan-200',
   resolved: 'bg-green-100 text-green-800 border-green-200',
+  // Deeper than resolved: the client agreed, which is the strongest "done" the
+  // system can express.
+  closed: 'bg-emerald-200 text-emerald-900 border-emerald-300',
   wont_fix: 'bg-gray-100 text-gray-700 border-gray-200',
 };
 
@@ -69,7 +119,9 @@ export const BUG_STATUS_EMAIL_COLORS: Record<
   new: { bg: '#dbeafe', text: '#1d4ed8' },
   seen: { bg: '#fef3c7', text: '#b45309' },
   in_progress: { bg: '#ffedd5', text: '#c2410c' },
+  ready_for_testing: { bg: '#cffafe', text: '#155e75' },
   resolved: { bg: '#dcfce7', text: '#15803d' },
+  closed: { bg: '#a7f3d0', text: '#064e3b' },
   wont_fix: { bg: '#f3f4f6', text: '#374151' },
 };
 
@@ -81,8 +133,40 @@ export const BUG_STATUS_PROGRESSION: readonly BugReportStatus[] = [
   'new',
   'seen',
   'in_progress',
+  'ready_for_testing',
+  'closed',
+] as const;
+
+/**
+ * Statuses the flow no longer produces, kept because history carries them.
+ *
+ * `resolved` predates the split between "the developer finished" and "the client
+ * agrees". 399 rows hold it with `resolved_at` already stamped, and
+ * bug_status_events records transitions into it that must stay readable. It is
+ * still a valid, still terminal status; nothing new should be moved into it.
+ *
+ * Anything offering the reader a choice of status should hide these, which is
+ * what separates them from BUG_STATUSES — and anything DISPLAYING a status must
+ * still handle them, which is why they stay in it.
+ */
+export const LEGACY_BUG_STATUSES: readonly BugReportStatus[] = [
   'resolved',
 ] as const;
+
+/** The statuses a control should offer today. */
+export const SELECTABLE_BUG_STATUSES: readonly BugReportStatus[] =
+  BUG_STATUSES.filter((s) => !LEGACY_BUG_STATUSES.includes(s));
+
+/**
+ * Whether `actor` may move a bug into `status`. See STATUS_ACTOR_RULES.
+ */
+export function canActorSetStatus(
+  actorKind: 'dashboard_user' | 'reporter' | 'api_key' | 'system',
+  status: BugReportStatus
+): boolean {
+  const allowed = STATUS_ACTOR_RULES[status];
+  return allowed ? allowed.includes(actorKind) : true;
+}
 
 /** Narrows an untrusted string (request body, query param, DB row) to a status. */
 export function isBugStatus(value: unknown): value is BugReportStatus {

@@ -7,6 +7,8 @@ export interface BugPortalConfig {
   allowReporterNotes: boolean;
   /** Lets a reporter push a closed bug back open with a reason. */
   allowReporterReopen: boolean;
+  /** Lets a reporter accept a fix the team has marked ready for testing. */
+  allowReporterClose: boolean;
   /** Lets a reporter move their own report to any status, not just reopen it. */
   allowReporterStatus: boolean;
   requireSignature: boolean;
@@ -44,6 +46,18 @@ export function getBugPortalConfig(
     // settings UI and the API cannot disagree about it.
     allowReporterReopen:
       allowReporterNotes && portal?.allow_reporter_reopen !== false,
+    // Defaults on, like reopen and for the same reason: it is narrow. Closing
+    // only ever moves a bug the team has already declared fixed into the state
+    // that says the reporter agrees, and applyStatusChange refuses it from any
+    // other starting point. An application that has a verification step wants
+    // the person doing the verifying to be able to record the result.
+    //
+    // Deliberately NOT gated behind allowReporterStatus. That switch is the
+    // broad "a reporter may set anything" power and is off by default; if
+    // closing rode on it, the half of the workflow that belongs to the client
+    // would be off by default too, and the handoff would never complete.
+    allowReporterClose:
+      allowReporterNotes && portal?.allow_reporter_close !== false,
     // Opt-in (`=== true`), not opt-out like the two above. Reopening is narrow
     // and can only ask for more work; setting an arbitrary status can claim work
     // is done — `resolved` stamps resolved_at, empties the bug out of the team's

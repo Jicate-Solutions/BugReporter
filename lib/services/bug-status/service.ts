@@ -11,6 +11,7 @@ import {
   isTerminalBugStatus,
   isReopenTransition,
   isValidStatusTransition,
+  canActorSetStatus,
   bugStatusLabel,
   type BugReportStatus,
 } from '@boobalan_jkkn/shared';
@@ -51,7 +52,12 @@ export type ApplyStatusChangeResult =
   | { ok: true; bug: Record<string, any>; fromStatus: BugReportStatus }
   | {
       ok: false;
-      code: 'NOT_FOUND' | 'INVALID_STATUS' | 'INVALID_TRANSITION' | 'DB_ERROR';
+      code:
+        | 'NOT_FOUND'
+        | 'INVALID_STATUS'
+        | 'INVALID_TRANSITION'
+        | 'FORBIDDEN_ACTOR'
+        | 'DB_ERROR';
       message: string;
     };
 
@@ -114,6 +120,34 @@ export async function applyStatusChange(
       message: `Cannot move a bug from ${bugStatusLabel(
         fromStatus
       )} to ${bugStatusLabel(toStatus)}.`,
+    };
+  }
+
+  // Who is allowed to say this. The split between "the developer finished" and
+  // "the client agrees" is only real if the two cannot set each other's status,
+  // and a rule enforced in the portal's dropdown is a rule anyone can skip by
+  // posting to the API. This is the one place every caller passes through.
+  if (!canActorSetStatus(actor.kind, toStatus)) {
+    return {
+      ok: false,
+      code: 'FORBIDDEN_ACTOR',
+      message:
+        actor.kind === 'reporter'
+          ? `Only the team can move a report to ${bugStatusLabel(toStatus)}.`
+          : `${bugStatusLabel(toStatus)} cannot be set from here.`,
+    };
+  }
+
+  // Closing means "I tested the fix and it works", so there has to be a fix to
+  // have tested. Without this a client could close a bug nobody had looked at,
+  // which is the same hole that let 26 reports go straight from New to Resolved
+  // with no developer involved.
+  if (toStatus === 'closed' && fromStatus !== 'ready_for_testing') {
+    return {
+      ok: false,
+      code: 'INVALID_TRANSITION',
+      message:
+        'A report can only be closed once the team has marked it ready for testing.',
     };
   }
 

@@ -63,6 +63,8 @@ export interface Application {
        * bug returns to `seen` and the app owner is emailed. Defaults on.
        */
       allow_reporter_reopen?: boolean;
+      /** Lets a reporter accept a fix the team marked ready for testing. Defaults on. */
+      allow_reporter_close?: boolean;
       /**
        * Whether a reporter may set their own report to any of the five statuses
        * from the portal, not just push a closed one back open.

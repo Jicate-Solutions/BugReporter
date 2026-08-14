@@ -43,14 +43,20 @@ export function PortalDetailHeader({
   reporterEmail,
   signature,
   canSetStatus,
+  canSetAnyStatus,
+  canClose,
   canReopen,
 }: {
   appSlug: string;
   bug: PortalBugSummary;
   reporterEmail: string;
   signature?: string;
-  /** Whether this application lets reporters set the status themselves. */
+  /** Whether the control renders at all: either power is enough. */
   canSetStatus: boolean;
+  /** The broad "set anything" power. Off for most applications. */
+  canSetAnyStatus: boolean;
+  /** Accepting a fix the team marked ready for testing. On by default. */
+  canClose: boolean;
   canReopen: boolean;
 }) {
   return (
@@ -69,6 +75,8 @@ export function PortalDetailHeader({
             reporterEmail={reporterEmail}
             signature={signature}
             canReopen={canReopen}
+            canSetAnyStatus={canSetAnyStatus}
+            canClose={canClose}
           />
         ) : (
           <PortalStatusBadge status={bug.status} />

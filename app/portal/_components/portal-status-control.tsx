@@ -6,9 +6,10 @@ import { useRouter } from 'next/navigation';
 import { Check, ChevronDown, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
-  BUG_STATUSES,
   BUG_STATUS_LABELS,
+  SELECTABLE_BUG_STATUSES,
   bugStatusLabel,
+  canActorSetStatus,
   isBugStatus,
   isReopenTransition,
   type BugReportStatus,
@@ -34,6 +35,18 @@ interface PortalStatusControlProps {
    * matter which control produced it.
    */
   canReopen: boolean;
+  /**
+   * Whether this application lets reporters set any status at all, as opposed
+   * to only accepting a fix. Off for most applications: it is the power to
+   * declare your own bug resolved without anyone having looked at it.
+   */
+  canSetAnyStatus: boolean;
+  /**
+   * Whether this application lets reporters close a report the team has marked
+   * ready for testing. On by default — it is the reporter's half of the
+   * verification handoff, and with it off nothing the team fixes ever completes.
+   */
+  canClose: boolean;
 }
 
 /**
@@ -114,6 +127,8 @@ export function PortalStatusControl({
   reporterEmail,
   signature,
   canReopen,
+  canSetAnyStatus,
+  canClose,
 }: PortalStatusControlProps) {
   const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -225,6 +240,36 @@ export function PortalStatusControl({
   const blocked = (target: BugReportStatus) =>
     isReopenTransition(current, target) && !canReopen;
 
+  /**
+   * What this reporter is allowed to choose at all.
+   *
+   * Not the same question as `blocked`, which greys out a choice the reporter
+   * can see and understand. These are the team's to set — a reporter offered
+   * "Ready for Testing" would be offered the chance to declare their own bug
+   * fixed, which is precisely the hole that let 26 reports go from New straight
+   * to Resolved with no developer involved. They are absent rather than
+   * disabled: a disabled row invites the question "why not me?", and the honest
+   * answer is that it was never theirs.
+   *
+   * Mirrors canActorSetStatus('reporter', …) in the shared vocabulary, which is
+   * what the API enforces. This list only decides what gets drawn.
+   */
+  const offered = SELECTABLE_BUG_STATUSES.filter((option: BugReportStatus) => {
+    if (!canActorSetStatus('reporter', option)) return false;
+
+    // Closing means "I tested it and it works", so it only appears once there
+    // is a fix to have tested. applyStatusChange refuses it from anywhere else,
+    // and a menu item that always fails is worse than no menu item.
+    if (option === 'closed') {
+      return canClose && current === 'ready_for_testing';
+    }
+
+    // Everything else is the broad power, which most applications leave off.
+    // Without this the menu would offer New / Seen / In Progress to a reporter
+    // whose every click the route then answers with a 403.
+    return canSetAnyStatus;
+  });
+
   const trimmedNote = note.trim();
 
   /**
@@ -310,7 +355,7 @@ export function PortalStatusControl({
     >
       {!pending ? (
         <ul role="listbox" aria-label="Status" className="m-0 list-none p-0">
-          {BUG_STATUSES.map((option) => {
+          {offered.map((option: BugReportStatus) => {
             const isCurrent = option === current;
             const isBlocked = blocked(option);
             return (

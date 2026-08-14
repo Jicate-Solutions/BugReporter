@@ -22,7 +22,9 @@ const STATUS_HOVER_CLASS: Record<BugReportStatus, string> = {
   new: 'hover:bg-blue-200',
   seen: 'hover:bg-amber-200',
   in_progress: 'hover:bg-orange-200',
+  ready_for_testing: 'hover:bg-cyan-200',
   resolved: 'hover:bg-green-200',
+  closed: 'hover:bg-emerald-300',
   wont_fix: 'hover:bg-gray-200'
 };
 

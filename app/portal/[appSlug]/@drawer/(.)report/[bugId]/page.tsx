@@ -54,7 +54,9 @@ export default async function PortalBugDrawer({
           bug={bug}
           reporterEmail={reporterEmail}
           signature={sig}
-          canSetStatus={config.allowReporterStatus}
+          canSetStatus={config.allowReporterStatus || config.allowReporterClose}
+          canSetAnyStatus={config.allowReporterStatus}
+          canClose={config.allowReporterClose}
           canReopen={config.allowReporterReopen}
         />
       }

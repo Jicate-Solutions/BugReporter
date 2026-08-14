@@ -19,6 +19,8 @@ export interface PortalTableEditStatus {
   reporterEmail: string;
   signature?: string;
   canReopen: boolean;
+  canSetAnyStatus: boolean;
+  canClose: boolean;
 }
 
 interface PortalTableProps {
@@ -121,6 +123,8 @@ function Row({
         reporterEmail={editStatus.reporterEmail}
         signature={editStatus.signature}
         canReopen={editStatus.canReopen}
+        canSetAnyStatus={editStatus.canSetAnyStatus}
+        canClose={editStatus.canClose}
       />
     </span>
   ) : (

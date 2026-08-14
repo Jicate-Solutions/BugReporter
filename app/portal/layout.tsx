@@ -85,7 +85,12 @@ export default function PortalLayout({ children }: { children: ReactNode }) {
           --p-rail-new:  #8b93dd;
           --p-rail-seen: #a08fdc;
           --p-rail-prog: #e0a83f;
+          /* Waiting on the reporter. Cyan reads as neither "being worked on"
+             nor "finished", which is exactly what this state is. */
+          --p-rail-test: #3fa8bd;
           --p-rail-done: #4ea36f;
+          /* The reporter agreed. Deeper than done, because it is more done. */
+          --p-rail-closed: #2f7d52;
           --p-rail-wont: #c7c7c2;
 
           background: var(--p-page);

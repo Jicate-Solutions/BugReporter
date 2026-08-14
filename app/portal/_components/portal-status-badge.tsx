@@ -17,7 +17,14 @@ const CHIP: Record<BugReportStatus, { bg: string; fg: string }> = {
   new: { bg: '#eef2ff', fg: '#3b46a8' },
   seen: { bg: '#f3f0ff', fg: '#5b46a8' },
   in_progress: { bg: '#fff4e5', fg: '#8a5a12' },
+  // The one chip that asks the reporter for something. Cyan sits apart from the
+  // amber of work-in-progress and the green of work-that-is-done, because it is
+  // neither: the team has stopped and is waiting on them.
+  ready_for_testing: { bg: '#e2f6fa', fg: '#12626f' },
   resolved: { bg: '#e9f7ee', fg: '#1f6b3d' },
+  // Deeper than resolved. The reporter agreed, which is the strongest finish
+  // this system has.
+  closed: { bg: '#dcf0e3', fg: '#14532d' },
   wont_fix: { bg: '#f2f2f0', fg: '#6b6f76' },
 };
 
