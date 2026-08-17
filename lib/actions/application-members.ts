@@ -82,6 +82,23 @@ export async function getApplicationMembersAction(applicationId: string) {
   }
 }
 
+export async function getManageableApplicationIdsAction() {
+  try {
+    const data =
+      await ApplicationMemberServerService.getManageableApplicationIds();
+    return { data, error: null };
+  } catch (error) {
+    console.error('[getManageableApplicationIdsAction] Error:', error);
+    return {
+      data: null,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to fetch manageable applications',
+    };
+  }
+}
+
 export async function getUserApplicationsAction(userId: string) {
   try {
     const data = await ApplicationMemberServerService.getUserApplications(

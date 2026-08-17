@@ -332,26 +332,35 @@ export function BugReportsDataTable({
         </div>
 
         <div className='flex flex-wrap items-center gap-2'>
-          {/* Application Filter — value is the slug, matching the URL */}
-          <Select
-            value={filters.app || 'all'}
-            onValueChange={(value) =>
-              onFiltersChange({ app: value === 'all' ? '' : value })
-            }
-            disabled={applicationsLoading || applications.length === 0}
-          >
-            <SelectTrigger className='w-[200px]'>
-              <SelectValue placeholder='All Applications' />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='all'>All Applications</SelectItem>
-              {applications.map((app) => (
-                <SelectItem key={app.id} value={app.slug}>
-                  {app.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Application Filter — value is the slug, matching the URL.
+              With no applications shared with this user the control would be
+              a silently dead dropdown, so say why instead. */}
+          {!applicationsLoading && applications.length === 0 ? (
+            <p className='w-[260px] text-xs text-muted-foreground'>
+              No applications shared with you — ask an admin for access to
+              filter by application.
+            </p>
+          ) : (
+            <Select
+              value={filters.app || 'all'}
+              onValueChange={(value) =>
+                onFiltersChange({ app: value === 'all' ? '' : value })
+              }
+              disabled={applicationsLoading}
+            >
+              <SelectTrigger className='w-[200px]'>
+                <SelectValue placeholder='All Applications' />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='all'>All Applications</SelectItem>
+                {applications.map((app) => (
+                  <SelectItem key={app.id} value={app.slug}>
+                    {app.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
           {/* Status Filter — options come from the shared vocabulary */}
           <Select
