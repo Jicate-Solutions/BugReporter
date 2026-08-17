@@ -142,9 +142,11 @@ export const GET = withApiKeyAuth(
  * PATCH /api/v1/public/bug-reports/:id
  * Add a note to a bug report.
  *
- * Status changes are NOT available to integrated applications — status is owned
- * by the BugReporter dashboard. A request carrying `status` is rejected with a
- * message pointing at the right place, rather than silently ignored.
+ * Status changes are not made here. They have their own route —
+ * POST /api/v1/public/bug-reports/:id/status — because they carry rules a note
+ * does not: per-application permissions, a required reason on a reopen, and a
+ * history row. A request carrying `status` is rejected with a pointer to it,
+ * rather than silently ignored.
  *
  * Request body:
  * - resolution_notes: the note to append
@@ -181,7 +183,7 @@ export const PATCH = withApiKeyAuth(
       if (body.status) {
         return createApiErrorResponse(
           'FORBIDDEN',
-          'Status is managed in the BugReporter dashboard and cannot be changed through the public API. Use this endpoint (or POST /messages) to add a note instead.',
+          'Use POST /api/v1/public/bug-reports/:id/status to change the status. This endpoint (and POST /messages) adds a note.',
           403
         );
       }
