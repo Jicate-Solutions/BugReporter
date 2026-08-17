@@ -17,6 +17,11 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { engineConfig, enqueueJob, pollJob } from '@/lib/routines/engine';
 import { getRoutineKind } from '@/lib/routines/registry';
 
+// Direct-compute kinds (buildwise.*) do the work inside this POST — the target
+// app is given up to 60s to answer, so the route needs headroom beyond Vercel's
+// default function duration.
+export const maxDuration = 90;
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function err(code: string, message: string, status: number) {
@@ -78,6 +83,42 @@ export async function POST(request: NextRequest) {
   }
 
   const admin = createAdminClient();
+
+  // Direct-compute kinds: the answer comes back in this same request — no engine
+  // job, nothing to poll. Record a terminal run row and return it immediately.
+  if (kind.mode === 'direct') {
+    const directBase = {
+      routine_id: r.id,
+      organization_id: r.organization_id,
+      application_id: r.application_id,
+      routine_kind: r.routine_kind,
+      trigger_source: 'manual' as const
+    };
+    let outcome;
+    try {
+      outcome = await kind.execute({
+        admin,
+        organizationId: r.organization_id,
+        applicationId: r.application_id,
+        routineId: r.id
+      });
+    } catch (e) {
+      outcome = { ok: false as const, error: e instanceof Error ? e.message : 'routine failed' };
+    }
+    if (!outcome.ok) {
+      await admin
+        .from('app_ai_routine_runs')
+        .insert({ ...directBase, status: 'error', error: outcome.error, finished_at: new Date().toISOString() });
+      return err('UPSTREAM_ERROR', outcome.error, 502);
+    }
+    const { data: run } = await admin
+      .from('app_ai_routine_runs')
+      .insert({ ...directBase, status: 'done', result: outcome.result, finished_at: new Date().toISOString() })
+      .select('id')
+      .single();
+    return NextResponse.json({ status: 'done', runId: run?.id ?? null, result: outcome.result });
+  }
+
   let input;
   try {
     input = await kind.buildInput({

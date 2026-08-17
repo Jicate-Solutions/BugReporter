@@ -10,6 +10,8 @@
  *
  * Safety: only read-only routine kinds exist in the registry — nothing here can
  * close a bug or message a human. Isolation stays per-org (reporter-<orgId>).
+ * Direct-compute kinds (buildwise.*) hold the same boundary: the target app may
+ * write DRAFT rows inside itself, but nothing user-facing is ever sent.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -37,6 +39,8 @@ export interface DispatchSummary {
   claimed: number;
   enqueued: number;
   allClear: number;
+  /** Direct-compute routines (mode 'direct') that finished in-request. */
+  directDone: number;
   failed: number;
   collected: number;
   staleFailed: number;
@@ -54,6 +58,7 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
     claimed: 0,
     enqueued: 0,
     allClear: 0,
+    directDone: 0,
     failed: 0,
     collected: 0,
     staleFailed: 0,
@@ -96,6 +101,31 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
       continue;
     }
     try {
+      // Direct-compute kinds (e.g. the buildwise.* lane): the target app does the
+      // work over HTTPS and the answer arrives in this same request. No engine
+      // job is enqueued, so the run row is terminal here — COLLECT never sees it.
+      // The call is bounded by the kind's own fetch timeout; the FIRE deadline
+      // check above keeps a slow app from starving the rest of the batch.
+      if (kind.mode === 'direct') {
+        const outcome = await kind.execute({
+          admin,
+          organizationId: r.organization_id,
+          applicationId: r.application_id,
+          routineId: r.id
+        });
+        if (outcome.ok) {
+          const nowIso = new Date().toISOString();
+          await recordRun(admin, r, 'done', null, outcome.result, null, nowIso);
+          await finishDone(admin, r.id, nowIso);
+          summary.directDone++;
+        } else {
+          await recordRun(admin, r, 'error', null, null, outcome.error);
+          await finish(admin, r.id, 'error');
+          summary.failed++;
+        }
+        continue;
+      }
+
       const input = await kind.buildInput({
         admin,
         organizationId: r.organization_id,
@@ -138,7 +168,7 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
         summary.enqueued++;
       }
     } catch (e) {
-      await recordRun(admin, r, 'error', null, null, e instanceof Error ? e.message : 'buildInput failed');
+      await recordRun(admin, r, 'error', null, null, e instanceof Error ? e.message : 'routine failed');
       await finish(admin, r.id, 'error');
       summary.failed++;
     }
