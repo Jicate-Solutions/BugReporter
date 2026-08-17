@@ -188,29 +188,17 @@ export function offerableBugStatuses(
 }
 
 /**
- * The statuses a bug can be closed FROM.
+ * Closing used to require the bug to be in `ready_for_testing` (later also
+ * `resolved`), so that "I tested it and it works" always referred to a fix
+ * somebody had actually made.
  *
- * `ready_for_testing` is the intended path: the team says a fix is ready, the
- * client tests it and closes. `resolved` is here because ~399 rows predate that
- * split and are terminal, so without it the client's half of the workflow is
- * unreachable for every bug logged before the verification states existed —
- * `resolved` is not offerable, and `closed` was gated on a state those bugs can
- * never enter. They would have been strandable only by reopening them.
- *
- * It does mean a bug closed out of `resolved` was accepted without anyone being
- * asked to test it. That is already true of how it reached `resolved`, and
- * bug_status_events records which state the close came from, so the weaker
- * claim stays visible to anyone reading the history.
+ * That gate is gone. It removed Closed from the menu on most bugs, which read
+ * as the option being broken rather than as a rule, and the two states it did
+ * allow were not discoverable — a reporter had no way to know that closing
+ * would become available later. Whether a close was earned is now a question
+ * for bug_status_events, which records the state each one came from, rather
+ * than something the workflow refuses outright.
  */
-export const CLOSEABLE_FROM_STATUSES: readonly BugReportStatus[] = [
-  'ready_for_testing',
-  'resolved',
-] as const;
-
-/** Whether `closed` is reachable from `status`. See CLOSEABLE_FROM_STATUSES. */
-export function canCloseFrom(status: BugReportStatus): boolean {
-  return CLOSEABLE_FROM_STATUSES.includes(status);
-}
 
 /**
  * Whether `actor` may move a bug into `status`. See STATUS_ACTOR_RULES.

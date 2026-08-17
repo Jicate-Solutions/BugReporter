@@ -10,7 +10,6 @@ import {
   offerableBugStatuses,
   bugStatusLabel,
   canActorSetStatus,
-  canCloseFrom,
   isBugStatus,
   isReopenTransition,
   type BugReportStatus,
@@ -253,7 +252,7 @@ export function PortalStatusControl({
    * Two things still narrow it, and neither is about rank:
    *   - `resolved` is legacy, so offerableBugStatuses lists it only on a bug
    *     already sitting in it, exactly as the dashboard does.
-   *   - `closed` needs something to have been tested (see below).
+   *   - `closed` rides on the separate allow_reporter_close switch.
    *
    * Mirrors canActorSetStatus('reporter', …) in the shared vocabulary, which is
    * what the API enforces. This list only decides what gets drawn.
@@ -261,11 +260,12 @@ export function PortalStatusControl({
   const offered = offerableBugStatuses(current).filter((option: BugReportStatus) => {
     if (!canActorSetStatus('reporter', option)) return false;
 
-    // Closing means "I tested it and it works", so it only appears once there
-    // is a fix to have tested. applyStatusChange refuses it from anywhere else,
-    // and a menu item that always fails is worse than no menu item.
+    // Closing rides on its own per-application switch rather than the broad
+    // status power, so an app can let clients accept fixes without letting them
+    // set arbitrary states. It is offered from any status: see the note on
+    // CLOSEABLE_FROM_STATUSES' removal in the shared vocabulary.
     if (option === 'closed') {
-      return canClose && canCloseFrom(current);
+      return canClose;
     }
 
     // Everything else is the broad power, which most applications leave off.

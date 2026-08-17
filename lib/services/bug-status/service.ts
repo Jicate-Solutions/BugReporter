@@ -12,7 +12,6 @@ import {
   isReopenTransition,
   isValidStatusTransition,
   canActorSetStatus,
-  canCloseFrom,
   bugStatusLabel,
   type BugReportStatus,
 } from '@boobalan_jkkn/shared';
@@ -136,23 +135,6 @@ export async function applyStatusChange(
         actor.kind === 'reporter'
           ? `Only the team can move a report to ${bugStatusLabel(toStatus)}.`
           : `${bugStatusLabel(toStatus)} cannot be set from here.`,
-    };
-  }
-
-  // Closing means "I tested the fix and it works", so there has to be a fix to
-  // have tested. Without this a client could close a bug nobody had looked at,
-  // which is the same hole that let 26 reports go straight from New to Resolved
-  // with no developer involved.
-  //
-  // `resolved` counts as a fix to have tested (CLOSEABLE_FROM_STATUSES). It is
-  // the legacy terminal state, and gating closure on `ready_for_testing` alone
-  // left every bug logged before the split with no way to complete.
-  if (toStatus === 'closed' && !canCloseFrom(fromStatus)) {
-    return {
-      ok: false,
-      code: 'INVALID_TRANSITION',
-      message:
-        'A report can only be closed once the team has marked it ready for testing.',
     };
   }
 
