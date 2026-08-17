@@ -36,6 +36,11 @@ export interface AiTask {
  * Offline default — a snapshot of MyJKKN's external_allowed rows on 2026-08-08.
  * Used when the engine can't be reached, and as the static list the public
  * enqueue gate checks against (see app/api/v1/public/ai/run/route.ts).
+ *
+ * `yip.questionnaire_score` was added AHEAD of its catalogue row rather than
+ * copied back from one, because the enqueue gate above rejects any key missing
+ * here regardless of what the live catalogue says. It is not drift — do not
+ * prune it for being absent from `ai_job_types` until that row is seeded.
  */
 export const FALLBACK_AI_TASKS = [
   {
@@ -62,6 +67,11 @@ export const FALLBACK_AI_TASKS = [
     key: 'reply.draft',
     label: 'Reply — draft a corrected social reply (external)',
     description: 'Rewrite a rejected Instagram/Facebook bot reply'
+  },
+  {
+    key: 'yip.questionnaire_score',
+    label: 'YIP — score a selection questionnaire (external)',
+    description: 'Strict-JSON rubric scores for one candidate paper'
   }
 ] as const;
 
