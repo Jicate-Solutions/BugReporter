@@ -47,26 +47,32 @@ export const TERMINAL_BUG_STATUSES: readonly BugReportStatus[] = [
 /**
  * Who is allowed to move a bug INTO each status.
  *
- * The point of splitting "done" in two is that each half belongs to a different
- * person, and a rule that lives only in the UI is a rule anyone can skip by
- * calling the API. `applyStatusChange` is the single write path, so this map is
- * enforced there for the dashboard, the portal and the public API at once.
+ * A rule that lives only in the UI is a rule anyone can skip by calling the API.
+ * `applyStatusChange` is the single write path, so this map is enforced there
+ * for the dashboard, the portal and the public API at once.
  *
- * `closed` lists both actors on purpose. The client closing is the intended
- * path, but on an application whose reporters have never once opened the portal,
- * a client-only rule would leave every fix parked in `ready_for_testing`
- * forever. A developer closing is recorded in bug_status_events like any other
- * change, so "who accepted this" stays answerable.
+ * `ready_for_testing` and `wont_fix` were reporter-blocked when the states were
+ * introduced, on the reasoning that they are the team's claims about the work.
+ * That was reversed deliberately: on this platform the reporter is the client
+ * who commissioned the work, not an anonymous member of the public, and holding
+ * back three of the seven states made the portal look broken beside the
+ * dashboard. The audit trail, not the vocabulary, is what keeps this honest —
+ * bug_status_events records every change with the actor who made it, so a
+ * client marking their own bug Won't Fix is visible rather than prevented.
  *
- * Statuses absent from this map are open to anyone — the triage states are not
- * claims about whether the work is finished.
+ * `closed` still carries a rule, for the opposite reason: it excludes `api_key`
+ * and `system`. Accepting a fix is a judgement a person makes, and an
+ * integration closing its own bugs would make "someone agreed this works"
+ * unfalsifiable. Both human actors are listed because on an application whose
+ * reporters have never opened the portal, a client-only rule would leave every
+ * fix parked in `ready_for_testing` forever.
+ *
+ * Statuses absent from this map are open to anyone.
  */
 export const STATUS_ACTOR_RULES: Partial<
   Record<BugReportStatus, readonly ('dashboard_user' | 'reporter' | 'api_key' | 'system')[]>
 > = {
-  ready_for_testing: ['dashboard_user', 'api_key', 'system'],
   closed: ['reporter', 'dashboard_user'],
-  wont_fix: ['dashboard_user', 'api_key', 'system'],
 };
 
 /**

@@ -7,7 +7,7 @@ import { Check, ChevronDown, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   BUG_STATUS_LABELS,
-  SELECTABLE_BUG_STATUSES,
+  offerableBugStatuses,
   bugStatusLabel,
   canActorSetStatus,
   canCloseFrom,
@@ -244,18 +244,21 @@ export function PortalStatusControl({
   /**
    * What this reporter is allowed to choose at all.
    *
-   * Not the same question as `blocked`, which greys out a choice the reporter
-   * can see and understand. These are the team's to set — a reporter offered
-   * "Ready for Testing" would be offered the chance to declare their own bug
-   * fixed, which is precisely the hole that let 26 reports go from New straight
-   * to Resolved with no developer involved. They are absent rather than
-   * disabled: a disabled row invites the question "why not me?", and the honest
-   * answer is that it was never theirs.
+   * The same set the dashboard offers, from the same helper — the portal showing
+   * three of seven states while the dashboard showed all of them was read, quite
+   * reasonably, as the portal being broken. Reporters may now set every state
+   * the team can; bug_status_events records who made each change, so the audit
+   * trail carries what the vocabulary used to withhold.
+   *
+   * Two things still narrow it, and neither is about rank:
+   *   - `resolved` is legacy, so offerableBugStatuses lists it only on a bug
+   *     already sitting in it, exactly as the dashboard does.
+   *   - `closed` needs something to have been tested (see below).
    *
    * Mirrors canActorSetStatus('reporter', …) in the shared vocabulary, which is
    * what the API enforces. This list only decides what gets drawn.
    */
-  const offered = SELECTABLE_BUG_STATUSES.filter((option: BugReportStatus) => {
+  const offered = offerableBugStatuses(current).filter((option: BugReportStatus) => {
     if (!canActorSetStatus('reporter', option)) return false;
 
     // Closing means "I tested it and it works", so it only appears once there
@@ -266,8 +269,8 @@ export function PortalStatusControl({
     }
 
     // Everything else is the broad power, which most applications leave off.
-    // Without this the menu would offer New / Seen / In Progress to a reporter
-    // whose every click the route then answers with a 403.
+    // Without this the menu would offer statuses to a reporter whose every click
+    // the route then answers with a 403.
     return canSetAnyStatus;
   });
 
