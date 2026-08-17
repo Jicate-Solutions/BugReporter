@@ -158,6 +158,55 @@ export const SELECTABLE_BUG_STATUSES: readonly BugReportStatus[] =
   BUG_STATUSES.filter((s) => !LEGACY_BUG_STATUSES.includes(s));
 
 /**
+ * What a picker should offer, given the status the bug already holds.
+ *
+ * SELECTABLE_BUG_STATUSES alone is not enough for a control that also DISPLAYS
+ * the current value. Drop `resolved` from the options of a bug that is sitting
+ * in `resolved` and the control has nothing matching its own value to render —
+ * a Radix Select falls through to the placeholder and the row goes blank, which
+ * is worse than offering the legacy status was.
+ *
+ * So the current status is always offered, even when legacy. It is never a new
+ * choice: re-selecting the status a bug already has is rejected by
+ * isValidStatusTransition, and callers disable that row anyway. Order follows
+ * BUG_STATUSES so `resolved` stays where the reader expects it rather than
+ * being appended after Won't Fix.
+ */
+export function offerableBugStatuses(
+  current: BugReportStatus
+): readonly BugReportStatus[] {
+  if (!LEGACY_BUG_STATUSES.includes(current)) return SELECTABLE_BUG_STATUSES;
+  return BUG_STATUSES.filter(
+    (s) => s === current || !LEGACY_BUG_STATUSES.includes(s)
+  );
+}
+
+/**
+ * The statuses a bug can be closed FROM.
+ *
+ * `ready_for_testing` is the intended path: the team says a fix is ready, the
+ * client tests it and closes. `resolved` is here because ~399 rows predate that
+ * split and are terminal, so without it the client's half of the workflow is
+ * unreachable for every bug logged before the verification states existed —
+ * `resolved` is not offerable, and `closed` was gated on a state those bugs can
+ * never enter. They would have been strandable only by reopening them.
+ *
+ * It does mean a bug closed out of `resolved` was accepted without anyone being
+ * asked to test it. That is already true of how it reached `resolved`, and
+ * bug_status_events records which state the close came from, so the weaker
+ * claim stays visible to anyone reading the history.
+ */
+export const CLOSEABLE_FROM_STATUSES: readonly BugReportStatus[] = [
+  'ready_for_testing',
+  'resolved',
+] as const;
+
+/** Whether `closed` is reachable from `status`. See CLOSEABLE_FROM_STATUSES. */
+export function canCloseFrom(status: BugReportStatus): boolean {
+  return CLOSEABLE_FROM_STATUSES.includes(status);
+}
+
+/**
  * Whether `actor` may move a bug into `status`. See STATUS_ACTOR_RULES.
  */
 export function canActorSetStatus(
