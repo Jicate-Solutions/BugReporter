@@ -10,6 +10,7 @@ import {
   SELECTABLE_BUG_STATUSES,
   bugStatusLabel,
   canActorSetStatus,
+  canCloseFrom,
   isBugStatus,
   isReopenTransition,
   type BugReportStatus,
@@ -261,7 +262,7 @@ export function PortalStatusControl({
     // is a fix to have tested. applyStatusChange refuses it from anywhere else,
     // and a menu item that always fails is worse than no menu item.
     if (option === 'closed') {
-      return canClose && current === 'ready_for_testing';
+      return canClose && canCloseFrom(current);
     }
 
     // Everything else is the broad power, which most applications leave off.
