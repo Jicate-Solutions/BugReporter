@@ -25,6 +25,10 @@ import {
   createApiSuccessResponse
 } from '@/lib/middleware/api-key-auth';
 import { AI_TASK_KEYS } from '@/lib/ai/tasks';
+import {
+  enforceRateLimit,
+  AI_RUN_RATE_LIMIT
+} from '@/lib/middleware/rate-limit';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -73,6 +77,14 @@ export async function OPTIONS() {
 // ─── POST — enqueue a task ──────────────────────────────────────────────────
 
 export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
+  const limited = await enforceRateLimit(
+    request,
+    context,
+    'ai:run',
+    AI_RUN_RATE_LIMIT
+  );
+  if (limited) return limited;
+
   const engine = engineConfig();
   if (!engine) {
     return createApiErrorResponse(

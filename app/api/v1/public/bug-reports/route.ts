@@ -6,6 +6,10 @@ import {
   createApiErrorResponse,
   createApiSuccessResponse
 } from '@/lib/middleware/api-key-auth';
+import {
+  enforceRateLimit,
+  BUG_SUBMISSION_RATE_LIMIT
+} from '@/lib/middleware/rate-limit';
 import type {
   SubmitBugReportRequest,
   SubmitBugReportResponse,
@@ -86,6 +90,16 @@ async function generateEmbeddingAsync(
 export const POST = withApiKeyAuth(
   async (request: NextRequest, context: ApiRequestContext) => {
     try {
+      // Throttle before reading the body: a flood should never get as far as
+      // parsing megabytes of base64 screenshot/attachment data.
+      const limited = await enforceRateLimit(
+        request,
+        context,
+        'bug-reports:submit',
+        BUG_SUBMISSION_RATE_LIMIT
+      );
+      if (limited) return limited;
+
       // Parse request body
       const body: SubmitBugReportRequest = await request.json();
 
