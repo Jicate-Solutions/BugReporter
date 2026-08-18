@@ -6,6 +6,7 @@ import {
   addApplicationMemberAction,
   removeApplicationMemberAction,
   updateApplicationMemberRoleAction,
+  getManageableApplicationIdsAction,
 } from '@/lib/actions/application-members';
 import type {
   AddApplicationMemberPayload,
@@ -32,6 +33,37 @@ export function useApplicationMembers(applicationId: string | undefined) {
     staleTime: 2 * 60 * 1000, // 2 minutes
     gcTime: 5 * 60 * 1000, // 5 minutes
   });
+}
+
+/**
+ * Hook resolving which applications the current user may manage access for.
+ *
+ * Returns a `canManage(applicationId)` predicate so callers can gate the
+ * "Manage access" action without a query per application card.
+ */
+export function useManageableApplications() {
+  const query = useQuery({
+    queryKey: ['manageable-applications'],
+    queryFn: async () => {
+      const result = await getManageableApplicationIdsAction();
+      if (result.error) {
+        throw new Error(result.error);
+      }
+      return result.data ?? { isSuperAdmin: false, applicationIds: [] };
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    gcTime: 10 * 60 * 1000, // 10 minutes
+  });
+
+  const manageable = query.data;
+
+  return {
+    ...query,
+    canManage: (applicationId: string) =>
+      !!manageable &&
+      (manageable.isSuperAdmin ||
+        manageable.applicationIds.includes(applicationId)),
+  };
 }
 
 /**

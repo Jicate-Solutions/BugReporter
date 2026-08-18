@@ -1,6 +1,6 @@
 {
   "name": "@boobalan_jkkn/bug-reporter-sdk",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Bug reporting SDK with screenshot, file attachments, console logging, network trace, and leaderboard - Complete bug bounty platform for teams",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",

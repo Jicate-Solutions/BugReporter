@@ -6,9 +6,10 @@ import { useRouter } from 'next/navigation';
 import { Check, ChevronDown, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
-  BUG_STATUSES,
   BUG_STATUS_LABELS,
+  offerableBugStatuses,
   bugStatusLabel,
+  canActorSetStatus,
   isBugStatus,
   isReopenTransition,
   type BugReportStatus,
@@ -34,6 +35,18 @@ interface PortalStatusControlProps {
    * matter which control produced it.
    */
   canReopen: boolean;
+  /**
+   * Whether this application lets reporters set any status at all, as opposed
+   * to only accepting a fix. Off for most applications: it is the power to
+   * declare your own bug resolved without anyone having looked at it.
+   */
+  canSetAnyStatus: boolean;
+  /**
+   * Whether this application lets reporters close a report the team has marked
+   * ready for testing. On by default — it is the reporter's half of the
+   * verification handoff, and with it off nothing the team fixes ever completes.
+   */
+  canClose: boolean;
 }
 
 /**
@@ -114,6 +127,8 @@ export function PortalStatusControl({
   reporterEmail,
   signature,
   canReopen,
+  canSetAnyStatus,
+  canClose,
 }: PortalStatusControlProps) {
   const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -225,6 +240,40 @@ export function PortalStatusControl({
   const blocked = (target: BugReportStatus) =>
     isReopenTransition(current, target) && !canReopen;
 
+  /**
+   * What this reporter is allowed to choose at all.
+   *
+   * The same set the dashboard offers, from the same helper — the portal showing
+   * three of seven states while the dashboard showed all of them was read, quite
+   * reasonably, as the portal being broken. Reporters may now set every state
+   * the team can; bug_status_events records who made each change, so the audit
+   * trail carries what the vocabulary used to withhold.
+   *
+   * Two things still narrow it, and neither is about rank:
+   *   - `resolved` is legacy, so offerableBugStatuses lists it only on a bug
+   *     already sitting in it, exactly as the dashboard does.
+   *   - `closed` rides on the separate allow_reporter_close switch.
+   *
+   * Mirrors canActorSetStatus('reporter', …) in the shared vocabulary, which is
+   * what the API enforces. This list only decides what gets drawn.
+   */
+  const offered = offerableBugStatuses(current).filter((option: BugReportStatus) => {
+    if (!canActorSetStatus('reporter', option)) return false;
+
+    // Closing rides on its own per-application switch rather than the broad
+    // status power, so an app can let clients accept fixes without letting them
+    // set arbitrary states. It is offered from any status: see the note on
+    // CLOSEABLE_FROM_STATUSES' removal in the shared vocabulary.
+    if (option === 'closed') {
+      return canClose;
+    }
+
+    // Everything else is the broad power, which most applications leave off.
+    // Without this the menu would offer statuses to a reporter whose every click
+    // the route then answers with a 403.
+    return canSetAnyStatus;
+  });
+
   const trimmedNote = note.trim();
 
   /**
@@ -310,7 +359,7 @@ export function PortalStatusControl({
     >
       {!pending ? (
         <ul role="listbox" aria-label="Status" className="m-0 list-none p-0">
-          {BUG_STATUSES.map((option) => {
+          {offered.map((option: BugReportStatus) => {
             const isCurrent = option === current;
             const isBlocked = blocked(option);
             return (

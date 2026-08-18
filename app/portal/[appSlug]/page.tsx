@@ -7,10 +7,17 @@ import {
   countReporterBugsByStatus,
   isReporterBugSort,
 } from '@/lib/services/bug-portal/server';
-import { PortalShell, PortalNotice } from '../_components/portal-shell';
-import { PortalStats } from '../_components/portal-stats';
+import {
+  PortalShell,
+  PortalNotice,
+  PortalIdent,
+} from '../_components/portal-shell';
+import {
+  buildRail,
+  railLabel,
+  medianNote,
+} from '../_components/portal-summary';
 import { PortalFilters } from '../_components/portal-filters';
-import { PortalTabs } from '../_components/portal-tabs';
 import { PortalTable } from '../_components/portal-table';
 import { PortalPagination } from '../_components/portal-pagination';
 import { identityQuery, type PortalView } from '../_components/portal-url';
@@ -24,7 +31,6 @@ interface PageProps {
     sig?: string;
     q?: string;
     status?: string;
-    area?: string;
     reply?: string;
     sort?: string;
     page?: string;
@@ -74,7 +80,6 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
     sig: sp.sig,
     q: sp.q ?? '',
     status: sp.status ?? '',
-    area: sp.area ?? '',
     reply: sp.reply === '1',
     sort: isReporterBugSort(sp.sort) ? sp.sort : 'newest',
     page: Number(sp.page) || 1,
@@ -84,7 +89,6 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
     listReporterBugs(application.id, reporterEmail, {
       q: view.q,
       status: view.status,
-      area: view.area,
       needsReply: view.reply,
       sort: view.sort,
       page: view.page,
@@ -93,23 +97,28 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
   ]);
 
   const identity = identityQuery(view);
-  const isFiltering = Boolean(view.q || view.status || view.area || view.reply);
+  const isFiltering = Boolean(view.q || view.status || view.reply);
 
   // The address alone was all this header ever said about who is reading it.
-  // When the reports carry a name, lead with it and keep the address in
-  // brackets — the address is still what the page is scoped by, so dropping it
-  // would take away the one thing that explains why these reports and no others.
-  const who = stats.reporterName
-    ? `${stats.reporterName} (${reporterEmail})`
-    : reporterEmail;
+  // When the reports carry a name, lead with it and keep the address — the
+  // address is still what the page is scoped by, so dropping it would take away
+  // the one thing that explains why these reports and no others. It is set in
+  // the mono face because it is an identifier, which is the rule the rest of the
+  // portal already follows.
+  //
+  // "Your reports", not "Bug reports": this page is read from the reporter's
+  // side, and naming the page inside its own subtitle says nothing they cannot
+  // already see.
+  const who = (
+    <>
+      Your reports · {stats.reporterName ? `${stats.reporterName} · ` : ''}
+      <PortalIdent>{reporterEmail}</PortalIdent>
+    </>
+  );
 
   if (stats.total === 0) {
     return (
-      <PortalShell
-        title={application.name}
-        subtitle={`Bug reports · ${who}`}
-        wide
-      >
+      <PortalShell title={application.name} subtitle={who} wide>
         <PortalNotice
           title="Nothing here yet"
           body={`You haven't reported any bugs in ${application.name}. When you do, they'll appear here with whatever the team has done about them.`}
@@ -118,10 +127,20 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
     );
   }
 
+  const rail = buildRail(stats);
+  const median = medianNote(stats);
+
   return (
     <PortalShell
       title={application.name}
-      subtitle={`Bug reports · ${who}`}
+      subtitle={
+        <>
+          {who}
+          {median && ` · ${median}`}
+        </>
+      }
+      rail={rail}
+      railLabel={railLabel(rail)}
       wide
       action={
         <a
@@ -133,11 +152,7 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
         </a>
       }
     >
-      <PortalStats stats={stats} />
-
-      <PortalFilters appSlug={application.slug} view={view} areas={stats.areas} />
-
-      <PortalTabs
+      <PortalFilters
         appSlug={application.slug}
         view={view}
         total={stats.total}
@@ -164,16 +179,20 @@ export default async function PortalPage({ params, searchParams }: PageProps) {
           hrefFor={(bug) =>
             `/portal/${application.slug}/report/${bug.id}?${identity}`
           }
-          // Absent unless the application opted in, which is what makes the
-          // rows fall back to plain badges rather than to a control that
-          // renders and then fails at the API.
+          // Absent unless the application opted into one of the two powers,
+          // which is what makes the rows fall back to plain badges rather than
+          // to a control that renders and then fails at the API. Either is
+          // enough to open the menu; which options it holds is decided inside
+          // the control from the same two flags.
           editStatus={
-            config.allowReporterStatus
+            config.allowReporterStatus || config.allowReporterClose
               ? {
                   appSlug: application.slug,
                   reporterEmail,
                   signature: sp.sig,
                   canReopen: config.allowReporterReopen,
+                  canSetAnyStatus: config.allowReporterStatus,
+                  canClose: config.allowReporterClose,
                 }
               : undefined
           }

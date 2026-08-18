@@ -108,7 +108,10 @@ export async function GET(request: NextRequest) {
         // New user needs approval
         console.log('[OAuth Callback] New user needs approval, showing waiting page');
         return NextResponse.redirect(
-          new URL(`/auth/waiting-access?email=${encodeURIComponent(user.email || '')}`, origin)
+          new URL(
+            `/auth/waiting-access?email=${encodeURIComponent(user.email || '')}&reason=pending_approval`,
+            origin
+          )
         );
       }
 
@@ -116,7 +119,10 @@ export async function GET(request: NextRequest) {
       if (existingApproval.status === 'pending') {
         console.log('[OAuth Callback] User approval is pending, showing waiting page');
         return NextResponse.redirect(
-          new URL(`/auth/waiting-access?email=${encodeURIComponent(user.email || '')}`, origin)
+          new URL(
+            `/auth/waiting-access?email=${encodeURIComponent(user.email || '')}&reason=pending_approval`,
+            origin
+          )
         );
       }
 
@@ -170,10 +176,16 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      // No access - show waiting page
-      console.log('[OAuth Callback] User has no access, showing waiting page');
+      // Approved, but nobody has assigned them to an organization yet. This is a
+      // different problem from "waiting on an admin to approve you" and the
+      // waiting page needs to say so - otherwise admins who already approved the
+      // user are told, wrongly, that approval is still outstanding.
+      console.log('[OAuth Callback] User approved but has no org assignment, showing waiting page');
       return NextResponse.redirect(
-        new URL(`/auth/waiting-access?email=${encodeURIComponent(user.email || '')}`, origin)
+        new URL(
+          `/auth/waiting-access?email=${encodeURIComponent(user.email || '')}&reason=no_organization`,
+          origin
+        )
       );
     } catch (error) {
       console.error('[OAuth Callback] Unexpected error:', error);

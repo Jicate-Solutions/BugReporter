@@ -116,14 +116,35 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /*
+    `height: auto` is the initial value and is stated only to document that
+    nothing here should reintroduce a full-height root — an earlier version set
+    `height: 100%`, which is what the `overflow-y: auto` beside it was added to
+    rescue.
+
+    Do NOT put `overflow` back on html or body. Both are the document's scroll
+    box by default, and naming an overflow value here quietly takes that job
+    away from the viewport:
+
+      - `overflow-y: auto` on body makes body a scroll container. Every
+        `position: sticky` descendant then sticks inside body rather than the
+        viewport, and because body is exactly as tall as its content it never
+        scrolls internally — so sticky resolves to no movement at all and the
+        element simply scrolls off the top. That silently broke the docked
+        report panel and four sticky headers.
+      - `overflow-y: auto` on html blocks the scroll lock. Overflow propagates
+        from html to the viewport, so once html names a value, setting
+        `body.style.overflow = 'hidden'` no longer reaches the viewport and the
+        page keeps scrolling underneath open drawers and the annotator.
+
+    Both symptoms look like component bugs and are not; they are this rule.
+  */
   html {
     height: auto;
-    overflow-y: auto;
   }
   body {
     @apply bg-background text-foreground;
     height: auto;
-    overflow-y: auto;
   }
 }
 
