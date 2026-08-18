@@ -116,14 +116,19 @@ export function ApplicationForm({
   const [availableTasks, setAvailableTasks] = useState<AiTask[]>(() =>
     FALLBACK_AI_TASKS.map((t) => ({ ...t }))
   );
+  // False until MyJKKN answers. Guards the "withdrawn" notice below: against
+  // the offline snapshot, any task added since it was taken would look
+  // withdrawn when it is simply newer than the snapshot.
+  const [catalogueIsLive, setCatalogueIsLive] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     fetch('/api/internal/ai/job-types', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
-      .then((data: { tasks?: AiTask[] } | null) => {
+      .then((data: { tasks?: AiTask[]; live?: boolean } | null) => {
         if (!cancelled && Array.isArray(data?.tasks) && data.tasks.length > 0) {
           setAvailableTasks(data.tasks);
+          setCatalogueIsLive(data.live === true);
         }
       })
       .catch(() => {
@@ -448,6 +453,15 @@ export function ApplicationForm({
                             <code className='text-muted-foreground text-xs'>
                               {task.key}
                             </code>
+                            {/* Switched off upstream. Still tickable on purpose:
+                                approving is a permission, not a run — the app
+                                keeps the approval for when MyJKKN turns it back
+                                on. Marked so nobody expects it to work today. */}
+                            {!task.enabled && (
+                              <span className='ml-2 rounded-sm border border-amber-300 px-1.5 py-0.5 align-middle text-[10px] font-normal text-amber-700 dark:border-amber-700 dark:text-amber-400'>
+                                switched off in MyJKKN
+                              </span>
+                            )}
                           </p>
                           <p className='text-muted-foreground text-xs'>
                             {task.description}
@@ -456,6 +470,41 @@ export function ApplicationForm({
                       </div>
                     );
                   })}
+
+                  {/* Approvals for tasks MyJKKN no longer offers. Without this
+                      the tick box just disappears while the permission stays in
+                      settings.ai.allowed_tasks — invisible and impossible to
+                      remove from this screen. Only shown against a LIVE
+                      catalogue: on the offline snapshot a task newer than the
+                      snapshot would be misreported as withdrawn. */}
+                  {catalogueIsLive &&
+                    (field.value ?? [])
+                      .filter((key) => !availableTasks.some((t) => t.key === key))
+                      .map((key) => {
+                        const selected = field.value ?? [];
+                        return (
+                          <div key={key} className='flex items-start gap-3'>
+                            <Checkbox
+                              checked
+                              onCheckedChange={() => {
+                                field.onChange(selected.filter((k) => k !== key));
+                              }}
+                            />
+                            <div className='space-y-0.5 leading-none'>
+                              <p className='text-sm font-medium'>
+                                <code className='text-xs'>{key}</code>
+                                <span className='ml-2 rounded-sm border border-amber-300 px-1.5 py-0.5 align-middle text-[10px] font-normal text-amber-700 dark:border-amber-700 dark:text-amber-400'>
+                                  no longer available
+                                </span>
+                              </p>
+                              <p className='text-muted-foreground text-xs'>
+                                MyJKKN no longer offers this task, so it cannot run.
+                                Untick to remove it from this app.
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })}
                 </div>
                 <FormMessage />
               </FormItem>
