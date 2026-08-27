@@ -25,7 +25,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { createClient } from '@/lib/supabase/client';
 
-const MIN_SIMILARITY = 0.85;
+const MIN_SIMILARITY = 0.9;
 const TARGET_LIMIT = 20;
 
 /** Just the target ids + timestamps we seed the scan with. */
@@ -168,6 +168,28 @@ export function AiDuplicateFinderCard({
         }
       }
 
+      // Drop pairs a human has already confirmed or dismissed. The ground-truth
+      // table is per-user RLS'd, so a browser can only see the current viewer's
+      // own verdicts — the cross-user (team-wide) read goes through the internal
+      // route. Best-effort: a failed read excludes nothing this run rather than
+      // hard-failing a weak-signal proposal (the human still confirms/dismisses).
+      if (pairMap.size > 0) {
+        try {
+          const qs = new URLSearchParams({ organizationId });
+          if (applicationId) qs.set('applicationId', applicationId);
+          const res = await fetch(
+            `/api/internal/bug-reports/decided-pairs?${qs.toString()}`,
+            { cache: 'no-store' }
+          );
+          if (res.ok) {
+            const { decidedKeys } = (await res.json()) as { decidedKeys?: string[] };
+            for (const key of decidedKeys ?? []) pairMap.delete(key);
+          }
+        } catch {
+          // best-effort exclusion; the proposal still stands
+        }
+      }
+
       if (pairMap.size === 0) {
         setPairs([]);
         setScanned(true);
@@ -299,6 +321,11 @@ export function AiDuplicateFinderCard({
       </CardHeader>
 
       <CardContent className="space-y-4">
+        <p className="text-muted-foreground text-xs">
+          AI-proposed by meaning-similarity —{' '}
+          <span className="text-foreground font-medium">not human-confirmed</span>. Nothing is closed
+          automatically; a person decides each pair.
+        </p>
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={scan} disabled={scanning} size="sm">
             {scanning ? (
@@ -314,7 +341,7 @@ export function AiDuplicateFinderCard({
             )}
           </Button>
           <p className="text-muted-foreground text-xs">
-            Compares the newest {TARGET_LIMIT} active bugs by meaning (≥85% similar).
+            Compares the newest {TARGET_LIMIT} active bugs by meaning (≥90% similar).
           </p>
         </div>
 
