@@ -90,7 +90,12 @@ export function BugReporterProvider({
 
   useEffect(() => {
     if (enabled && apiKey && apiUrl) {
-      const client = new BugReporterApiClient({ apiUrl, apiKey, debug });
+      const client = new BugReporterApiClient({
+        apiUrl,
+        apiKey,
+        debug,
+        reporterEmail: userContext?.email,
+      });
       setApiClient(client);
       consoleLogger.startCapture();
 
