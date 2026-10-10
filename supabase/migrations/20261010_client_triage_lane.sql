@@ -1,11 +1,16 @@
 -- 20261010_client_triage_lane.sql
--- A separate AI bug-triage lane for CLIENT apps, so client bug text never
--- enters the MyJKKN college database.
+-- An AI bug-triage lane that keeps every bug's text inside this database, and
+-- the data boundary that keeps CLIENT apps' bug text out of MyJKKN.
+--
+-- Scope (Director, 10 Oct 2026, 18:10): the triage lane serves EVERY app in
+-- the central reporter with settings.triage.enabled = true, whatever its
+-- data_boundary. The client rule only blocks the MyJKKN AI Door.
 --
 -- Director rule (10 Oct 2026): bug text from client apps must never enter the
 -- MyJKKN database, not even briefly. The AI Door (app/api/v1/public/ai/run,
 -- app/api/internal/ai, lib/routines/*) forwards to MyJKKN's ai_jobs, so client
--- apps are refused there (in code), and get this lane instead:
+-- apps are refused there (in code). Triage for any app goes through this lane,
+-- which never leaves this database:
 --
 --   bug intake ──> triage_jobs (this database) ──> /api/internal/triage/claim
 --                                                  (Windows box, runner token)
@@ -24,7 +29,8 @@
 --   jicate — a JICATE/JKKN app; may use the MyJKKN AI Door (the default, so
 --            every existing app keeps behaving exactly as before)
 --   client — a client's app; its bug text must never leave this database
---            for MyJKKN. Uses the triage lane below instead.
+--            for MyJKKN. The AI Door refuses it. (Triage below is open to
+--            both kinds; it is gated only by settings.triage.enabled.)
 -- NOT NULL with a constant default is metadata-only on Postgres 11+, so this
 -- does not rewrite `applications`.
 ALTER TABLE public.applications
@@ -138,9 +144,10 @@ REVOKE ALL ON public.triage_jobs FROM anon, authenticated;
 --     to 'failed' once it has used p_max_attempts. The runner's own Claude
 --     timeout (270 s) is well under the default 600 s, so a live job is never
 --     re-claimed under it.
---   * A job is claimable only while its app is STILL 'client' with
---     settings.triage.enabled = true. Switching triage off for an app stops the
---     lane for it at the next claim — queued jobs simply wait.
+--   * A job is claimable only while its app STILL has
+--     settings.triage.enabled = true, whatever its data_boundary. Switching
+--     triage off for an app stops the lane for it at the next claim — queued
+--     jobs simply wait.
 CREATE OR REPLACE FUNCTION public.fn_triage_claim(
   p_runner text,
   p_kind text DEFAULT 'triage.v1',
@@ -185,7 +192,6 @@ BEGIN
       WHERE t.status = 'queued'
         AND t.kind = p_kind
         AND t.attempts < p_max_attempts
-        AND a.data_boundary = 'client'
         AND (a.settings -> 'triage' -> 'enabled') = 'true'::jsonb
       ORDER BY t.created_at
       LIMIT 1

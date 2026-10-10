@@ -1,5 +1,5 @@
 @echo off
-REM BugReporter client triage drain - Windows wrapper.
+REM BugReporter triage drain - Windows wrapper.
 REM Reads BUGREPORTER_URL and TRIAGE_RUNNER_TOKEN from triage.env next to this
 REM file (ENV_FILE), never from the task XML. No database key exists on this box.
 set "HERE=%~dp0"

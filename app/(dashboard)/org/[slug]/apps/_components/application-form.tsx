@@ -66,7 +66,7 @@ const applicationFormSchema = z.object({
         allowed_tasks: z.array(z.string()).optional()
       })
       .optional(),
-    // Client triage lane (client apps only). MUST stay registered for the same
+    // Triage lane (any app). MUST stay registered for the same
     // reason as `ai` above, or editing the app's name would switch triage off.
     triage: z
       .object({
@@ -120,8 +120,8 @@ export function ApplicationForm({
   // server-side (the engine key never reaches the browser). Seeded with the
   // offline snapshot so the list is never momentarily empty, and left on that
   // snapshot if the engine is unreachable.
-  // Client apps may never use the MyJKKN AI Door (the server refuses them);
-  // they get the client triage lane instead.
+  // Client apps may never use the MyJKKN AI Door (the server refuses them).
+  // The triage lane below is open to every app.
   const isClientApp = application?.data_boundary === 'client';
 
   const [availableTasks, setAvailableTasks] = useState<AiTask[]>(() =>
@@ -438,7 +438,7 @@ export function ApplicationForm({
           )}
         />
 
-        {isClientApp && (
+        {application && (
           <FormField
             control={form.control}
             name='settings.triage.enabled'
@@ -451,7 +451,7 @@ export function ApplicationForm({
                   />
                 </FormControl>
                 <div className='space-y-1 leading-none'>
-                  <FormLabel>AI triage for new bugs (client lane)</FormLabel>
+                  <FormLabel>AI triage for new bugs</FormLabel>
                   <FormDescription>
                     When ON, each new bug gets one internal note with a type,
                     severity, one-line summary and likely area, written by the

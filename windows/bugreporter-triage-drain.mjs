@@ -1,21 +1,24 @@
 // ============================================================================
-// BugReporter — client triage drain (Windows AI box)
+// BugReporter — triage drain (Windows AI box)
 // ----------------------------------------------------------------------------
-// Claims ONE client bug at a time from the central bug reporter, asks Claude
+// Claims ONE bug at a time from the central bug reporter (any app that has
+// triage switched on, client or internal), asks Claude
 // (the Max seat, headless `claude -p`) to classify it, and hands the verdict
 // back. The bug reporter writes the verdict onto the bug as an internal note.
 //
 // WHY THIS IS NOT THE MyJKKN DRAIN: Director rule, 10 Oct 2026 — bug text from
 // client apps must never enter the MyJKKN college database, not even briefly.
-// So client triage never goes through MyJKKN's ai_jobs. This drain talks only
-// to the bug reporter's own two routes.
+// So triage never goes through MyJKKN's ai_jobs. This drain talks only to the
+// bug reporter's own two routes, which keeps every app's bug text inside the
+// central reporter (Director, 10 Oct 2026, 18:10: the lane serves every
+// central app with triage on).
 //
 // LEAST PRIVILEGE: unlike the intent drain this copies its shape from, this
 // box holds NO database key. It holds one bearer token that opens exactly two
 // routes:
 //   POST {BUGREPORTER_URL}/api/internal/triage/claim     -> { job } | { job: null }
 //   POST {BUGREPORTER_URL}/api/internal/triage/complete  -> { job_id, verdict } | { job_id, error }
-// If the token leaks, the holder can read queued client bugs one at a time and
+// If the token leaks, the holder can read queued bugs one at a time and
 // post internal AI notes. It cannot read any table, any other app, or anything
 // in MyJKKN.
 //

@@ -1,5 +1,5 @@
 /**
- * The client triage lane — claim and complete, server side.
+ * The triage lane — claim and complete, server side.
  *
  * The Windows runner never touches the database. It calls two routes that run
  * this code with the platform's own service-role client:

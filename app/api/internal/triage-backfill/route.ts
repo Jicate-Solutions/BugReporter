@@ -6,8 +6,8 @@
  * returns enqueued: 0. Safe to repeat: one job per bug, enforced by the table.
  *
  * Signed-in org owners/admins (or super admins) only — the same gate as
- * "Run now" on routines. It does nothing for an app that is not a client app
- * with settings.triage.enabled = true. The triage runner token does NOT work
+ * "Run now" on routines. It does nothing for an app without
+ * settings.triage.enabled = true (any data boundary). The triage runner token does NOT work
  * here; this route only knows sessions.
  */
 
@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
     if (!result.eligible) {
       return err(
         'TRIAGE_NOT_ENABLED',
-        'Triage runs only for client apps with triage switched on.',
+        'Triage is not switched on for this app.',
         409
       );
     }

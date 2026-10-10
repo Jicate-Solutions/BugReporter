@@ -31,7 +31,7 @@ export default async function AppAiPage({
         <p className="text-muted-foreground text-sm">
           This is a client app. Its bug data is never sent to MyJKKN&apos;s AI engine, so the
           briefing, triage helper and duplicate finder are closed here. New bugs can instead get an
-          internal AI triage note from the client triage lane — switch it on under Edit → AI triage.
+          internal AI triage note from the triage lane — switch it on under Edit → AI triage.
         </p>
       </div>
     );

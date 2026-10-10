@@ -1,9 +1,11 @@
 /**
- * Producer for the client triage lane.
+ * Producer for the triage lane.
  *
- * A bug gets ONE triage job when its app is a client app (data_boundary =
- * 'client') AND the app has switched triage on (settings.triage.enabled). The
- * job row lives in this database only; the Windows runner pulls it through
+ * A bug gets ONE triage job when its app has switched triage on
+ * (settings.triage.enabled = true) — ANY app in the central reporter, client
+ * or jicate (Director, 10 Oct 2026, 18:10). The data boundary only blocks the
+ * MyJKKN AI Door; this lane never leaves this database, so it is the safe path
+ * for everyone. The job row lives here; the Windows runner pulls it through
  * /api/internal/triage/claim.
  *
  * Modelled on enqueueWebhook (lib/webhooks/events.ts): called from the intake
@@ -26,10 +28,10 @@ interface AppRow {
   settings?: { triage?: { enabled?: unknown } } | null;
 }
 
-/** Client app with triage switched on. Both must be literally true. */
+/** Triage switched on (literally `true`), whatever the app's data boundary. */
 export function isTriageEligible(app: AppRow | null | undefined): boolean {
   if (!app) return false;
-  return app.data_boundary === 'client' && app.settings?.triage?.enabled === true;
+  return app.settings?.triage?.enabled === true;
 }
 
 async function readApp(
@@ -88,8 +90,8 @@ export interface BackfillResult {
 /**
  * Queue open bugs of one app that have no triage job yet, oldest first, at most
  * `limit` per call (capped at BACKFILL_MAX_BATCH). Call repeatedly until
- * `enqueued` is 0. Refuses (eligible=false) unless the app is a client app with
- * triage on — the same rule as the producer.
+ * `enqueued` is 0. Refuses (eligible=false) unless the app has triage on — the
+ * same rule as the producer.
  */
 export async function backfillTriageJobs(
   supabase: SupabaseClient,

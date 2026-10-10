@@ -1,5 +1,5 @@
 /**
- * POST /api/internal/triage/claim — the client triage runner takes ONE job.
+ * POST /api/internal/triage/claim — the triage runner takes ONE job.
  *
  * Auth: `Authorization: Bearer <TRIAGE_RUNNER_TOKEN>` only (lib/triage/runner-auth.ts).
  * Body (optional): { "runner": "windows-triage" } — recorded as claimed_by.
@@ -8,7 +8,7 @@
  * 200 { job: { job_id, bug, app_name, similar, attempts } }
  *
  * The bug view is deliberately minimal — see claimTriageJob. This route is the
- * only way the Windows box sees client bug text, and it never forwards anything
+ * only way the Windows box sees bug text, and it never forwards anything
  * to MyJKKN.
  */
 

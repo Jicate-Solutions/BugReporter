@@ -8,27 +8,33 @@ const apps = [
   { id: 'client-none', data_boundary: 'client', settings: {} },
   { id: 'client-string', data_boundary: 'client', settings: { triage: { enabled: 'true' } } },
   { id: 'jicate-on', data_boundary: 'jicate', settings: { triage: { enabled: true } } },
+  { id: 'jicate-off', data_boundary: 'jicate', settings: { triage: { enabled: false } } },
+  { id: 'jicate-none', data_boundary: 'jicate', settings: null },
   { id: 'legacy-on', settings: { triage: { enabled: true } } } // column missing / pre-migration
 ];
 
 describe('isTriageEligible', () => {
-  it('is true only for a client app with triage literally switched on', () => {
-    expect(apps.filter((a) => isTriageEligible(a)).map((a) => a.id)).toEqual(['client-on']);
+  it('is true for any app with triage literally switched on, whatever its boundary', () => {
+    expect(apps.filter((a) => isTriageEligible(a)).map((a) => a.id)).toEqual(['client-on', 'jicate-on', 'legacy-on']);
     expect(isTriageEligible(null)).toBe(false);
   });
 });
 
 describe('enqueueTriageForBug (intake producer)', () => {
-  it('queues exactly one job, and only for client + triage-enabled apps', async () => {
+  it('queues one job for every triage-enabled app (client or jicate) and none when triage is off', async () => {
     const db = new FakeDb({ applications: apps, triage_jobs: [] });
     const supabase = db.client();
     for (const app of apps) {
       const queued = await enqueueTriageForBug(supabase, { bugReportId: `bug-${app.id}`, applicationId: app.id });
-      expect(queued).toBe(app.id === 'client-on');
+      expect(queued).toBe(['client-on', 'jicate-on', 'legacy-on'].includes(app.id));
     }
     const jobs = db.rows('triage_jobs');
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]).toMatchObject({ bug_report_id: 'bug-client-on', application_id: 'client-on', kind: 'triage.v1', status: 'queued' });
+    expect(jobs.map((j) => j.application_id)).toEqual(['client-on', 'jicate-on', 'legacy-on']);
+    expect(jobs.find((j) => j.application_id === 'jicate-on')).toMatchObject({
+      bug_report_id: 'bug-jicate-on',
+      kind: 'triage.v1',
+      status: 'queued'
+    });
   });
 
   it('dedupes per bug', async () => {
@@ -56,7 +62,9 @@ describe('backfillTriageJobs', () => {
     { id: 'b4', application_id: 'client-on', status: 'closed', created_at: '2026-01-04' },
     { id: 'b5', application_id: 'client-on', status: 'seen', created_at: '2026-01-05' },
     { id: 'b6', application_id: 'client-on', status: 'wont_fix', created_at: '2026-01-06' },
-    { id: 'j1', application_id: 'jicate-on', status: 'new', created_at: '2026-01-01' }
+    { id: 'j1', application_id: 'jicate-on', status: 'new', created_at: '2026-01-01' },
+    { id: 'j2', application_id: 'jicate-on', status: 'resolved', created_at: '2026-01-02' },
+    { id: 'k1', application_id: 'jicate-off', status: 'new', created_at: '2026-01-01' }
   ];
 
   it('queues open bugs only, oldest first, in small batches, skipping ones already queued', async () => {
@@ -74,9 +82,15 @@ describe('backfillTriageJobs', () => {
     expect(db.rows('triage_jobs').map((j) => j.bug_report_id).sort()).toEqual(['b1', 'b3', 'b5']);
   });
 
-  it('refuses apps that are not client + triage-enabled', async () => {
+  it('works for a jicate app with triage on', async () => {
     const db = new FakeDb({ applications: apps, bug_reports: bugs, triage_jobs: [] });
-    for (const id of ['jicate-on', 'client-off', 'legacy-on']) {
+    expect(await backfillTriageJobs(db.client(), 'jicate-on', 25)).toMatchObject({ eligible: true, enqueued: 1 });
+    expect(db.rows('triage_jobs').map((j) => j.bug_report_id)).toEqual(['j1']);
+  });
+
+  it('refuses apps with triage off, whatever their boundary', async () => {
+    const db = new FakeDb({ applications: apps, bug_reports: bugs, triage_jobs: [] });
+    for (const id of ['jicate-off', 'jicate-none', 'client-off', 'client-none', 'client-string']) {
       expect(await backfillTriageJobs(db.client(), id, 25)).toEqual({ eligible: false, scanned: 0, enqueued: 0 });
     }
     expect(db.rows('triage_jobs')).toHaveLength(0);

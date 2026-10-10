@@ -1,4 +1,4 @@
-# MISSION: Add the BugReporter client triage drain to the Windows AI box (ONE task, ONE folder)
+# MISSION: Add the BugReporter triage drain to the Windows AI box (ONE task, ONE folder)
 
 This adds a separate folder and one scheduled task. Nothing else on the box changes:
 every `ai.jkkn.maxlane.*` task, the MyJKKN drains, the intent drains and their env files stay
@@ -6,9 +6,11 @@ exactly as they are.
 
 **Why it exists.** Director rule, 10 Oct 2026: bug text from client apps (Elevar ERP, Raagam,
 Kenavo, Poppys, BuildWise, Quotation Office) must never enter the MyJKKN college database, not even
-briefly. So client bugs are not triaged through MyJKKN's `ai_jobs`. This drain asks the central bug
-reporter for one client bug at a time, runs Claude on this box, and hands the verdict back to the
-bug reporter, which writes it on the bug as an internal note.
+briefly. So bugs are not triaged through MyJKKN's `ai_jobs`. This drain asks the central bug
+reporter for one bug at a time, runs Claude on this box, and hands the verdict back to the
+bug reporter, which writes it on the bug as an internal note. It serves every app in the central
+reporter that has triage switched on, client or internal (Director, 10 Oct 2026, 18:10), because
+this path keeps all bug text inside the central reporter.
 
 **What this box holds.** One bearer token (`TRIAGE_RUNNER_TOKEN`) and the bug reporter's address.
 No Supabase key of any kind. The token opens exactly two routes (claim and complete) and nothing else.
@@ -75,7 +77,7 @@ No Supabase key of any kind. The token opens exactly two routes (claim and compl
 
 - `Get-Process node` shows one extra node process for this drain.
 - Ask the Mac session (or anyone with access to the bug reporter's database) to:
-  1. switch triage on for ONE client app (Edit → "AI triage for new bugs"), and file a test bug in
+  1. switch triage on for ONE pilot app (Edit → "AI triage for new bugs"), and file a test bug in
      that app (or run the backfill for it);
   2. check `triage_jobs`: the row goes `queued` → `claimed` (`claimed_by = 'windows-triage'`) → `done`;
   3. open the bug in the dashboard: one internal message from **AI triage** with type, severity,

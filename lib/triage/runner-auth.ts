@@ -4,7 +4,7 @@
  * The Windows AI box holds one credential: TRIAGE_RUNNER_TOKEN. It is checked
  * here and nowhere else in the codebase, so it opens /api/internal/triage/claim
  * and /api/internal/triage/complete and nothing more. It is not a database key:
- * if it leaks, the holder can read one queued client bug at a time (the fields
+ * if it leaks, the holder can read one queued bug at a time (the fields
  * claim returns) and post an internal AI note — no other table, no other app.
  *
  *   Authorization: Bearer <TRIAGE_RUNNER_TOKEN>
