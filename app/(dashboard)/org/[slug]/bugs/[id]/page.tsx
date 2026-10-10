@@ -258,7 +258,9 @@ export default function BugDetailPage() {
                       <span className="font-medium">
                         {message.author_kind === 'reporter'
                           ? message.author_email || 'Reporter'
-                          : 'Your team'}
+                          : message.author_kind === 'ai'
+                            ? 'AI triage'
+                            : 'Your team'}
                       </span>
                       <span className="text-muted-foreground">
                         {new Date(message.created_at).toLocaleString()}

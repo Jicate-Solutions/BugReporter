@@ -10,11 +10,17 @@
  *
  * Safety: only read-only routine kinds exist in the registry — nothing here can
  * close a bug or message a human. Isolation stays per-org (reporter-<orgId>).
+ *
+ * Data boundary (Director rule, 2026-10-10): a routine scoped to a CLIENT app
+ * (applications.data_boundary = 'client') is refused before its input is built,
+ * so nothing from that app is sent to MyJKKN. Fleet-level routines drop client
+ * apps from their numbers (registry.ts).
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { engineConfig, enqueueJob, pollJob, type EngineConfig } from './engine';
 import { getRoutineKind } from './registry';
+import { CLIENT_BOUNDARY_MESSAGE, isClientApplication } from '../triage/boundary';
 
 interface RoutineRow {
   id: string;
@@ -91,6 +97,12 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
         null,
         kind ? `routine kind is not read-only: ${r.routine_kind}` : `unknown routine kind: ${r.routine_kind}`
       );
+      await finish(admin, r.id, 'error');
+      summary.failed++;
+      continue;
+    }
+    if (r.application_id && (await isClientApplication(admin, r.application_id))) {
+      await recordRun(admin, r, 'error', null, null, CLIENT_BOUNDARY_MESSAGE);
       await finish(admin, r.id, 'error');
       summary.failed++;
       continue;

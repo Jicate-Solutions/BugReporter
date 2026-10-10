@@ -8,6 +8,13 @@ export interface Application {
   app_url: string;
   created_at: string;
   updated_at: string;
+  /**
+   * Which side of the data boundary this app sits on. 'client' apps may never
+   * send bug data to MyJKKN's AI engine (the AI Door refuses them) and are
+   * triaged by the separate client triage lane instead. Changed only by a
+   * platform operator — a database trigger refuses it from the browser.
+   */
+  data_boundary?: 'jicate' | 'client';
   settings?: {
     allowed_domains?: string[];
     webhook_url?: string;
@@ -21,6 +28,16 @@ export interface Application {
     ai?: {
       enabled?: boolean;
       allowed_tasks?: string[];
+    };
+    /**
+     * Client triage lane. Only read for apps whose data_boundary is 'client':
+     * when on, every new bug gets one AI triage note, written by the runner on
+     * the JICATE Windows box, without leaving this database for MyJKKN.
+     *
+     * ⚠️ Registered in the zod schema in application-form.tsx too.
+     */
+    triage?: {
+      enabled?: boolean;
     };
     /**
      * Screenshot annotation: letting a reporter draw on the capture — box the

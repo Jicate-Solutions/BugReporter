@@ -127,6 +127,28 @@ WITH checks AS (
                    AND c.conname = 'bug_reports_status_check'
                ) LIKE '%closed%', false)
     ]
+
+  UNION ALL
+
+  -- Client triage lane: the boundary column, the queue, its claim function,
+  -- and the 'ai' note author.
+  SELECT
+    '20261010_client_triage_lane',
+    'applications.data_boundary + triage_jobs + fn_triage_claim + author_kind ''ai''',
+    ARRAY[
+      EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = 'applications'
+                 AND column_name = 'data_boundary'),
+      to_regclass('public.triage_jobs') IS NOT NULL,
+      EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+               WHERE n.nspname = 'public' AND p.proname = 'fn_triage_claim'),
+      COALESCE((SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+                  JOIN pg_class t ON t.oid = c.conrelid
+                  JOIN pg_namespace n ON n.oid = t.relnamespace
+                 WHERE n.nspname = 'public' AND t.relname = 'bug_report_messages'
+                   AND c.conname = 'bug_report_messages_author_kind_check'
+               ) LIKE '%''ai''%', false)
+    ]
 )
 SELECT
   migration,

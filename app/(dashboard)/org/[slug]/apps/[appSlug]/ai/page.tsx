@@ -19,6 +19,24 @@ export default async function AppAiPage({
   const application = await ApplicationServerService.getApplicationBySlug(organization.id, appSlug);
   if (!application) notFound();
 
+  // Client apps never use the MyJKKN AI engine (Director rule, 2026-10-10); the
+  // cards below would only return client_data_boundary, so say why instead.
+  if (application.data_boundary === 'client') {
+    return (
+      <div className="space-y-2">
+        <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+          <Sparkles className="h-5 w-5 text-blue-600" />
+          AI — {application.name}
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          This is a client app. Its bug data is never sent to MyJKKN&apos;s AI engine, so the
+          briefing, triage helper and duplicate finder are closed here. New bugs can instead get an
+          internal AI triage note from the client triage lane — switch it on under Edit → AI triage.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="space-y-1">

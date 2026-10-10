@@ -14,6 +14,7 @@ import type {
 } from '@boobalan_jkkn/shared';
 import { EmailService } from '@/lib/services/email/email.service';
 import { resolveAppOwnerRecipient } from '@/lib/services/notifications/app-owner';
+import { enqueueTriageForBug } from '@/lib/triage/enqueue';
 
 // OpenAI embedding model
 const EMBEDDING_MODEL = 'text-embedding-3-small';
@@ -322,6 +323,14 @@ export const POST = withApiKeyAuth(
         application: context.application.name,
         organization: context.organization.name,
         attachmentsCount: uploadedAttachments.length
+      });
+
+      // Client triage lane: queue one job if this is a client app with triage
+      // switched on. Awaited (two small queries) so it survives the response on
+      // serverless, but it never throws and never fails the submission.
+      await enqueueTriageForBug(supabase, {
+        bugReportId: bugReport.id,
+        applicationId: context.application.id
       });
 
       // Generate embedding asynchronously (fire-and-forget, don't block response)

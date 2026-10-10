@@ -66,6 +66,13 @@ const applicationFormSchema = z.object({
         allowed_tasks: z.array(z.string()).optional()
       })
       .optional(),
+    // Client triage lane (client apps only). MUST stay registered for the same
+    // reason as `ai` above, or editing the app's name would switch triage off.
+    triage: z
+      .object({
+        enabled: z.boolean().optional()
+      })
+      .optional(),
     // Screenshot annotation. Edited from its own Settings card, NOT from this
     // form — registered here for the same reason as bug_portal below.
     annotation: z
@@ -113,6 +120,10 @@ export function ApplicationForm({
   // server-side (the engine key never reaches the browser). Seeded with the
   // offline snapshot so the list is never momentarily empty, and left on that
   // snapshot if the engine is unreachable.
+  // Client apps may never use the MyJKKN AI Door (the server refuses them);
+  // they get the client triage lane instead.
+  const isClientApp = application?.data_boundary === 'client';
+
   const [availableTasks, setAvailableTasks] = useState<AiTask[]>(() =>
     FALLBACK_AI_TASKS.map((t) => ({ ...t }))
   );
@@ -155,6 +166,9 @@ export function ApplicationForm({
         ai: {
           enabled: application?.settings?.ai?.enabled ?? false,
           allowed_tasks: application?.settings?.ai?.allowed_tasks || []
+        },
+        triage: {
+          enabled: application?.settings?.triage?.enabled ?? false
         },
         // Passed straight through so saving this form preserves whatever the
         // Bug Status Portal and Screenshot annotation cards have configured.
@@ -398,10 +412,20 @@ export function ApplicationForm({
                 <Switch
                   checked={field.value ?? false}
                   onCheckedChange={field.onChange}
+                  disabled={isClientApp}
                 />
               </FormControl>
               <div className='space-y-1 leading-none'>
                 <FormLabel>Enable AI (₹0 Max lane)</FormLabel>
+                {isClientApp && (
+                  <FormDescription>
+                    <strong>Closed for this app.</strong> This is a client app,
+                    and client bug data is never sent to MyJKKN&apos;s AI
+                    engine — every AI call returns{' '}
+                    <code>client_data_boundary</code> whatever this switch says.
+                    Use AI triage below instead.
+                  </FormDescription>
+                )}
                 <FormDescription>
                   When ON, this app may run the AI tasks ticked below using its
                   existing API key — jobs queue behind MyJKKN&apos;s own work
@@ -414,7 +438,34 @@ export function ApplicationForm({
           )}
         />
 
-        {form.watch('settings.ai.enabled') && (
+        {isClientApp && (
+          <FormField
+            control={form.control}
+            name='settings.triage.enabled'
+            render={({ field }) => (
+              <FormItem className='flex flex-row items-start gap-3 rounded-md border p-4'>
+                <FormControl>
+                  <Switch
+                    checked={field.value ?? false}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <div className='space-y-1 leading-none'>
+                  <FormLabel>AI triage for new bugs (client lane)</FormLabel>
+                  <FormDescription>
+                    When ON, each new bug gets one internal note with a type,
+                    severity, one-line summary and likely area, written by the
+                    JICATE triage runner. The bug text stays in BugReporter — it
+                    is never sent to MyJKKN. The bug&apos;s status is never
+                    changed. Reporters do not see the note.
+                  </FormDescription>
+                </div>
+              </FormItem>
+            )}
+          />
+        )}
+
+        {!isClientApp && form.watch('settings.ai.enabled') && (
           <FormField
             control={form.control}
             name='settings.ai.allowed_tasks'

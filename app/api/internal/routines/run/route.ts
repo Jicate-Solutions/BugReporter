@@ -16,6 +16,11 @@ import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { engineConfig, enqueueJob, pollJob } from '@/lib/routines/engine';
 import { getRoutineKind } from '@/lib/routines/registry';
+import {
+  CLIENT_BOUNDARY_CODE,
+  CLIENT_BOUNDARY_MESSAGE,
+  isClientApplication
+} from '@/lib/triage/boundary';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -78,6 +83,10 @@ export async function POST(request: NextRequest) {
   }
 
   const admin = createAdminClient();
+  // Client apps never reach MyJKKN (Director rule, 2026-10-10).
+  if (r.application_id && (await isClientApplication(admin, r.application_id))) {
+    return err(CLIENT_BOUNDARY_CODE, CLIENT_BOUNDARY_MESSAGE, 403);
+  }
   let input;
   try {
     input = await kind.buildInput({
