@@ -20,10 +20,22 @@
  * (fn_ai_external_result matches on app_id), so cross-org reads are impossible.
  *
  * Cost: forwarded to MyJKKN's engine on lane=max → ₹0 (no paid path exists).
+ *
+ * Data boundary (Director rule, 2026-10-10): nothing from a CLIENT app
+ * (applications.data_boundary = 'client') is forwarded to MyJKKN. triage and
+ * app-scoped brief refuse a client app with 403 client_data_boundary; the
+ * org-wide brief leaves client apps out of its numbers entirely.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import {
+  CLIENT_BOUNDARY_CODE,
+  CLIENT_BOUNDARY_MESSAGE,
+  clientApplicationIds,
+  isClientApplication,
+  isJicateBoundary
+} from '@/lib/triage/boundary';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -88,6 +100,11 @@ async function buildFleetStats(
 ): Promise<string> {
   const applicationId = scope?.applicationId;
   const appName = scope?.appName;
+  // Org-wide: client apps are left out of everything sent to MyJKKN — their
+  // counts and their names. Throws (→ STATS_FAILED) if the list can't be read.
+  const excluded = applicationId
+    ? new Set<string>()
+    : await clientApplicationIds(supabase, organizationId);
   const PAGE = 1000;
   const bugs: BugRow[] = [];
   for (let from = 0; ; from += PAGE) {
@@ -101,7 +118,9 @@ async function buildFleetStats(
       .range(from, from + PAGE - 1);
     if (error) throw new Error(error.message);
     const rows = (data ?? []) as BugRow[];
-    bugs.push(...rows);
+    bugs.push(
+      ...rows.filter((b) => !b.application_id || !excluded.has(b.application_id))
+    );
     if (rows.length < PAGE) break;
   }
 
@@ -212,12 +231,15 @@ export async function POST(request: NextRequest) {
       }
       const { data: app } = await supabase
         .from('applications')
-        .select('id, name')
+        .select('id, name, data_boundary')
         .eq('id', body.applicationId)
         .eq('organization_id', org.id)
         .single();
       if (!app) {
         return err('NOT_FOUND', 'No such application in this organization.', 404);
+      }
+      if (!isJicateBoundary((app as { data_boundary?: unknown }).data_boundary)) {
+        return err(CLIENT_BOUNDARY_CODE, CLIENT_BOUNDARY_MESSAGE, 403);
       }
       appName = (app as { name: string }).name;
     }
@@ -247,6 +269,13 @@ export async function POST(request: NextRequest) {
       .eq('organization_id', org.id)
       .single();
     if (!bug) return err('NOT_FOUND', 'No such bug in this organization.', 404);
+    // Checked before any bug text is placed in a payload.
+    if (
+      !bug.application_id ||
+      (await isClientApplication(supabase, bug.application_id as string))
+    ) {
+      return err(CLIENT_BOUNDARY_CODE, CLIENT_BOUNDARY_MESSAGE, 403);
+    }
     const meta = (bug.metadata as { title?: string } | null) ?? {};
     let appName = 'Unknown app';
     if (bug.application_id) {

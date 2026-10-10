@@ -12,6 +12,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getCatalogEntry } from './catalog';
+import { clientApplicationIds } from '../triage/boundary';
 
 export interface RoutineContext {
   admin: SupabaseClient;
@@ -50,6 +51,10 @@ async function buildBugStats(
   ctx: RoutineContext
 ): Promise<{ stats: string; total: number; label: string }> {
   const { admin, organizationId, applicationId } = ctx;
+  // Fleet-level (org-wide) briefs leave client apps out entirely: their bug
+  // counts must not reach MyJKKN either. App-scoped routines on a client app
+  // never get here — the dispatcher and run-now refuse them first.
+  const excluded = applicationId ? new Set<string>() : await clientApplicationIds(admin, organizationId);
   const PAGE = 1000;
   const bugs: BugRow[] = [];
   for (let from = 0; ; from += PAGE) {
@@ -61,7 +66,7 @@ async function buildBugStats(
     const { data, error } = await q.order('created_at', { ascending: true }).range(from, from + PAGE - 1);
     if (error) throw new Error(error.message);
     const rows = (data ?? []) as BugRow[];
-    bugs.push(...rows);
+    bugs.push(...rows.filter((b) => !b.application_id || !excluded.has(b.application_id)));
     if (rows.length < PAGE) break;
   }
 

@@ -4,6 +4,13 @@
  * Unlike the internal AI route (session-authed), the dispatcher runs on a cron
  * with no session, so it calls the Door directly with MYJKKN_AI_KEY, tagged
  * app_id = reporter-<organizationId> (per-org isolation — unchanged).
+ *
+ * DATA BOUNDARY: this is a plain HTTP client with no database handle, so it
+ * cannot see which app a payload came from. Every caller MUST refuse client
+ * apps (applications.data_boundary = 'client') before building a payload —
+ * see lib/triage/boundary.ts, used by dispatcher.ts and
+ * app/api/internal/routines/run/route.ts. Client bug data must never be passed
+ * to enqueueJob.
  */
 
 export interface EngineConfig {

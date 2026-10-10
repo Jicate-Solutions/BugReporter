@@ -5,7 +5,11 @@
  * GET  /api/v1/public/ai/run?job_id=…        Poll status/result (own jobs only)
  *
  * Auth: the app's existing X-API-Key (same key as bug reporting).
- * Gating (per Director decisions 2026-07-16):
+ * Gating (per Director decisions 2026-07-16 and 2026-10-10):
+ *   0. the app must NOT be a client app (applications.data_boundary = 'client')
+ *                                                    → else 403 client_data_boundary
+ *      Client bug text must never enter MyJKKN; checked first, on POST and GET,
+ *      whatever settings.ai says. Unreadable boundary = refused (fail closed).
  *   1. settings.ai.enabled must be true for the app  → else 403 ai_not_enabled
  *   2. task must be in settings.ai.allowed_tasks     → else 403 task_not_permitted
  * Then the request is forwarded to MyJKKN's engine (/api/b2a/ai/run) using the
@@ -25,6 +29,11 @@ import {
   createApiSuccessResponse
 } from '@/lib/middleware/api-key-auth';
 import { AI_TASK_KEYS } from '@/lib/ai/tasks';
+import {
+  CLIENT_BOUNDARY_CODE,
+  CLIENT_BOUNDARY_MESSAGE,
+  isJicateBoundary
+} from '@/lib/triage/boundary';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -41,21 +50,33 @@ function engineConfig(): { base: string; key: string } | null {
   return { base: base.replace(/\/+$/, ''), key };
 }
 
-/** Fresh read of the app's AI settings (middleware context doesn't carry settings). */
-async function readAiSettings(applicationId: string): Promise<AiSettings> {
+/**
+ * Fresh read of the app's AI settings and data boundary (not cached).
+ * isClient is true unless the row says 'jicate' — a failed read refuses.
+ */
+async function readAiGate(
+  applicationId: string
+): Promise<{ ai: AiSettings; isClient: boolean }> {
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { autoRefreshToken: false, persistSession: false } }
   );
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('applications')
-    .select('settings')
+    .select('settings, data_boundary')
     .eq('id', applicationId)
     .single();
-  const ai = (data?.settings as { ai?: AiSettings } | null)?.ai;
-  return ai && typeof ai === 'object' ? ai : {};
+  if (error || !data) return { ai: {}, isClient: true };
+  const ai = (data.settings as { ai?: AiSettings } | null)?.ai;
+  return {
+    ai: ai && typeof ai === 'object' ? ai : {},
+    isClient: !isJicateBoundary((data as { data_boundary?: unknown }).data_boundary)
+  };
 }
+
+const clientBoundaryRefusal = () =>
+  createApiErrorResponse(CLIENT_BOUNDARY_CODE, CLIENT_BOUNDARY_MESSAGE, 403);
 
 export async function OPTIONS() {
   return NextResponse.json(
@@ -73,6 +94,10 @@ export async function OPTIONS() {
 // ─── POST — enqueue a task ──────────────────────────────────────────────────
 
 export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
+  // Gate 0: client apps never reach MyJKKN, whatever else is configured.
+  const gate = await readAiGate(context.application.id);
+  if (gate.isClient) return clientBoundaryRefusal();
+
   const engine = engineConfig();
   if (!engine) {
     return createApiErrorResponse(
@@ -102,8 +127,8 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
     );
   }
 
-  // Gate 1+2: per-app AI switch + per-app task menu (fresh read, not cached)
-  const ai = await readAiSettings(context.application.id);
+  // Gate 1+2: per-app AI switch + per-app task menu (fresh read above)
+  const ai = gate.ai;
   if (ai.enabled !== true) {
     return createApiErrorResponse(
       'ai_not_enabled',
@@ -176,6 +201,10 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
 // ─── GET — poll status/result ───────────────────────────────────────────────
 
 export const GET = withApiKeyAuth(async (request: NextRequest, context) => {
+  // Gate 0 applies to polling too: a client app gets nothing back from MyJKKN.
+  const gate = await readAiGate(context.application.id);
+  if (gate.isClient) return clientBoundaryRefusal();
+
   const engine = engineConfig();
   if (!engine) {
     return createApiErrorResponse(
