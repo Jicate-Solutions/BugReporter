@@ -1,10 +1,10 @@
 import { NextRequest } from 'next/server';
 import {
-  withApiKeyAuth,
   createApiErrorResponse,
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { withServerKeyAuth } from '@/lib/middleware/server-key-auth';
 import {
   getBugPortalConfig,
   normalizeReporterEmail,
@@ -60,7 +60,7 @@ const MAX_NOTE_LENGTH = 5000;
  *   reporter_email REQUIRED. Must own the bug.
  *   note           Optional, except on a reopen where it is required.
  */
-export const POST = withApiKeyAuth(
+export const POST = withServerKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,

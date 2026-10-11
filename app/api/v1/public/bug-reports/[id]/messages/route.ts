@@ -1,11 +1,11 @@
 import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import {
-  withApiKeyAuth,
   createApiErrorResponse,
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { withServerKeyAuth } from '@/lib/middleware/server-key-auth';
 import {
   getBugPortalConfig,
   normalizeReporterEmail,
@@ -59,7 +59,7 @@ async function findScopedBug(
  * Internal notes are excluded. This endpoint did not previously exist — the
  * thread was only reachable embedded in GET /:id.
  */
-export const GET = withApiKeyAuth(
+export const GET = withServerKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
@@ -134,7 +134,7 @@ export const GET = withApiKeyAuth(
  * reporter notes on. Requires `reporter_email` matching the bug's reporter, so
  * one user of an app cannot post as another.
  */
-export const POST = withApiKeyAuth(
+export const POST = withServerKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,

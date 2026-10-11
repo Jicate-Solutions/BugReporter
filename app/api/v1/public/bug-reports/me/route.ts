@@ -1,11 +1,11 @@
 import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import {
-  withApiKeyAuth,
   createApiErrorResponse,
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { withServerKeyAuth } from '@/lib/middleware/server-key-auth';
 import { normalizeReporterEmail } from '@/lib/services/bug-portal/config';
 import { BUG_STATUSES } from '@boobalan_jkkn/shared';
 import type {
@@ -36,7 +36,7 @@ import type {
  * - sort_by: created_at (default) — see note below
  * - sort_order: asc | desc
  */
-export const GET = withApiKeyAuth(async (request: NextRequest, context: ApiRequestContext) => {
+export const GET = withServerKeyAuth(async (request: NextRequest, context: ApiRequestContext) => {
   try {
     const { searchParams } = new URL(request.url);
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
