@@ -6,6 +6,7 @@ import {
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { pausedForSecurityFix } from '@/lib/middleware/reporter-routes-paused';
 import {
   getBugPortalConfig,
   normalizeReporterEmail,
@@ -59,7 +60,7 @@ async function findScopedBug(
  * Internal notes are excluded. This endpoint did not previously exist — the
  * thread was only reachable embedded in GET /:id.
  */
-export const GET = withApiKeyAuth(
+export const GET = pausedForSecurityFix(withApiKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
@@ -124,7 +125,7 @@ export const GET = withApiKeyAuth(
       );
     }
   }
-);
+));
 
 /**
  * POST /api/v1/public/bug-reports/:id/messages
@@ -134,7 +135,7 @@ export const GET = withApiKeyAuth(
  * reporter notes on. Requires `reporter_email` matching the bug's reporter, so
  * one user of an app cannot post as another.
  */
-export const POST = withApiKeyAuth(
+export const POST = pausedForSecurityFix(withApiKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
@@ -292,7 +293,7 @@ export const POST = withApiKeyAuth(
       );
     }
   }
-);
+));
 
 export async function OPTIONS() {
   return corsPreflightResponse();

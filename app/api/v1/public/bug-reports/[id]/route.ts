@@ -6,6 +6,7 @@ import {
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { pausedForSecurityFix } from '@/lib/middleware/reporter-routes-paused';
 import {
   getBugPortalConfig,
   normalizeReporterEmail,
@@ -46,7 +47,7 @@ function serviceClient() {
  * - reporter_email: REQUIRED
  * - include_messages: include the thread (default true)
  */
-export const GET = withApiKeyAuth(
+export const GET = pausedForSecurityFix(withApiKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
@@ -136,7 +137,7 @@ export const GET = withApiKeyAuth(
       );
     }
   }
-);
+));
 
 /**
  * PATCH /api/v1/public/bug-reports/:id
@@ -151,7 +152,7 @@ export const GET = withApiKeyAuth(
  * Request body:
  * - resolution_notes: the note to append
  */
-export const PATCH = withApiKeyAuth(
+export const PATCH = pausedForSecurityFix(withApiKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
@@ -264,7 +265,7 @@ export const PATCH = withApiKeyAuth(
       );
     }
   }
-);
+));
 
 export async function OPTIONS() {
   return corsPreflightResponse();
