@@ -54,7 +54,18 @@ VALUES
   ('app.dupe-scan',
    'Duplicate-Bug Detection Loop',
    4, 'intake', 'platform',
-   'Proposes likely-duplicate bug pairs by meaning (pgvector, ₹0); an admin confirms or dismisses (the ground truth); the next scan learns from those measured verdicts. Copies MyJKKN''s graduated bug-triage moat. Being built now: the propose layer is done (PR #14, pending merge); the measurement (m) and feed-forward (f) gates are next.',
-   '{"a":"off","g":"off","m":"off","f":"off"}'::jsonb,
+   'Proposes likely-duplicate bug pairs by meaning (pgvector, ₹0); an admin confirms or dismisses (the ground truth); the next scan learns from those measured verdicts. Copies MyJKKN''s graduated bug-triage moat. The propose layer is live (PR #14, merged 2026-10-19); the measurement (m) and feed-forward (f) gates are next.',
+   '{"a":"on","g":"off","m":"off","f":"off"}'::jsonb,
    NULL, 'aieee@jkkn.ac.in', NULL)
 ON CONFLICT (loop_key) DO NOTHING;
+
+-- PR #14 (dupe-scan propose layer) merged 2026-10-19, so the loop is live.
+-- If this table was seeded earlier with the old "pending merge" row, bring that
+-- row up to date. Only turns the a-gate on; never touches g/m/f, so re-running
+-- this file can never undo a later gate flip.
+UPDATE public.loop_registry
+SET gates       = gates || '{"a":"on"}'::jsonb,
+    description = 'Proposes likely-duplicate bug pairs by meaning (pgvector, ₹0); an admin confirms or dismisses (the ground truth); the next scan learns from those measured verdicts. Copies MyJKKN''s graduated bug-triage moat. The propose layer is live (PR #14, merged 2026-10-19); the measurement (m) and feed-forward (f) gates are next.',
+    updated_at  = now()
+WHERE loop_key = 'app.dupe-scan'
+  AND (gates->>'a' IS DISTINCT FROM 'on' OR description LIKE '%pending merge%');
