@@ -17,7 +17,8 @@ import {
   Activity,
   CalendarClock,
   Cpu,
-  ListChecks
+  ListChecks,
+  Repeat
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -99,6 +100,12 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       url: `/org/${orgSlug}/routines`,
       icon: CalendarClock,
       badge: '₹0'
+    },
+    {
+      title: 'Loops',
+      url: `/org/${orgSlug}/loops`,
+      icon: Repeat,
+      badge: null
     },
     {
       title: 'Uptime',
