@@ -95,7 +95,10 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 // OUTSIDE any repo: `claude -p` walks up from its cwd and loads any CLAUDE.md
 // or .claude settings it finds.
 const SANDBOX    = process.env.SANDBOX || join(tmpdir(), 'jicate-ai-sandbox');
+// Pause after every account hit its limit: 1 min, doubling each time it happens
+// again in a row, up to 30 min; back to 1 min after the next job that works.
 const RATE_LIMIT_PAUSE_MS = 60_000;
+const RATE_LIMIT_PAUSE_MAX_MS = 30 * 60_000;
 const ACCOUNTS_DIR = process.env.ACCOUNTS_DIR || resolve(HERE, 'accounts');
 const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // After an account hits its limit, skip it for 30 min; after its key fails, 6 h.
@@ -302,6 +305,7 @@ async function main() {
   if (SELFTEST) return selftest();
   log(`start runner=${RUNNER} url=${BASE} idle=${IDLE_MS}ms oneshot=${ONESHOT} bin=${CLAUDE_BIN}`);
   let netFails = 0;
+  let limitHits = 0;
   let lastAlive = Date.now();
   for (;;) {
     let outcome = { worked: false };
@@ -315,12 +319,13 @@ async function main() {
         // 401 = token not registered yet / revoked; 404 = server not deployed yet;
         // 503 = server misconfigured. Slow down instead of hammering.
         await new Promise((r) => setTimeout(r, 60_000));
-      } else if (!e?.status) {
-        // No answer at all: the internet or the server is down. Wait longer each
-        // time (10 s, 20 s, 40 s ... up to 5 min) instead of retrying every 3 s.
+      } else {
+        // No answer, or the server failed (500, 502 ...): the internet or the
+        // server is down. Wait longer each time (10 s, 20 s, 40 s ... up to
+        // 5 min) instead of retrying every 3 s.
         netFails += 1;
         const wait = Math.min(10_000 * 2 ** (netFails - 1), 300_000);
-        logErr(`no connection (try ${netFails}); waiting ${wait / 1000}s`);
+        logErr(`server not answering properly (try ${netFails}); waiting ${wait / 1000}s`);
         await new Promise((r) => setTimeout(r, wait));
       }
     }
@@ -331,9 +336,13 @@ async function main() {
       lastAlive = Date.now();
     }
     if (outcome.rateLimited) {
-      log(`pausing ${RATE_LIMIT_PAUSE_MS / 1000}s after a rate limit`);
-      await new Promise((r) => setTimeout(r, RATE_LIMIT_PAUSE_MS));
-    } else if (!outcome.worked) {
+      limitHits += 1;
+      const pause = Math.min(RATE_LIMIT_PAUSE_MS * 2 ** (limitHits - 1), RATE_LIMIT_PAUSE_MAX_MS);
+      log(`pausing ${pause / 1000}s after a rate limit (hit ${limitHits} in a row)`);
+      await new Promise((r) => setTimeout(r, pause));
+    } else if (outcome.worked) {
+      limitHits = 0;
+    } else {
       await new Promise((r) => setTimeout(r, IDLE_MS));
     }
   }
