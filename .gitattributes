@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# JICATE AI engine Windows files: task XML is UTF-16 (keep bytes), scripts use CRLF
+windows/jicate-ai-engine/*.xml binary
+windows/jicate-ai-engine/*.cmd text eol=crlf
+windows/jicate-ai-engine/*.ps1 text eol=crlf
