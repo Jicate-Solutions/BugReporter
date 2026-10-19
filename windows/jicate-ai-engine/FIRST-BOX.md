@@ -5,6 +5,10 @@ Director, 2026-10-19: JICATE's AI workers run on BOTH Windows boxes. This box
 gets two JICATE workers, jicate-3 and jicate-4, on their OWN extra Claude
 account, so they never use up the limit MyJKKN's workers need.
 
+WAIT: install only after at least one extra account is saved on this box
+(ACCOUNTS.md). Every box shares aicse today, so workers on "default" here would
+add no capacity and would compete with MyJKKN's helpers.
+
 DO NOT touch, stop or change any MyJKKN worker, task, folder or file. Everything
 here lives in C:\jicate-ai\ and in tasks named ai.jicate.engine-3 / -4.
 Install only on the Director's yes typed in this box's tab.
@@ -27,9 +31,9 @@ Check every SHA-256 against the list the Mac tab sends. Stop if any differs.
 4. The extra Claude account (the Director does this part himself):
    a. In a normal PowerShell window, NOT a Claude tab:  claude setup-token
       Sign in to the EXTRA Claude account in the browser, copy the key it prints.
-   b. In C:\jicate-ai\:  node save-claude-account.mjs jicate-b
-      Paste the key (hidden), Enter. Expect: account=jicate-b saved and works
-   The key stays in C:\jicate-ai\accounts\jicate-b.token, locked to this
+   b. In C:\jicate-ai\:  node save-claude-account.mjs acct1
+      Paste the key (hidden), Enter. Expect: account=acct1 saved and works
+   The key stays in C:\jicate-ai\accounts\acct1.token, locked to this
    Windows user. Never open, print or send it.
 5. Worker keys:
      powershell -NoProfile -ExecutionPolicy Bypass -File .\new-runner-token.ps1 -Runner jicate-3
@@ -44,8 +48,8 @@ Check every SHA-256 against the list the Mac tab sends. Stop if any differs.
      schtasks.exe /run /tn "ai.jicate.engine-4"
 7. Logs C:\jicate-ai\logs\jicate-3.log and jicate-4.log should show
    "start runner=jicate-N", then "alive ok" each minute. Each claim tells the
-   Control Tower the worker holds account jicate-b; the Mac tab then sets both
-   workers to use jicate-b. Claimed jobs log "account=jicate-b".
+   Control Tower the worker holds account acct1; the Mac tab then sets both
+   workers to use acct1. Claimed jobs log "account=acct1".
 8. Kill-test: stop only the node.exe processes whose command line contains
    jicate-ai-drain AND jicate-3 or jicate-4 (never MyJKKN's); each must come
    back with a new start line within about 60-90 s.

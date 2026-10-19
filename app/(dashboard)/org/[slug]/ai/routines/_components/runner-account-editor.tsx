@@ -37,7 +37,7 @@ export function RunnerAccountEditor({ runner }: { runner: EditableRunner }) {
   const [fallback, setFallback] = useState(runner.account_fallback);
   const [saving, setSaving] = useState(false);
 
-  const options = [DEFAULT, ...runner.accounts_available.filter((a) => a !== DEFAULT)];
+  const options = [DEFAULT, ...runner.accounts_available.filter((a) => a !== DEFAULT), 'auto'];
   if (!options.includes(account)) options.push(account);
   const dirty = account !== (runner.account ?? DEFAULT) || fallback !== runner.account_fallback;
 
@@ -74,7 +74,7 @@ export function RunnerAccountEditor({ runner }: { runner: EditableRunner }) {
         <SelectContent>
           {options.map((o) => (
             <SelectItem key={o} value={o}>
-              {o === DEFAULT ? 'default (box sign-in)' : o}
+              {o === DEFAULT ? 'default (box sign-in)' : o === 'auto' ? 'auto (priority list)' : o}
             </SelectItem>
           ))}
         </SelectContent>

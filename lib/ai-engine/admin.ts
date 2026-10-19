@@ -47,6 +47,36 @@ export interface RunnerRow {
   accounts_available: string[];
   /** Label the last job actually ran on. */
   account_in_use: string | null;
+  /** The Windows computer this worker runs on. */
+  host: string | null;
+}
+
+export interface AccountRow {
+  label: string;
+  five_hour_util: number | null;
+  seven_day_util: number | null;
+  five_hour_resets_at: string | null;
+  seven_day_resets_at: string | null;
+  overage_enabled: boolean | null;
+  reported_by: string | null;
+  updated_at: string | null;
+  priority: number | null;
+}
+
+/** Latest allowance reading per Claude account label. Platform admins only. */
+export async function readAccounts(admin: SupabaseClient): Promise<AccountRow[]> {
+  const { data } = await admin
+    .from('ai_accounts')
+    .select(
+      'label, five_hour_util, seven_day_util, five_hour_resets_at, seven_day_resets_at, overage_enabled, reported_by, updated_at, priority'
+    )
+    .order('priority', { ascending: true, nullsFirst: false })
+    .order('label');
+  return ((data ?? []) as AccountRow[]).map((r) => ({
+    ...r,
+    five_hour_util: r.five_hour_util == null ? null : Number(r.five_hour_util),
+    seven_day_util: r.seven_day_util == null ? null : Number(r.seven_day_util)
+  }));
 }
 
 export interface JobRow {
@@ -93,7 +123,7 @@ export async function readUsage(
 export async function readRunners(admin: SupabaseClient): Promise<RunnerRow[]> {
   const { data } = await admin
     .from('ai_runners')
-    .select('name, last_seen_at, last_job_at, account, account_fallback, accounts_available, account_in_use')
+    .select('name, last_seen_at, last_job_at, account, account_fallback, accounts_available, account_in_use, host')
     .order('name');
   return (data ?? []) as RunnerRow[];
 }

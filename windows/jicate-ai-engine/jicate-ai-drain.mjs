@@ -58,7 +58,7 @@ import { execFile } from 'node:child_process';
 import { readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = process.env.ENV_FILE || resolve(HERE, `${process.env.RUNNER || 'jicate-1'}.env`);
@@ -95,7 +95,10 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 // OUTSIDE any repo: `claude -p` walks up from its cwd and loads any CLAUDE.md
 // or .claude settings it finds.
 const SANDBOX    = process.env.SANDBOX || join(tmpdir(), 'jicate-ai-sandbox');
+// Pause after every account hit its limit: 1 min, doubling each time it happens
+// again in a row, up to 30 min; back to 1 min after the next job that works.
 const RATE_LIMIT_PAUSE_MS = 60_000;
+const RATE_LIMIT_PAUSE_MAX_MS = 30 * 60_000;
 const ACCOUNTS_DIR = process.env.ACCOUNTS_DIR || resolve(HERE, 'accounts');
 const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // After an account hits its limit, skip it for 30 min; after its key fails, 6 h.
@@ -178,7 +181,7 @@ function runClaude(job, label = 'default') {
   mkdirSync(SANDBOX, { recursive: true });
   const env = envFor(label);
   const args = [
-    '-p', '--model', job.model, '--output-format', 'json',
+    '-p', '--model', job.model, '--output-format', 'stream-json', '--verbose',
     '--restricted',              // ignore project/local settings and hooks
     '--strict-mcp-config',       // no MCP servers
     '--no-session-persistence',  // no transcript on disk
@@ -194,8 +197,26 @@ function runClaude(job, label = 'default') {
         if (err && err.killed) {
           return reject(new RunError(`timed out after ${timeout} ms`, { retry: true }));
         }
+        // stream-json: one JSON object per line. The "result" line carries the
+        // answer; the "rate_limit_event" line carries this account's 5-hour and
+        // weekly allowance used (older CLIs may not send it).
         let d = null;
-        try { d = JSON.parse(stdout); } catch { /* handled below */ }
+        let rl = null;
+        for (const line of String(stdout).split(/\r?\n/)) {
+          if (!line.startsWith('{')) continue;
+          let o;
+          try { o = JSON.parse(line); } catch { continue; }
+          if (o.type === 'result') d = o;
+          else if (o.type === 'rate_limit_event') rl = o.rate_limit_info;
+        }
+        const w = rl?.unifiedWindows;
+        const limits = w ? {
+          five_hour: Number.isFinite(w.five_hour?.utilization) ? w.five_hour.utilization : null,
+          seven_day: Number.isFinite(w.seven_day?.utilization) ? w.seven_day.utilization : null,
+          five_hour_resets_at: Number.isFinite(w.five_hour?.resetsAt) ? w.five_hour.resetsAt : null,
+          seven_day_resets_at: Number.isFinite(w.seven_day?.resetsAt) ? w.seven_day.resetsAt : null,
+          overage_enabled: typeof rl.overageEnabled === 'boolean' ? rl.overageEnabled : null,
+        } : null;
         if (!d) {
           const msg = String(stderr || err?.message || stdout || 'no output').slice(0, 300);
           return reject(new RunError(`claude failed: ${msg}`, {
@@ -211,9 +232,9 @@ function runClaude(job, label = 'default') {
         const num = (v) => (Number.isFinite(v) ? v : null);
         const usage = answered
           ? { model_id: answered, input_tokens: num(mu[answered].inputTokens),
-              output_tokens: num(mu[answered].outputTokens) }
+              output_tokens: num(mu[answered].outputTokens), limits }
           : { model_id: job.model, input_tokens: num(d.usage?.input_tokens),
-              output_tokens: num(d.usage?.output_tokens) };
+              output_tokens: num(d.usage?.output_tokens), limits };
         if (d.is_error) {
           const msg = String(d.result ?? d.subtype ?? 'error').slice(0, 300);
           const limited = RATE_LIMIT_RE.test(msg);
@@ -250,6 +271,7 @@ async function runWithAccounts(job, choice) {
       return { ...out, label };
     } catch (e) {
       lastErr = e;
+      if (e && typeof e === 'object') e.account = label;
       if (!(e?.rateLimited || e?.authFailed)) throw e;
       cooling.set(label, Date.now() + (e.authFailed ? COOLDOWN_AUTH_MS : COOLDOWN_LIMIT_MS));
       logErr(`account ${label} ${e.authFailed ? 'key failed' : 'hit its limit'}; ${tryList.length > 1 ? 'trying the next account' : 'no other account to try'}`);
@@ -259,7 +281,7 @@ async function runWithAccounts(job, choice) {
 }
 
 async function drainOnce() {
-  const { job, account } = await post('/api/internal/ai-engine/claim', { accounts: listAccounts() });
+  const { job, account } = await post('/api/internal/ai-engine/claim', { accounts: listAccounts(), host: hostname() });
   if (!job) return { worked: false };
 
   // Log ids only - never the payload or the answer.
@@ -282,7 +304,7 @@ async function drainOnce() {
     await post('/api/internal/ai-engine/complete', {
       job_id: job.job_id, error: msg, retry: e?.retry !== false,
       rate_limited: Boolean(e?.rateLimited),
-      usage: { ...(e?.usage || {}), duration_ms: Date.now() - started },
+      usage: { ...(e?.usage || {}), ...(e?.account ? { account: e.account } : {}), duration_ms: Date.now() - started },
     }).catch((e2) => logErr(`release failed: ${String(e2?.message || e2).slice(0, 200)}`));
     return { worked: true, rateLimited: Boolean(e?.rateLimited) };
   }
@@ -302,6 +324,7 @@ async function main() {
   if (SELFTEST) return selftest();
   log(`start runner=${RUNNER} url=${BASE} idle=${IDLE_MS}ms oneshot=${ONESHOT} bin=${CLAUDE_BIN}`);
   let netFails = 0;
+  let limitHits = 0;
   let lastAlive = Date.now();
   for (;;) {
     let outcome = { worked: false };
@@ -315,12 +338,13 @@ async function main() {
         // 401 = token not registered yet / revoked; 404 = server not deployed yet;
         // 503 = server misconfigured. Slow down instead of hammering.
         await new Promise((r) => setTimeout(r, 60_000));
-      } else if (!e?.status) {
-        // No answer at all: the internet or the server is down. Wait longer each
-        // time (10 s, 20 s, 40 s ... up to 5 min) instead of retrying every 3 s.
+      } else {
+        // No answer, or the server failed (500, 502 ...): the internet or the
+        // server is down. Wait longer each time (10 s, 20 s, 40 s ... up to
+        // 5 min) instead of retrying every 3 s.
         netFails += 1;
         const wait = Math.min(10_000 * 2 ** (netFails - 1), 300_000);
-        logErr(`no connection (try ${netFails}); waiting ${wait / 1000}s`);
+        logErr(`server not answering properly (try ${netFails}); waiting ${wait / 1000}s`);
         await new Promise((r) => setTimeout(r, wait));
       }
     }
@@ -331,9 +355,13 @@ async function main() {
       lastAlive = Date.now();
     }
     if (outcome.rateLimited) {
-      log(`pausing ${RATE_LIMIT_PAUSE_MS / 1000}s after a rate limit`);
-      await new Promise((r) => setTimeout(r, RATE_LIMIT_PAUSE_MS));
-    } else if (!outcome.worked) {
+      limitHits += 1;
+      const pause = Math.min(RATE_LIMIT_PAUSE_MS * 2 ** (limitHits - 1), RATE_LIMIT_PAUSE_MAX_MS);
+      log(`pausing ${pause / 1000}s after a rate limit (hit ${limitHits} in a row)`);
+      await new Promise((r) => setTimeout(r, pause));
+    } else if (outcome.worked) {
+      limitHits = 0;
+    } else {
       await new Promise((r) => setTimeout(r, IDLE_MS));
     }
   }
