@@ -6,6 +6,7 @@ import {
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { pausedForSecurityFix } from '@/lib/middleware/reporter-routes-paused';
 import { normalizeReporterEmail } from '@/lib/services/bug-portal/config';
 import {
   BUG_STATUSES,
@@ -87,7 +88,7 @@ function round(value: number, places = 1): number {
  *   resolution  counted / median_days / average_days / fastest / slowest
  *   trend       last 6 months, oldest first: { month, reported, completed }
  */
-export const GET = withApiKeyAuth(
+export const GET = pausedForSecurityFix(withApiKeyAuth(
   async (request: NextRequest, context: ApiRequestContext) => {
     try {
       const { searchParams } = new URL(request.url);
@@ -238,7 +239,7 @@ export const GET = withApiKeyAuth(
       );
     }
   }
-);
+));
 
 export async function OPTIONS() {
   return corsPreflightResponse();

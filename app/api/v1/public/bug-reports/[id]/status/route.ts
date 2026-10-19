@@ -5,6 +5,7 @@ import {
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { pausedForSecurityFix } from '@/lib/middleware/reporter-routes-paused';
 import {
   getBugPortalConfig,
   normalizeReporterEmail,
@@ -60,7 +61,7 @@ const MAX_NOTE_LENGTH = 5000;
  *   reporter_email REQUIRED. Must own the bug.
  *   note           Optional, except on a reopen where it is required.
  */
-export const POST = withApiKeyAuth(
+export const POST = pausedForSecurityFix(withApiKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
@@ -242,7 +243,7 @@ export const POST = withApiKeyAuth(
       );
     }
   }
-);
+));
 
 export async function OPTIONS() {
   return corsPreflightResponse();
