@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '@boobalan_jkkn/shared';
 import type { ApiRequestContext, ApiResponse } from '@boobalan_jkkn/shared';
@@ -21,12 +21,15 @@ import { createApiErrorResponse } from '@/lib/middleware/api-key-auth';
  * silently fail to limit anything under real traffic. There is no Redis /
  * Upstash / Vercel KV dependency available, so the Postgres the route already
  * writes to is the only shared counter. Cost: one extra round trip per write.
+ *
+ * Per-app only (Director decision 2026-10-19): the limit is counted per
+ * application (= per API key). There is deliberately NO per-IP limit, because
+ * students on one campus network share a single public IP and would throttle
+ * each other.
  */
 
 export interface RateLimitRule {
-  /** Max requests per window for one (application + client IP) pair. */
-  identityPerWindow: number;
-  /** Max requests per window for the whole application, across every IP. */
+  /** Max requests per window for the whole application (one API key). */
   applicationPerWindow: number;
   /** Window length in seconds. */
   windowSeconds: number;
@@ -34,7 +37,7 @@ export interface RateLimitRule {
 
 export interface RateLimitResult {
   allowed: boolean;
-  /** Which bucket tripped: 'identity' (app+IP), 'application' (app-wide), or 'ok'. */
+  /** 'application' when the app-wide bucket tripped, otherwise 'ok'. */
   scope: string;
   /** Seconds until the current window rolls over. */
   retryAfter: number;
@@ -43,64 +46,39 @@ export interface RateLimitResult {
 }
 
 /**
- * Bug report submission.
+ * Bug report submission: 30 per minute per app.
  *
  * Sizing, so a human can argue with it:
- *   - A genuine reporter files maybe one bug every few minutes (~0.3/min).
- *     5/min for one person on one machine is >15x that headroom, and still
- *     allows a frantic burst of five related bugs in a minute.
- *   - 30/min application-wide means thirty *different* people would have to
- *     file simultaneously to trip it, which has never happened on this
- *     platform.
- *   - The 2026-08-07 attack ran ~47/min sustained with 49/second peaks. From a
- *     single IP it would have been cut from 269 reports to ~28 over the same
- *     5m41s (about a 90% reduction), and the 49/second peak is cut by ~98%.
- *     To reach even the 30/min application ceiling the attacker now needs six
- *     or more distinct IPs, and is still capped there.
+ *   - A genuine reporter files maybe one bug every few minutes (~0.3/min), so
+ *     thirty *different* people would have to file in the same minute to trip
+ *     it, which has never happened on this platform.
+ *   - The 2026-08-07 attack ran ~47/min sustained with 49/second peaks. Capped
+ *     at 30/min it would have landed ~180 of 269 rows over 5m41s, but the
+ *     49/second burst is cut to at most 30 in any one minute window.
  */
 export const BUG_SUBMISSION_RATE_LIMIT: RateLimitRule = {
-  identityPerWindow: 5,
   applicationPerWindow: 30,
   windowSeconds: 60
 };
 
 /**
- * Reporter conversation writes (notes, status updates on their own bug).
- * Chat-shaped traffic bursts more naturally than bug filing, so this is looser.
- * Both are still ~1000x below the observed attack rate.
+ * Reporter conversation writes (messages, status updates on their own bug):
+ * 60 per minute per app. Chat-shaped traffic bursts more naturally than bug
+ * filing, so this is looser.
  */
 export const REPORTER_WRITE_RATE_LIMIT: RateLimitRule = {
-  identityPerWindow: 10,
   applicationPerWindow: 60,
   windowSeconds: 60
 };
 
 /**
- * AI task enqueue. Same shape as bug submission -- each call costs real money
- * downstream, so there is no reason to be looser than the cheapest write.
+ * AI task enqueue (POST only -- GET polling is not limited): 30 per minute per
+ * app, same as bug submission. No daily cap (Director decision 2026-10-19).
  */
 export const AI_RUN_RATE_LIMIT: RateLimitRule = {
-  identityPerWindow: 5,
   applicationPerWindow: 30,
   windowSeconds: 60
 };
-
-/**
- * Best-effort client IP.
- *
- * On Vercel, x-forwarded-for is set by the platform edge and its first entry is
- * the real client. If no IP can be determined at all, every such caller shares
- * the literal 'unknown' bucket -- that fails toward *stricter*, which is the
- * right direction for a limiter.
- */
-function clientIp(request: NextRequest): string {
-  const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded) {
-    const first = forwarded.split(',')[0]?.trim();
-    if (first) return first;
-  }
-  return request.headers.get('x-real-ip')?.trim() || 'unknown';
-}
 
 function bucket(parts: string[]): string {
   return createHash('sha256').update(parts.join('|')).digest('hex');
@@ -109,10 +87,8 @@ function bucket(parts: string[]): string {
 /**
  * Check (and consume) one unit of quota for this request.
  *
- * Keyed on BOTH the API key and the client IP, because either alone is
- * trivially defeated: one API key is shared by every browser running that app,
- * and one IP is defeated by rotating IPs while reusing the key. Two buckets are
- * counted and both must pass.
+ * Keyed on the application only (one bucket per app per scope). The client IP
+ * is not used: a campus shares one public IP across many students.
  *
  * The application id is used in place of the raw API key. They are 1:1 (the key
  * is looked up with .eq('api_key', ...).single()), so it identifies exactly the
@@ -134,7 +110,6 @@ function bucket(parts: string[]): string {
  * closed on a missing or invalid key, and runs before this.
  */
 export async function checkRateLimit(
-  request: NextRequest,
   context: ApiRequestContext,
   scope: string,
   rule: RateLimitRule
@@ -143,13 +118,12 @@ export async function checkRateLimit(
     allowed: true,
     scope: 'ok',
     retryAfter: 0,
-    limit: rule.identityPerWindow,
+    limit: rule.applicationPerWindow,
     count: 0
   });
 
   try {
     const applicationId = context.application.id;
-    const ip = clientIp(request);
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -158,10 +132,8 @@ export async function checkRateLimit(
     );
 
     const { data, error } = await supabase.rpc('fn_check_api_rate_limit', {
-      p_identity_bucket: bucket([scope, applicationId, ip]),
-      p_identity_limit: rule.identityPerWindow,
-      p_key_bucket: bucket([scope, applicationId]),
-      p_key_limit: rule.applicationPerWindow,
+      p_bucket: bucket([scope, applicationId]),
+      p_limit: rule.applicationPerWindow,
       p_window_seconds: rule.windowSeconds
     });
 
@@ -186,7 +158,7 @@ export async function checkRateLimit(
       allowed: row.allowed === true,
       scope: row.scope ?? 'unknown',
       retryAfter: row.retry_after ?? rule.windowSeconds,
-      limit: row.limit_value ?? rule.identityPerWindow,
+      limit: row.limit_value ?? rule.applicationPerWindow,
       count: row.current_count ?? 0
     };
 
@@ -211,10 +183,7 @@ export async function checkRateLimit(
  * Human-readable 429 body text for a tripped bucket.
  */
 export function rateLimitMessage(result: RateLimitResult): string {
-  if (result.scope === 'application') {
-    return `This application has sent too many requests (limit ${result.limit} per minute across all users). Please retry in ${result.retryAfter} second(s).`;
-  }
-  return `Too many requests (limit ${result.limit} per minute). Please retry in ${result.retryAfter} second(s).`;
+  return `This application has sent too many requests (limit ${result.limit} per minute across all users). Please retry in ${result.retryAfter} second(s).`;
 }
 
 /**
@@ -227,12 +196,11 @@ export function rateLimitMessage(result: RateLimitResult): string {
  * throttled and when to try again.
  */
 export async function enforceRateLimit(
-  request: NextRequest,
   context: ApiRequestContext,
   scope: string,
   rule: RateLimitRule
 ): Promise<NextResponse<ApiResponse<never>> | null> {
-  const result = await checkRateLimit(request, context, scope, rule);
+  const result = await checkRateLimit(context, scope, rule);
   if (result.allowed) return null;
 
   return createApiErrorResponse<never>(

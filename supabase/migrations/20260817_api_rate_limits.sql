@@ -15,16 +15,20 @@
 -- to on every request -- is the only shared counter available. Tradeoff: one
 -- extra round trip per public write.
 --
--- Additive only: creates one new table and one new function. Touches no
--- existing table, column, policy or row.
+-- Per-app only (Director decision 2026-10-19): one counter per application
+-- (= per API key). There is deliberately NO per-IP counter, because students on
+-- one campus network share a single public IP and would throttle each other.
+--
+-- Additive and idempotent: creates one new table and one new function (IF NOT
+-- EXISTS / CREATE OR REPLACE), safe to re-run. Touches no existing table,
+-- column, policy or row.
 
 -- ---------------------------------------------------------------------------
 -- Counter table
 -- ---------------------------------------------------------------------------
 -- One row per (bucket, fixed time window). bucket_key is a SHA-256 hex digest
--- computed in the application layer -- neither the API key nor the raw client
--- IP is ever stored here (the IP is personal data, and the key should not be
--- copied into a high-churn table even though it is public).
+-- of (scope + application id) computed in the application layer -- the API
+-- key is never copied into this high-churn table, and no client IP is used.
 CREATE TABLE IF NOT EXISTS public.api_rate_limits (
   bucket_key    text        NOT NULL,
   window_start  timestamptz NOT NULL,
@@ -43,16 +47,10 @@ ALTER TABLE public.api_rate_limits ENABLE ROW LEVEL SECURITY;
 -- ---------------------------------------------------------------------------
 -- Atomic check-and-increment
 -- ---------------------------------------------------------------------------
--- Two buckets are counted on every call and BOTH must be under their limit:
+-- One bucket per call: (scope + application). The request is allowed while
+-- the bucket's count for the current window is at or under p_limit.
 --
---   identity bucket = (application + client IP)  -- stops one machine flooding
---   key bucket      = (application)              -- stops IP rotation on one key
---
--- Either bucket alone is trivially defeated: one API key is shared by every
--- browser running that app, and one IP is defeated by rotating IPs while
--- reusing the key. Both together bound the total.
---
--- This must be a single statement per bucket. A read-then-write from the
+-- This must be a single statement. A read-then-write from the
 -- application layer would race: 49 concurrent requests would each read 0, each
 -- write 1, and all 49 would pass. INSERT .. ON CONFLICT DO UPDATE takes a row
 -- lock and increments atomically, which is the entire point of doing this in
@@ -64,14 +62,12 @@ ALTER TABLE public.api_rate_limits ENABLE ROW LEVEL SECURITY;
 -- boundary can land up to 2x the limit within a short span. That is acceptable
 -- here -- the target is 49/second floods, not shaving the last few percent.
 --
--- A blocked request still increments both counters. A rejected attempt is
+-- A blocked request still increments the counter. A rejected attempt is
 -- still an attempt, and it keeps the function to one code path.
 CREATE OR REPLACE FUNCTION public.fn_check_api_rate_limit(
-  p_identity_bucket text,
-  p_identity_limit  int,
-  p_key_bucket      text,
-  p_key_limit       int,
-  p_window_seconds  int DEFAULT 60
+  p_bucket         text,
+  p_limit          int,
+  p_window_seconds int DEFAULT 60
 )
 RETURNS TABLE (
   allowed       boolean,
@@ -84,8 +80,7 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_window_seconds int;
   v_window_start   timestamptz;
-  v_identity_count int;
-  v_key_count      int;
+  v_count          int;
   v_retry_after    int;
 BEGIN
   v_window_seconds := GREATEST(COALESCE(p_window_seconds, 60), 1);
@@ -107,16 +102,10 @@ BEGIN
   );
 
   INSERT INTO public.api_rate_limits (bucket_key, window_start, request_count)
-  VALUES (p_identity_bucket, v_window_start, 1)
+  VALUES (p_bucket, v_window_start, 1)
   ON CONFLICT (bucket_key, window_start)
   DO UPDATE SET request_count = public.api_rate_limits.request_count + 1
-  RETURNING public.api_rate_limits.request_count INTO v_identity_count;
-
-  INSERT INTO public.api_rate_limits (bucket_key, window_start, request_count)
-  VALUES (p_key_bucket, v_window_start, 1)
-  ON CONFLICT (bucket_key, window_start)
-  DO UPDATE SET request_count = public.api_rate_limits.request_count + 1
-  RETURNING public.api_rate_limits.request_count INTO v_key_count;
+  RETURNING public.api_rate_limits.request_count INTO v_count;
 
   -- Housekeeping: every row here is disposable once its window has passed.
   -- Done probabilistically inline so the table cannot grow without bound and
@@ -126,22 +115,19 @@ BEGIN
      WHERE window_start < now() - interval '1 day';
   END IF;
 
-  IF v_identity_count > p_identity_limit THEN
-    RETURN QUERY SELECT false, 'identity'::text, v_identity_count,
-                        p_identity_limit, v_retry_after;
-  ELSIF v_key_count > p_key_limit THEN
-    RETURN QUERY SELECT false, 'application'::text, v_key_count,
-                        p_key_limit, v_retry_after;
+  IF v_count > p_limit THEN
+    RETURN QUERY SELECT false, 'application'::text, v_count,
+                        p_limit, v_retry_after;
   ELSE
-    RETURN QUERY SELECT true, 'ok'::text, v_identity_count,
-                        p_identity_limit, v_retry_after;
+    RETURN QUERY SELECT true, 'ok'::text, v_count,
+                        p_limit, v_retry_after;
   END IF;
 END;
 $$;
 
 -- Lock the RPC to service-role only (anon/authenticated must not call it --
 -- a caller who could invoke this directly could burn another app's quota).
-REVOKE EXECUTE ON FUNCTION public.fn_check_api_rate_limit(text, int, text, int, int)
+REVOKE EXECUTE ON FUNCTION public.fn_check_api_rate_limit(text, int, int)
   FROM anon, authenticated, PUBLIC;
-GRANT  EXECUTE ON FUNCTION public.fn_check_api_rate_limit(text, int, text, int, int)
+GRANT  EXECUTE ON FUNCTION public.fn_check_api_rate_limit(text, int, int)
   TO service_role;

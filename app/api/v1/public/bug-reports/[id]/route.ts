@@ -163,7 +163,6 @@ export const PATCH = withApiKeyAuth(
   ) => {
     try {
       const limited = await enforceRateLimit(
-        request,
         context,
         'bug-reports:update',
         REPORTER_WRITE_RATE_LIMIT

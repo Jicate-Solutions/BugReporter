@@ -146,7 +146,6 @@ export const POST = withApiKeyAuth(
   ) => {
     try {
       const limited = await enforceRateLimit(
-        request,
         context,
         'bug-reports:message',
         REPORTER_WRITE_RATE_LIMIT

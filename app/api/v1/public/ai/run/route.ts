@@ -92,7 +92,6 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
   // Per-app throttle, before any body parsing or enqueue. GET polling is
   // deliberately NOT limited: an SDK polls every few seconds while a job runs.
   const limited = await enforceRateLimit(
-    request,
     context,
     'ai:run',
     AI_RUN_RATE_LIMIT

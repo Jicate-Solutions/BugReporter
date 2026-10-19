@@ -93,7 +93,6 @@ export const POST = withApiKeyAuth(
       // Throttle before reading the body: a flood should never get as far as
       // parsing megabytes of base64 screenshot/attachment data.
       const limited = await enforceRateLimit(
-        request,
         context,
         'bug-reports:submit',
         BUG_SUBMISSION_RATE_LIMIT
