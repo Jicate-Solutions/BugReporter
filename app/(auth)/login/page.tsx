@@ -67,7 +67,7 @@ export default function LoginPage() {
                 </div>
               </div>
               <CardTitle className='text-2xl font-bold text-center'>
-                Welcome to JKKN Bug Reporter
+                Welcome to JICATE Control Tower
               </CardTitle>
               <CardDescription className='text-center text-base'>
                 Sign in with your Google account to continue
