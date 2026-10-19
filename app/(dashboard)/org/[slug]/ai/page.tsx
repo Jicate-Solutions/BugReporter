@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/table';
 import { FALLBACK_AI_TASKS, fetchAiJobTypeCatalogue } from '@/lib/ai/tasks';
 import Link from 'next/link';
+import { SafetyAlertBanner } from './safety/_components/safety-alert-banner';
 import { createAdminClient } from '@/lib/supabase/admin';
 import {
   readEngineTasks,
@@ -171,6 +172,9 @@ export default async function AiCockpitPage({
   // Engine truth: per-app usage + the real task catalogue (tolerate unreachable).
   // Independent reads, so fetch them together rather than one after the other.
   const engineAdmin = createAdminClient();
+  const {
+    data: { user }
+  } = await session.auth.getUser();
   const [stats, catalogue, jTasks, jRunners, jUsage] = await Promise.all([
     fetchEngineStats(),
     fetchAiJobTypeCatalogue(),
@@ -199,6 +203,8 @@ export default async function AiCockpitPage({
           queue behind MyJKKN&apos;s own work; there is no paid fallback.
         </p>
       </div>
+
+      <SafetyAlertBanner admin={engineAdmin} userId={user?.id} slug={slug} />
 
       <Card>
         <CardHeader className="pb-2">

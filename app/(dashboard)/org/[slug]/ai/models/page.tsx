@@ -37,6 +37,7 @@ import {
 } from '@/lib/ai-engine/admin';
 import { AI_TASK_KEYS } from '@/lib/ai/tasks';
 import { EngineTaskEditor } from './_components/engine-task-editor';
+import { SafetyAlertBanner } from '../safety/_components/safety-alert-banner';
 
 export const dynamic = 'force-dynamic';
 
@@ -142,6 +143,8 @@ export default async function AiModelsPage({
           </Card>
         ))}
       </div>
+
+      <SafetyAlertBanner admin={admin} userId={user?.id} slug={slug} />
 
       {!workerAlive && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">

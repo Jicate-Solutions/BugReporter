@@ -35,6 +35,7 @@ import {
   type JobRow,
   type RunnerRow
 } from '@/lib/ai-engine/admin';
+import { SafetyAlertBanner } from '../safety/_components/safety-alert-banner';
 
 export const dynamic = 'force-dynamic';
 
@@ -99,6 +100,9 @@ export default async function AiRoutinesPage({
     );
   }
 
+  const {
+    data: { user }
+  } = await session.auth.getUser();
   const admin = createAdminClient();
   const [runners, live, recent, scheduledRes] = await Promise.all([
     readRunners(admin),
@@ -131,6 +135,8 @@ export default async function AiRoutinesPage({
           .
         </p>
       </div>
+
+      <SafetyAlertBanner admin={admin} userId={user?.id} slug={slug} />
 
       {runners.length > 0 && aliveCount === 0 && (
         <div className="rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
