@@ -40,6 +40,13 @@ export interface RunnerRow {
   name: string;
   last_seen_at: string;
   last_job_at: string | null;
+  /** Claude account label chosen for this worker; null = the box's own sign-in. */
+  account: string | null;
+  account_fallback: boolean;
+  /** Labels the worker reported holding (names only). */
+  accounts_available: string[];
+  /** Label the last job actually ran on. */
+  account_in_use: string | null;
 }
 
 export interface JobRow {
@@ -86,7 +93,7 @@ export async function readUsage(
 export async function readRunners(admin: SupabaseClient): Promise<RunnerRow[]> {
   const { data } = await admin
     .from('ai_runners')
-    .select('name, last_seen_at, last_job_at')
+    .select('name, last_seen_at, last_job_at, account, account_fallback, accounts_available, account_in_use')
     .order('name');
   return (data ?? []) as RunnerRow[];
 }

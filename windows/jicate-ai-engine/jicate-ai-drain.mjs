@@ -39,7 +39,14 @@
 //   JICATE_AI_URL=https://jkkn-centralized-bug-reporter.vercel.app
 //   JICATE_AI_RUNNER_TOKEN=<generated on this box by new-runner-token.ps1>
 // Optional process env (set by run-jicate-ai-drain.cmd): SANDBOX, IDLE_MS,
-//   RUNNER, CLAUDE_BIN, ONESHOT=1.
+//   RUNNER, CLAUDE_BIN, ONESHOT=1, ACCOUNTS_DIR.
+//
+// Claude accounts: the box's own sign-in is "default". Each extra account is
+// a file <ACCOUNTS_DIR>\<label>.token holding that account's long-lived key
+// (made with `claude setup-token`, saved by save-claude-account.mjs). The
+// worker tells the Control Tower which labels it has (names only, never keys);
+// the Control Tower says which one to use and whether to fall back to the
+// others when an account hits its limit or its key stops working.
 //
 // USAGE
 //   SELFTEST=1 node jicate-ai-drain.mjs  # one local "pong" through claude, no server
@@ -48,7 +55,7 @@
 // ============================================================================
 
 import { execFile } from 'node:child_process';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -89,6 +96,12 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 // or .claude settings it finds.
 const SANDBOX    = process.env.SANDBOX || join(tmpdir(), 'jicate-ai-sandbox');
 const RATE_LIMIT_PAUSE_MS = 60_000;
+const ACCOUNTS_DIR = process.env.ACCOUNTS_DIR || resolve(HERE, 'accounts');
+const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
+// After an account hits its limit, skip it for 30 min; after its key fails, 6 h.
+const COOLDOWN_LIMIT_MS = 30 * 60_000;
+const COOLDOWN_AUTH_MS = 6 * 60 * 60_000;
+const cooling = new Map(); // label -> until (ms)
 
 const SELFTEST   = process.env.SELFTEST === '1';
 
@@ -121,21 +134,49 @@ async function post(path, body) {
 }
 
 class RunError extends Error {
-  constructor(message, { retry = false, rateLimited = false } = {}) {
+  constructor(message, { retry = false, rateLimited = false, authFailed = false } = {}) {
     super(message);
     this.retry = retry;
     this.rateLimited = rateLimited;
+    this.authFailed = authFailed;
   }
 }
 
 const RATE_LIMIT_RE = /rate.?limit|usage limit|too many requests|\b429\b|overloaded/i;
+const AUTH_FAIL_RE = /failed to authenticate|oauth access token|invalid api key|not logged in|\b401\b/i;
+
+/** Labels of the extra accounts on this box (file names only). */
+function listAccounts() {
+  try {
+    return readdirSync(ACCOUNTS_DIR)
+      .filter((f) => f.endsWith('.token'))
+      .map((f) => f.slice(0, -'.token'.length))
+      .filter((l) => LABEL_RE.test(l) && l !== 'default')
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Environment for one account: its key, or the box's own sign-in for "default". */
+function envFor(label) {
+  const env = { ...process.env };
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (label === 'default') return env;
+  let key = '';
+  try { key = readFileSync(join(ACCOUNTS_DIR, `${label}.token`), 'utf8').trim(); } catch { /* missing */ }
+  if (!key) throw new RunError(`account ${label}: no key file`, { retry: true, authFailed: true });
+  env.CLAUDE_CODE_OAUTH_TOKEN = key;
+  return env;
+}
 
 /**
  * One headless Claude call on the Max seat. No tools, no MCP, no hooks, no
  * skills, no transcript on disk. Returns { answer, usage }.
  */
-function runClaude(job) {
+function runClaude(job, label = 'default') {
   mkdirSync(SANDBOX, { recursive: true });
+  const env = envFor(label);
   const args = [
     '-p', '--model', job.model, '--output-format', 'json',
     '--restricted',              // ignore project/local settings and hooks
@@ -148,7 +189,7 @@ function runClaude(job) {
   return new Promise((resolvePromise, reject) => {
     const child = execFile(
       CLAUDE_BIN, args,
-      { cwd: SANDBOX, timeout, maxBuffer: 16 * 1024 * 1024, killSignal: 'SIGKILL', windowsHide: true },
+      { cwd: SANDBOX, env, timeout, maxBuffer: 16 * 1024 * 1024, killSignal: 'SIGKILL', windowsHide: true },
       (err, stdout, stderr) => {
         if (err && err.killed) {
           return reject(new RunError(`timed out after ${timeout} ms`, { retry: true }));
@@ -158,7 +199,7 @@ function runClaude(job) {
         if (!d) {
           const msg = String(stderr || err?.message || stdout || 'no output').slice(0, 300);
           return reject(new RunError(`claude failed: ${msg}`, {
-            retry: true, rateLimited: RATE_LIMIT_RE.test(msg),
+            retry: true, rateLimited: RATE_LIMIT_RE.test(msg), authFailed: AUTH_FAIL_RE.test(msg),
           }));
         }
         // modelUsage also lists the CLI's side-work model (Haiku), in no fixed
@@ -177,7 +218,9 @@ function runClaude(job) {
           const msg = String(d.result ?? d.subtype ?? 'error').slice(0, 300);
           const limited = RATE_LIMIT_RE.test(msg);
           return reject(Object.assign(
-            new RunError(`claude error: ${msg}`, { retry: true, rateLimited: limited }),
+            new RunError(`claude error: ${msg}`, {
+              retry: true, rateLimited: limited, authFailed: !limited && AUTH_FAIL_RE.test(msg),
+            }),
             { usage },
           ));
         }
@@ -188,19 +231,46 @@ function runClaude(job) {
   });
 }
 
+/**
+ * Run the job on the chosen account; with fallback on, move to the next
+ * account when one hits its limit or its key fails. Order: chosen, the other
+ * extra accounts, then the box's own sign-in. Returns { answer, usage, label }.
+ */
+async function runWithAccounts(job, choice) {
+  const chosen = choice?.use && LABEL_RE.test(choice.use) ? choice.use : 'default';
+  const all = [chosen, ...listAccounts(), 'default'].filter((l, i, a) => a.indexOf(l) === i);
+  const order = choice?.fallback === false ? [chosen] : all;
+  const now = Date.now();
+  const ready = order.filter((l) => !(cooling.get(l) > now));
+  const tryList = ready.length ? ready : [chosen];
+  let lastErr;
+  for (const label of tryList) {
+    try {
+      const out = await runClaude(job, label);
+      return { ...out, label };
+    } catch (e) {
+      lastErr = e;
+      if (!(e?.rateLimited || e?.authFailed)) throw e;
+      cooling.set(label, Date.now() + (e.authFailed ? COOLDOWN_AUTH_MS : COOLDOWN_LIMIT_MS));
+      logErr(`account ${label} ${e.authFailed ? 'key failed' : 'hit its limit'}; ${tryList.length > 1 ? 'trying the next account' : 'no other account to try'}`);
+    }
+  }
+  throw lastErr;
+}
+
 async function drainOnce() {
-  const { job } = await post('/api/internal/ai-engine/claim', {});
+  const { job, account } = await post('/api/internal/ai-engine/claim', { accounts: listAccounts() });
   if (!job) return { worked: false };
 
   // Log ids only - never the payload or the answer.
-  log(`claimed ${job.job_id} ${job.job_type} attempt=${job.attempts} model=${job.model}`);
+  log(`claimed ${job.job_id} ${job.job_type} attempt=${job.attempts} model=${job.model} account=${account?.use || 'default'}`);
   const started = Date.now();
   try {
-    const { answer, usage } = await runClaude(job);
+    const { answer, usage, label } = await runWithAccounts(job, account);
     if (!answer) throw new RunError('claude returned empty output', { retry: true });
     const done = await post('/api/internal/ai-engine/complete', {
       job_id: job.job_id, answer,
-      usage: { ...usage, duration_ms: Date.now() - started },
+      usage: { ...usage, account: label, duration_ms: Date.now() - started },
     });
     log(`DONE ${job.job_id} status=${done?.status} in ${Date.now() - started}ms`);
     return { worked: true };
