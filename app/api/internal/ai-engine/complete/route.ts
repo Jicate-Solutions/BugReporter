@@ -5,6 +5,8 @@
  * Body:
  *   { job_id, answer, usage? }                 success
  *   { job_id, error, retry?, usage? }          failure (retry → back in the queue, max 3 tries)
+ *   { ..., rate_limited: true }                the Max plan's limit was hit: re-queued without
+ *                                              using up one of the job's 3 tries
  *   usage = { model_id?, input_tokens?, output_tokens?, duration_ms? }
  *
  * Every call writes one ledger row (ai_usage), success or failure, at ₹0.
@@ -31,6 +33,7 @@ const bodySchema = z.object({
   answer: z.string().max(200_000).optional(),
   error: z.string().max(5_000).optional(),
   retry: z.boolean().optional(),
+  rate_limited: z.boolean().optional(),
   usage: z
     .object({
       model_id: z.string().max(100).nullable().optional(),
@@ -80,6 +83,9 @@ export async function POST(request: NextRequest) {
     error = 'runner sent neither answer nor error';
   }
 
+  // Before completing, so a limit-reached try can never be the one that fails the job.
+  if (!ok && retry && body.rate_limited) await refundAttempt(admin, body.job_id, runner);
+
   const { data, error: rpcError } = await admin.rpc('fn_ai_engine_complete', {
     p_job_id: body.job_id,
     p_runner: runner,
@@ -111,6 +117,34 @@ export async function POST(request: NextRequest) {
     await raiseSafetyAlert(admin, body.job_id);
   }
   return NextResponse.json({ status: outcome.status }, { status: 200 });
+}
+
+/**
+ * A "limit reached" try is not the job's fault, so it should not count as one
+ * of its 3 strikes. The claim added one to attempts; take it back. Guarded on
+ * the value read, so a concurrent claim is never undone.
+ */
+async function refundAttempt(
+  admin: ReturnType<typeof createAdminClient>,
+  jobId: string,
+  runner: string
+) {
+  const { data } = await admin
+    .from('ai_jobs')
+    .select('attempts')
+    .eq('id', jobId)
+    .eq('status', 'running')
+    .eq('claimed_by', runner)
+    .maybeSingle();
+  const attempts = (data as { attempts: number } | null)?.attempts ?? 0;
+  if (attempts <= 0) return;
+  await admin
+    .from('ai_jobs')
+    .update({ attempts: attempts - 1 })
+    .eq('id', jobId)
+    .eq('status', 'running')
+    .eq('claimed_by', runner)
+    .eq('attempts', attempts);
 }
 
 /**
