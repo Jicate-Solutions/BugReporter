@@ -230,3 +230,43 @@ export async function readSpecForJob(
     .maybeSingle();
   return (task as { output_format: 'text' | 'json'; max_answer_words: number | null } | null) ?? null;
 }
+
+// ── platform-internal callers (dashboard AI cards, scheduled routines) ──────
+
+/**
+ * Does the JICATE engine serve this task right now? True only when its row
+ * exists AND is switched on. Any error reads as false, so a hiccup here sends
+ * the task to MyJKKN as before rather than failing it.
+ */
+export async function engineServes(admin: SupabaseClient, jobType: string): Promise<boolean> {
+  try {
+    const t = await getEngineTask(admin, jobType);
+    return Boolean(t?.enabled);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Enqueue on the JICATE engine for the platform itself (no application). The
+ * app_slug is the same `reporter-<organizationId>` tag MyJKKN gets, so per-org
+ * isolation is unchanged: a poll must present the same tag to read the result.
+ */
+export async function enqueueForOrg(
+  admin: SupabaseClient,
+  organizationId: string,
+  jobType: string,
+  payload: Record<string, unknown>,
+  dedupeKey?: string
+): Promise<EnqueueOutcome> {
+  const { data, error } = await admin.rpc('fn_ai_engine_enqueue', {
+    p_job_type: jobType,
+    p_application_id: null,
+    p_app_slug: `reporter-${organizationId}`,
+    p_organization_id: organizationId,
+    p_payload: payload,
+    p_dedupe_key: dedupeKey ?? null
+  });
+  if (error) throw new Error(`enqueue failed: ${error.message}`);
+  return data as EnqueueOutcome;
+}

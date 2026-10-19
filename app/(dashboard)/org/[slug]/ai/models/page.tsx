@@ -32,6 +32,7 @@ import {
   readUsage,
   type UsageRow
 } from '@/lib/ai-engine/admin';
+import { AI_TASK_KEYS } from '@/lib/ai/tasks';
 import { EngineTaskEditor } from './_components/engine-task-editor';
 
 export const dynamic = 'force-dynamic';
@@ -103,8 +104,9 @@ export default async function AiModelsPage({
         <h1 className="text-2xl font-bold tracking-tight">AI Models</h1>
         <p className="text-muted-foreground text-sm">
           JICATE&apos;s own AI engine: which tasks it runs, on which model, and what they cost.
-          Runs on the Max plan on the JICATE Windows box, so every run is ₹0. Tasks not listed
-          here still run on MyJKKN&apos;s engine.{' '}
+          Runs on the Max plan on the JICATE Windows box, so every run is ₹0. A task switched
+          off here, or not listed, still runs on MyJKKN&apos;s engine; switching it on moves it
+          here for every app at once.{' '}
           <Link href={`/org/${slug}/ai/routines`} className="underline">
             See the workers and queue
           </Link>
@@ -146,7 +148,11 @@ export default async function AiModelsPage({
                   <span className="font-medium">{t.title}</span>
                   <code className="text-muted-foreground text-xs">{t.job_type}</code>
                   {t.enabled ? (
-                    <Badge className="bg-green-100 text-green-800 hover:bg-green-100">on</Badge>
+                    <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
+                      on · JICATE engine
+                    </Badge>
+                  ) : AI_TASK_KEYS.includes(t.job_type) ? (
+                    <Badge variant="secondary">off · MyJKKN still serves it</Badge>
                   ) : (
                     <Badge variant="secondary">off</Badge>
                   )}

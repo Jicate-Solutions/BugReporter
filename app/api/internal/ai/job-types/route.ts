@@ -48,11 +48,14 @@ export async function GET() {
     listEngineTasks(createAdminClient())
   ]);
   // JICATE engine tasks (this platform's own ai_tasks) join the menu. On a key
-  // clash the JICATE engine wins, because the public door routes it there.
-  const engineKeys = new Set(engineTasks.map((t) => t.job_type));
+  // clash the engine that actually serves the task wins: JICATE when its row is
+  // switched on, MyJKKN otherwise (the public door routes the same way).
+  const myjkknKeys = new Set(myjkknTasks.map((t) => t.key));
+  const shown = engineTasks.filter((t) => t.enabled || !myjkknKeys.has(t.job_type));
+  const engineKeys = new Set(shown.map((t) => t.job_type));
   const tasks = [
     ...myjkknTasks.filter((t) => !engineKeys.has(t.key)),
-    ...engineTasks.map((t) => ({
+    ...shown.map((t) => ({
       key: t.job_type,
       label: `${t.title}${t.enabled ? '' : ' (switched off)'}`,
       description: `${t.description} · JICATE engine`

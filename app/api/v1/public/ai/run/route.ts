@@ -16,8 +16,8 @@
  * No paid fallback exists anywhere on this path: jobs queue behind MyJKKN's
  * own work (priority 500 vs 100) and run at ₹0 when the Max box is free.
  *
- * JICATE AI engine (2026-10-19): a task that has a row in this platform's own
- * `ai_tasks` table runs on the JICATE engine instead (lib/ai-engine/engine.ts),
+ * JICATE AI engine (2026-10-19): a task that is switched ON in this platform's
+ * own `ai_tasks` table runs on the JICATE engine instead (lib/ai-engine/engine.ts),
  * drained by the JICATE Windows box. Same gates, same request, same poll
  * envelope — an app cannot tell which engine answered. GET checks this
  * platform's queue first and falls back to MyJKKN for any other job id.
@@ -128,7 +128,11 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
     );
   }
 
-  if (!allowed.includes(task) || (!engineTask && !AI_TASK_KEYS.includes(task))) {
+  // A task the JICATE engine has but has switched OFF goes back to MyJKKN when
+  // MyJKKN serves it (the five tasks staged for the move); a JICATE-only task
+  // that is off (leak.coach) is refused below with task_switched_off.
+  const myjkknTask = AI_TASK_KEYS.includes(task);
+  if (!allowed.includes(task) || (!engineTask && !myjkknTask)) {
     return createApiErrorResponse(
       'task_not_permitted',
       `Task "${task}" is not in this app's approved menu. Approved: ${
@@ -147,8 +151,16 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
       ? body.dedupe_key
       : undefined;
 
-  // ── JICATE engine path ──
-  if (engineTask) {
+  if (engineTask && !engineTask.enabled && !myjkknTask) {
+    return createApiErrorResponse(
+      'task_switched_off',
+      `Task "${task}" is switched off on the platform right now.`,
+      503
+    );
+  }
+
+  // ── JICATE engine path (task switched ON there) ──
+  if (engineTask?.enabled) {
     try {
       const out = await enqueueEngineJob(createAdminClient(), {
         jobType: task,
