@@ -25,43 +25,62 @@
 /**
  * A task as the UI renders it. Keys are `string`, not a closed union: the live
  * catalogue can add a task without a deploy here, which is the entire point.
+ *
+ * `enabled` mirrors the engine's own switch. The catalogue endpoint filters on
+ * external_allowed but NOT on enabled, so a task MyJKKN has switched off still
+ * arrives here — the UI marks it rather than hiding it, so an approval screen
+ * never silently loses a row (Director decision, 2026-08-08).
  */
 export interface AiTask {
   key: string;
   label: string;
   description: string;
+  enabled: boolean;
 }
 
 /**
- * Offline default — a snapshot of MyJKKN's external_allowed rows on 2026-08-08.
+ * Offline default — a verbatim snapshot of MyJKKN's five external_allowed rows,
+ * read from production on 2026-08-08. Labels and descriptions are copied from
+ * the live `ai_job_types` rows on purpose: when the engine is reachable the UI
+ * shows those exact strings, so an outage must not rename the same task.
+ *
  * Used when the engine can't be reached, and as the static list the public
  * enqueue gate checks against (see app/api/v1/public/ai/run/route.ts).
  */
 export const FALLBACK_AI_TASKS = [
   {
     key: 'bug.summarize',
-    label: 'Summarize a bug',
-    description: 'Plain-English summary + likely area + severity guess'
+    label: 'Bug — plain-English summary (external)',
+    description: 'External-app task: summarize a bug report for a busy developer.',
+    enabled: true
   },
   {
     key: 'bug.suggest_fix',
-    label: 'Suggest a fix',
-    description: 'Root-cause hypotheses + concrete fix steps'
+    label: 'Bug — root cause + fix suggestion (external)',
+    description:
+      'External-app task: hypothesize root cause and suggest fix steps for a bug report.',
+    enabled: true
   },
   {
     key: 'bug.categorize',
-    label: 'Categorize a bug',
-    description: 'Strict-JSON severity/category tags for machine use'
+    label: 'Bug — severity + category tags (external)',
+    description:
+      'External-app task: classify a bug report; returns strict JSON for machine use.',
+    enabled: true
   },
   {
     key: 'ops.brief',
-    label: 'Ops brief',
-    description: 'Operational briefing summary'
+    label: 'Fleet health briefing',
+    description:
+      'Reads the whole bug board and writes a plain-English manager briefing (status + priorities + risks).',
+    enabled: true
   },
   {
     key: 'reply.draft',
     label: 'Reply — draft a corrected social reply (external)',
-    description: 'Rewrite a rejected Instagram/Facebook bot reply'
+    description:
+      'External-app task: rewrite a rejected Instagram/Facebook bot reply.',
+    enabled: true
   }
 ] as const;
 
@@ -133,15 +152,28 @@ export async function fetchAiJobTypeCatalogue(): Promise<AiJobType[] | null> {
  * SERVER-SIDE ONLY (calls fetchAiJobTypeCatalogue). A row with no title falls
  * back to its key so a half-filled catalogue row still renders something
  * identifiable rather than an empty label.
+ *
+ * `live` matters to callers, it is not decoration. Only a LIVE list can prove
+ * that a task an app was approved for has been withdrawn from MyJKKN; against
+ * the snapshot, every task added since 2026-08-08 would look withdrawn. Any UI
+ * that flags stale approvals must check this flag first.
  */
-export async function getAvailableAiTasks(): Promise<AiTask[]> {
+export async function getAvailableAiTasks(): Promise<{
+  tasks: AiTask[];
+  live: boolean;
+}> {
   const catalogue = await fetchAiJobTypeCatalogue();
   if (!catalogue || catalogue.length === 0) {
-    return FALLBACK_AI_TASKS.map((t) => ({ ...t }));
+    return { tasks: FALLBACK_AI_TASKS.map((t) => ({ ...t })), live: false };
   }
-  return catalogue.map((row) => ({
-    key: row.job_type,
-    label: row.title ?? row.job_type,
-    description: row.description ?? ''
-  }));
+  return {
+    tasks: catalogue.map((row) => ({
+      key: row.job_type,
+      label: row.title ?? row.job_type,
+      description: row.description ?? '',
+      // Absent/null is treated as usable; only an explicit false marks it off.
+      enabled: row.enabled !== false
+    })),
+    live: true
+  };
 }
