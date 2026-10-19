@@ -16,7 +16,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
       {/* Footer */}
       <footer className='border-t bg-white py-6'>
         <div className='container mx-auto px-4 text-center text-sm text-muted-foreground'>
-          <p>&copy; 2025 Bug Reporter Platform. All rights reserved.</p>
+          <p>&copy; 2026 JICATE Solutions. All rights reserved.</p>
         </div>
       </footer>
     </div>

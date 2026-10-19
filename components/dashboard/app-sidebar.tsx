@@ -142,7 +142,7 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
                 </div>
                 <div className='grid flex-1 text-left text-sm leading-tight ml-1'>
                   <span className='truncate font-bold text-base'>
-                    JKKN Bug Reporter
+                    JICATE Control Tower
                   </span>
                   <span className='truncate text-xs text-muted-foreground font-medium'>
                     {orgName}
