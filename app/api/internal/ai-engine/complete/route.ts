@@ -37,6 +37,7 @@ const bodySchema = z.object({
   usage: z
     .object({
       model_id: z.string().max(100).nullable().optional(),
+      account: z.string().regex(/^[a-z0-9][a-z0-9-]{0,30}$/).nullable().optional(),
       input_tokens: intOrNull,
       output_tokens: intOrNull,
       duration_ms: intOrNull
@@ -112,6 +113,9 @@ export async function POST(request: NextRequest) {
       { error: { code: 'NOT_CLAIMED', message: 'This job is not claimed by this runner.' } },
       { status: 409 }
     );
+  }
+  if (body.usage?.account) {
+    await admin.from('ai_runners').update({ account_in_use: body.usage.account }).eq('name', runner);
   }
   if (outcome.status === 'done' && result?.safeguard === true) {
     await raiseSafetyAlert(admin, body.job_id);

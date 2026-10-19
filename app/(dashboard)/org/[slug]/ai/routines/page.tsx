@@ -33,9 +33,11 @@ import {
   runnerAlive,
   secondsBetween,
   type JobRow,
-  type RunnerRow
+  type RunnerRow,
+  isSuperAdmin
 } from '@/lib/ai-engine/admin';
 import { SafetyAlertBanner } from '../safety/_components/safety-alert-banner';
+import { RunnerAccountEditor } from './_components/runner-account-editor';
 
 export const dynamic = 'force-dynamic';
 
@@ -104,7 +106,7 @@ export default async function AiRoutinesPage({
     data: { user }
   } = await session.auth.getUser();
   const admin = createAdminClient();
-  const [runners, live, recent, scheduledRes] = await Promise.all([
+  const [runners, live, recent, scheduledRes, canEdit] = await Promise.all([
     readRunners(admin),
     readLiveQueue(admin, org.id),
     readRecentJobs(admin, org.id, 50),
@@ -112,7 +114,8 @@ export default async function AiRoutinesPage({
       .from('app_ai_routines')
       .select('id, routine_kind, enabled, last_run_at, last_status, applications(name)')
       .eq('organization_id', org.id)
-      .order('routine_kind')
+      .order('routine_kind'),
+    user ? isSuperAdmin(admin, user.id) : Promise.resolve(false)
   ]);
   const scheduled = (scheduledRes.data ?? []) as ScheduledRoutine[];
 
@@ -185,6 +188,7 @@ export default async function AiRoutinesPage({
                   <TableHead>State</TableHead>
                   <TableHead>Last check-in</TableHead>
                   <TableHead>Last job</TableHead>
+                  <TableHead>Claude account</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -200,6 +204,21 @@ export default async function AiRoutinesPage({
                     </TableCell>
                     <TableCell>{ago(r.last_seen_at, now)}</TableCell>
                     <TableCell>{ago(r.last_job_at, now)}</TableCell>
+                    <TableCell>
+                      {canEdit ? (
+                        <RunnerAccountEditor
+                          runner={{
+                            name: r.name,
+                            account: r.account,
+                            account_fallback: r.account_fallback,
+                            accounts_available: r.accounts_available ?? [],
+                            account_in_use: r.account_in_use
+                          }}
+                        />
+                      ) : (
+                        <span className="text-sm">{r.account_in_use ?? r.account ?? 'default'}</span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
