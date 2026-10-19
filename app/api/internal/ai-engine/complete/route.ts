@@ -107,5 +107,33 @@ export async function POST(request: NextRequest) {
       { status: 409 }
     );
   }
+  if (outcome.status === 'done' && result?.safeguard === true) {
+    await raiseSafetyAlert(admin, body.job_id);
+  }
   return NextResponse.json({ status: outcome.status }, { status: 200 });
+}
+
+/**
+ * One row in ai_safety_alerts for a job whose answer carried the safety marker.
+ * Never fails the job: a lost alert is logged loudly, the learner still gets
+ * the kind reply.
+ */
+async function raiseSafetyAlert(admin: ReturnType<typeof createAdminClient>, jobId: string) {
+  try {
+    const { data: job } = await admin
+      .from('ai_jobs')
+      .select('job_type, app_slug, organization_id')
+      .eq('id', jobId)
+      .maybeSingle();
+    if (!job) throw new Error('job not found');
+    const { error } = await admin
+      .from('ai_safety_alerts')
+      .upsert({ job_id: jobId, ...job }, { onConflict: 'job_id', ignoreDuplicates: true });
+    if (error) throw new Error(error.message);
+  } catch (e) {
+    console.error(
+      `[ai-engine/complete] SAFETY ALERT NOT RECORDED for job ${jobId}:`,
+      e instanceof Error ? e.message : e
+    );
+  }
 }

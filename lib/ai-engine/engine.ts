@@ -186,8 +186,22 @@ export function capWords(text: string, max: number | null): string {
 }
 
 /**
+ * The marker a recipe's safety rule tells the model to add when a learner writes
+ * something worrying (leak.coach rule 8). It must never reach the app.
+ */
+export const SAFEGUARD_MARK = '[[SAFEGUARD]]';
+
+/** Remove every copy of the marker; report whether there was one. */
+export function extractSafeguard(text: string): { text: string; flagged: boolean } {
+  const flagged = text.includes(SAFEGUARD_MARK);
+  if (!flagged) return { text, flagged };
+  return { text: text.split(SAFEGUARD_MARK).join('').trim(), flagged };
+}
+
+/**
  * Turn the model's raw answer into the job result.
  *   text → { answer }   (word cap enforced here, whatever the model did)
+ *          plus safeguard: true when the safety marker was present (stripped)
  *   json → the parsed object
  * Throws on an unusable answer so the job is retried.
  */
@@ -196,10 +210,12 @@ export function shapeResult(
   maxWords: number | null,
   raw: string
 ): Record<string, unknown> {
-  const text = String(raw ?? '').trim();
+  const { text, flagged } = extractSafeguard(String(raw ?? '').trim());
   if (!text) throw new Error('empty answer');
   if (outputFormat === 'text') {
-    return { answer: capWords(text, maxWords) };
+    return flagged
+      ? { answer: capWords(text, maxWords), safeguard: true }
+      : { answer: capWords(text, maxWords) };
   }
   const unfenced = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   const start = unfenced.indexOf('{');

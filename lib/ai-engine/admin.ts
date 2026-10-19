@@ -148,3 +148,56 @@ export function ago(iso: string | null, now = Date.now()): string {
   if (s < 86_400) return `${Math.round(s / 3600)} h ago`;
   return `${Math.round(s / 86_400)} d ago`;
 }
+
+export interface SafetyAlertRow {
+  id: string;
+  job_id: string | null;
+  job_type: string;
+  app_slug: string;
+  created_at: string;
+  followed_up_at: string | null;
+  /** What the learner sent and what the coach replied. Platform admins only. */
+  payload: Record<string, unknown> | null;
+  answer: string | null;
+}
+
+/**
+ * Safety alerts across every organisation (platform admins only: the caller
+ * checks isSuperAdmin first). Open ones first, then the latest followed-up.
+ */
+export async function readSafetyAlerts(admin: SupabaseClient): Promise<SafetyAlertRow[]> {
+  const { data, error } = await admin
+    .from('ai_safety_alerts')
+    .select(
+      'id, job_id, job_type, app_slug, created_at, followed_up_at, ai_jobs(payload, result)'
+    )
+    .order('followed_up_at', { ascending: true, nullsFirst: true })
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error || !data) return [];
+  return data.map((row) => {
+    const j = (Array.isArray(row.ai_jobs) ? row.ai_jobs[0] : row.ai_jobs) as
+      | { payload: Record<string, unknown> | null; result: { answer?: unknown } | null }
+      | null
+      | undefined;
+    return {
+      id: row.id,
+      job_id: row.job_id,
+      job_type: row.job_type,
+      app_slug: row.app_slug,
+      created_at: row.created_at,
+      followed_up_at: row.followed_up_at,
+      payload: j?.payload ?? null,
+      answer: typeof j?.result?.answer === 'string' ? j.result.answer : null
+    };
+  });
+}
+
+/** How many alerts nobody has followed up yet. 0 on any error. */
+export async function countOpenSafetyAlerts(admin: SupabaseClient): Promise<number> {
+  const { count, error } = await admin
+    .from('ai_safety_alerts')
+    .select('id', { count: 'exact', head: true })
+    .is('followed_up_at', null);
+  return error ? 0 : (count ?? 0);
+}
