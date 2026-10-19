@@ -1,5 +1,5 @@
 /**
- * AI engine watch — two emails to the Director (decisions 2026-10-19):
+ * AI engine watch — emails to the Director (decisions 2026-10-19):
  *
  *   1. Workers down: no JICATE worker has checked in for 15 minutes → one email.
  *      One more when a worker is back. Never repeated while the state holds.
@@ -8,6 +8,8 @@
  *      The email carries counts and a link only, never the learner's words.
  *   3. Reminder: while any alert has stayed open for over a day, one reminder
  *      each morning (from 9 am India time) until all are followed up.
+ *   4. Failing jobs: 3 or more jobs ended in error in the last 30 minutes →
+ *      one email, at most every 2 hours.
  *
  * Recipient: AI_ALERT_EMAIL (comma-separated allowed). Unset → nothing is sent
  * and the run says so. State lives in ai_engine_watch. Called by the cron route.
@@ -20,6 +22,9 @@ const DOWN_AFTER_MS = 15 * 60_000;
 const SAFETY_EMAIL_GAP_MS = 60 * 60_000;
 const REMINDER_AFTER_MS = 24 * 60 * 60_000;
 const REMINDER_HOUR_IST = 9;
+const FAILURE_WINDOW_MS = 30 * 60_000;
+const FAILURE_THRESHOLD = 3;
+const FAILURE_EMAIL_GAP_MS = 2 * 60 * 60_000;
 
 export interface WatchSummary {
   recipients: number;
@@ -32,6 +37,7 @@ interface WatchState {
   last_safety_email_at?: string;
   /** India date (YYYY-MM-DD) of the last open-alert reminder. */
   last_reminder_date?: string;
+  last_failure_email_at?: string;
 }
 
 /** India date and hour for a moment, without depending on the server's zone. */
@@ -194,6 +200,39 @@ export async function runEngineWatch(admin: SupabaseClient, origin: string): Pro
       if (ok) {
         next.last_reminder_date = clock.date;
         sent.push(`reminder:${old.length}`);
+      }
+    }
+  }
+
+  // 4. Jobs keep failing.
+  const lastFail = state.last_failure_email_at ? new Date(state.last_failure_email_at).getTime() : 0;
+  if (to.length && now - lastFail >= FAILURE_EMAIL_GAP_MS) {
+    const { data: failed } = await admin
+      .from('ai_jobs')
+      .select('job_type, error')
+      .eq('status', 'error')
+      .gt('completed_at', new Date(now - FAILURE_WINDOW_MS).toISOString())
+      .limit(50);
+    const rows = (failed ?? []) as { job_type: string; error: string | null }[];
+    if (rows.length >= FAILURE_THRESHOLD) {
+      const byType = new Map<string, number>();
+      for (const r of rows) byType.set(r.job_type, (byType.get(r.job_type) ?? 0) + 1);
+      const sample = (rows.find((r) => r.error)?.error ?? '').slice(0, 160).replace(/[<>&]/g, '');
+      const ok = await send(
+        to,
+        `${rows.length} AI jobs failed in the last 30 minutes`,
+        [
+          `${rows.length} AI jobs ended in error in the last 30 minutes: ${[...byType.entries()]
+            .map(([t, n]) => `${t} (${n})`)
+            .join(', ')}.`,
+          sample ? `One of the errors: ${sample}` : '',
+          'The AI Routines page shows each one. You will not get this email again for 2 hours.'
+        ].filter(Boolean),
+        routinesLink
+      );
+      if (ok) {
+        next.last_failure_email_at = new Date(now).toISOString();
+        sent.push(`failures:${rows.length}`);
       }
     }
   }

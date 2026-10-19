@@ -18,7 +18,8 @@ import {
   CalendarClock,
   Cpu,
   ListChecks,
-  Repeat
+  Repeat,
+  Mail
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -111,6 +112,12 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       title: 'Uptime',
       url: `/org/${orgSlug}/uptime`,
       icon: Activity,
+      badge: null
+    },
+    {
+      title: 'Mailbox',
+      url: `/org/${orgSlug}/mailbox`,
+      icon: Mail,
       badge: null
     }
   ];

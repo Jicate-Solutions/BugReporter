@@ -211,6 +211,7 @@ async function drainOnce() {
     // (the server gives up after 3 attempts).
     await post('/api/internal/ai-engine/complete', {
       job_id: job.job_id, error: msg, retry: e?.retry !== false,
+      rate_limited: Boolean(e?.rateLimited),
       usage: { ...(e?.usage || {}), duration_ms: Date.now() - started },
     }).catch((e2) => logErr(`release failed: ${String(e2?.message || e2).slice(0, 200)}`));
     return { worked: true, rateLimited: Boolean(e?.rateLimited) };
@@ -230,17 +231,35 @@ async function selftest() {
 async function main() {
   if (SELFTEST) return selftest();
   log(`start runner=${RUNNER} url=${BASE} idle=${IDLE_MS}ms oneshot=${ONESHOT} bin=${CLAUDE_BIN}`);
+  let netFails = 0;
+  let lastAlive = Date.now();
   for (;;) {
     let outcome = { worked: false };
     try {
       outcome = await drainOnce();
+      if (netFails) log(`server reachable again after ${netFails} failed tries`);
+      netFails = 0;
     } catch (e) {
       logErr(`claim error: ${String(e?.message || e).slice(0, 300)}`);
-      // 401 = token not registered yet / revoked; 404 = server not deployed yet;
-      // 503 = server misconfigured. Slow down instead of hammering.
-      if ([401, 404, 503].includes(e?.status)) await new Promise((r) => setTimeout(r, 60_000));
+      if ([401, 404, 503].includes(e?.status)) {
+        // 401 = token not registered yet / revoked; 404 = server not deployed yet;
+        // 503 = server misconfigured. Slow down instead of hammering.
+        await new Promise((r) => setTimeout(r, 60_000));
+      } else if (!e?.status) {
+        // No answer at all: the internet or the server is down. Wait longer each
+        // time (10 s, 20 s, 40 s ... up to 5 min) instead of retrying every 3 s.
+        netFails += 1;
+        const wait = Math.min(10_000 * 2 ** (netFails - 1), 300_000);
+        logErr(`no connection (try ${netFails}); waiting ${wait / 1000}s`);
+        await new Promise((r) => setTimeout(r, wait));
+      }
     }
     if (ONESHOT) break;
+    // One "alive" line a minute, so a quiet log still shows the worker is fine.
+    if (Date.now() - lastAlive >= 60_000) {
+      log(`alive ok runner=${RUNNER}`);
+      lastAlive = Date.now();
+    }
     if (outcome.rateLimited) {
       log(`pausing ${RATE_LIMIT_PAUSE_MS / 1000}s after a rate limit`);
       await new Promise((r) => setTimeout(r, RATE_LIMIT_PAUSE_MS));
