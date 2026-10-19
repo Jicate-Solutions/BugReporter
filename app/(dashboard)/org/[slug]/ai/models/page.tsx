@@ -29,7 +29,10 @@ import {
 import {
   isSuperAdmin,
   readEngineTasks,
+  readRunners,
   readUsage,
+  runnerAlive,
+  type RunnerRow,
   type UsageRow
 } from '@/lib/ai-engine/admin';
 import { AI_TASK_KEYS } from '@/lib/ai/tasks';
@@ -49,6 +52,12 @@ function summarise(rows: UsageRow[]) {
     : null;
   const tokensOut = rows.reduce((s, r) => s + (r.output_tokens ?? 0), 0);
   return { runs, failed, cost, avgSecs, tokensOut };
+}
+
+/** One clock read, outside render. */
+function anyWorkerAlive(runners: RunnerRow[]) {
+  const now = Date.now();
+  return runners.some((r) => runnerAlive(r, now));
 }
 
 function rupees(n: number) {
@@ -83,11 +92,13 @@ export default async function AiModelsPage({
   } = await session.auth.getUser();
 
   const admin = createAdminClient();
-  const [tasks, usage, canEdit] = await Promise.all([
+  const [tasks, usage, canEdit, runners] = await Promise.all([
     readEngineTasks(admin),
     readUsage(admin, org.id, DAYS),
-    user ? isSuperAdmin(admin, user.id) : Promise.resolve(false)
+    user ? isSuperAdmin(admin, user.id) : Promise.resolve(false),
+    readRunners(admin)
   ]);
+  const workerAlive = anyWorkerAlive(runners);
 
   const usageByTask = new Map<string, UsageRow[]>();
   const usageByModel = new Map<string, UsageRow[]>();
@@ -131,6 +142,17 @@ export default async function AiModelsPage({
           </Card>
         ))}
       </div>
+
+      {!workerAlive && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+          No JICATE worker is running right now. Tasks switched on here will wait until the
+          Windows workers check in, and switching another task on is blocked until they do.{' '}
+          <Link href={`/org/${slug}/ai/routines`} className="underline">
+            Check the workers
+          </Link>
+          .
+        </div>
+      )}
 
       <Card>
         <CardHeader>

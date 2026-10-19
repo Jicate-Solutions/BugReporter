@@ -7,6 +7,11 @@
  * Body: { job_type, enabled?, model?, interactive?, max_inflight?,
  *         timeout_seconds?, max_answer_words? }
  *
+ * Switching a task ON is refused while no worker has checked in within the last
+ * 2 minutes: ON moves the task for every app at once, and with nobody draining
+ * the JICATE queue every request would wait until the app gave up. (Registered
+ * is not running.) Switching OFF is always allowed; queued jobs still drain.
+ *
  * The recipe wording (instructions) is deliberately NOT editable here: it is a
  * safety rule set (leak.coach's under-18 rules, for one) and changes go through
  * a reviewed migration.
@@ -16,7 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { isSuperAdmin } from '@/lib/ai-engine/admin';
+import { isSuperAdmin, readRunners, runnerAlive } from '@/lib/ai-engine/admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,6 +55,24 @@ export async function PATCH(request: NextRequest) {
   if (!parsed.success) return fail('BAD_REQUEST', 'Invalid settings.', 400);
   const { job_type, ...changes } = parsed.data;
   if (Object.keys(changes).length === 0) return fail('BAD_REQUEST', 'Nothing to change.', 400);
+
+  if (changes.enabled === true) {
+    // Only the OFF → ON step is guarded; the page sends every field on each
+    // save, so editing an already-on task must not trip this.
+    const { data: current } = await admin
+      .from('ai_tasks')
+      .select('enabled')
+      .eq('job_type', job_type)
+      .maybeSingle();
+    const runners = current?.enabled ? [] : await readRunners(admin);
+    if (!current?.enabled && !runners.some((r) => runnerAlive(r))) {
+      return fail(
+        'NO_WORKER',
+        'No JICATE worker has checked in for over 2 minutes, so switching this on would leave every request waiting. Start the Windows workers first.',
+        409
+      );
+    }
+  }
 
   const { data, error } = await admin
     .from('ai_tasks')
