@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Bug Reporter Platform - Centralized Bug Tracking",
-  description: "Multi-tenant bug tracking platform for development teams",
+  title: "JICATE Control Tower",
+  description: "One place to run every JICATE app: bugs, AI, routines and uptime",
 };
 
 export default function RootLayout({

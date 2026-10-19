@@ -1,18 +1,5 @@
 {
   "mcpServers": {
-    "supabase": {
-      "command": "cmd",
-      "args": [
-        "/c",
-        "npx",
-        "-y",
-        "@supabase/mcp-server-supabase@latest",
-        "--project-ref=adakhqxgaoxaihtehfqw"
-      ],
-      "env": {
-        "SUPABASE_ACCESS_TOKEN": "sbp_47018305daf9755154b028eb0e599cbb8097c0c8"
-      }
-    },
     "sequential-thinking": {
       "command": "cmd",
       "args": [
@@ -24,14 +11,24 @@
     },
     "memory": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-memory@latest"],
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-memory@latest"
+      ],
       "env": {
         "MEMORY_STORE_PATH": "D:\\MyJKKN\\.claude\\memory"
       }
     },
     "actor-critic-thinking": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "mcp-server-actor-critic-thinking"]
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "mcp-server-actor-critic-thinking"
+      ]
     },
     "chrome-devtools": {
       "command": "cmd",
@@ -44,7 +41,14 @@
     },
     "next-devtools": {
       "command": "npx",
-      "args": ["-y", "next-devtools-mcp@latest"]
+      "args": [
+        "-y",
+        "next-devtools-mcp@latest"
+      ]
+    },
+    "supabase": {
+      "type": "http",
+      "url": "https://mcp.supabase.com/mcp?project_ref=adakhqxgaoxaihtehfqw&features=docs%2Caccount%2Cdatabase%2Cdebugging%2Cdevelopment%2Cfunctions%2Cbranching"
     }
   }
 }

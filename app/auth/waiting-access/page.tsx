@@ -11,7 +11,52 @@ import {
   CardHeader,
   CardTitle
 } from '@/components/ui/card';
-import { Clock, Mail, Shield, ArrowRight } from 'lucide-react';
+import { Clock, Mail, Shield, ArrowRight, UserCheck } from 'lucide-react';
+
+/**
+ * Copy for each reason a user can land here. Approval and organization
+ * assignment are two independent gates - a user can clear the first and still
+ * be stuck on the second, so the page must not describe both as "pending
+ * approval".
+ */
+const REASONS = {
+  pending_approval: {
+    icon: Clock,
+    iconClass: 'from-yellow-400 to-orange-500',
+    title: 'Access Pending',
+    description: 'Your account is awaiting administrator approval',
+    statusHeading: 'Account Created Successfully',
+    statusBody: (email: string) => (
+      <>
+        Your account (<strong>{email}</strong>) has been created and is waiting for
+        a platform administrator to approve it.
+      </>
+    ),
+    steps: [
+      'A platform administrator will review your request',
+      "You'll be assigned to appropriate organizations and applications",
+      "Once approved, you'll be able to access the platform"
+    ]
+  },
+  no_organization: {
+    icon: UserCheck,
+    iconClass: 'from-blue-400 to-indigo-500',
+    title: 'Awaiting Organization Access',
+    description: 'Your account is approved, but no organization has been assigned',
+    statusHeading: 'Account Approved',
+    statusBody: (email: string) => (
+      <>
+        Your account (<strong>{email}</strong>) has been approved, but you
+        haven&apos;t been added to any organization yet.
+      </>
+    ),
+    steps: [
+      'An administrator adds you to an organization and its applications',
+      'Sign out and sign back in so your new access is picked up',
+      "You'll land in your organization's workspace"
+    ]
+  }
+} as const;
 
 /**
  * Waiting Access Content Component
@@ -19,6 +64,12 @@ import { Clock, Mail, Shield, ArrowRight } from 'lucide-react';
 function WaitingAccessContent() {
   const searchParams = useSearchParams();
   const email = searchParams.get('email') || 'your email';
+  const reasonParam = searchParams.get('reason');
+  const reason =
+    reasonParam === 'no_organization'
+      ? REASONS.no_organization
+      : REASONS.pending_approval;
+  const ReasonIcon = reason.icon;
 
   return (
     <div className='min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center p-4'>
@@ -26,15 +77,17 @@ function WaitingAccessContent() {
         <Card className='border-2 shadow-xl'>
           <CardHeader className='space-y-4 pb-6'>
             <div className='flex justify-center'>
-              <div className='p-4 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-2xl shadow-lg'>
-                <Clock className='h-10 w-10 text-white' />
+              <div
+                className={`p-4 bg-gradient-to-br ${reason.iconClass} rounded-2xl shadow-lg`}
+              >
+                <ReasonIcon className='h-10 w-10 text-white' />
               </div>
             </div>
             <CardTitle className='text-2xl font-bold text-center'>
-              Access Pending
+              {reason.title}
             </CardTitle>
             <CardDescription className='text-center text-base'>
-              Your account is awaiting administrator approval
+              {reason.description}
             </CardDescription>
           </CardHeader>
           <CardContent className='space-y-6'>
@@ -44,10 +97,10 @@ function WaitingAccessContent() {
                 <Shield className='h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0' />
                 <div className='space-y-2'>
                   <p className='text-sm font-medium text-blue-900'>
-                    Account Created Successfully
+                    {reason.statusHeading}
                   </p>
                   <p className='text-sm text-blue-800'>
-                    Your account (<strong>{email}</strong>) has been created, but you haven&apos;t been assigned to any organizations yet.
+                    {reason.statusBody(email)}
                   </p>
                 </div>
               </div>
@@ -57,30 +110,16 @@ function WaitingAccessContent() {
             <div className='space-y-3'>
               <h3 className='font-semibold text-gray-900'>What happens next?</h3>
               <ul className='space-y-3'>
-                <li className='flex items-start gap-3'>
-                  <div className='h-6 w-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5'>
-                    <span className='text-xs font-bold text-blue-600'>1</span>
-                  </div>
-                  <p className='text-sm text-gray-700'>
-                    A platform administrator will review your request
-                  </p>
-                </li>
-                <li className='flex items-start gap-3'>
-                  <div className='h-6 w-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5'>
-                    <span className='text-xs font-bold text-blue-600'>2</span>
-                  </div>
-                  <p className='text-sm text-gray-700'>
-                    You&apos;ll be assigned to appropriate organizations and applications
-                  </p>
-                </li>
-                <li className='flex items-start gap-3'>
-                  <div className='h-6 w-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5'>
-                    <span className='text-xs font-bold text-blue-600'>3</span>
-                  </div>
-                  <p className='text-sm text-gray-700'>
-                    Once approved, you&apos;ll be able to access the platform
-                  </p>
-                </li>
+                {reason.steps.map((step, index) => (
+                  <li key={step} className='flex items-start gap-3'>
+                    <div className='h-6 w-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5'>
+                      <span className='text-xs font-bold text-blue-600'>
+                        {index + 1}
+                      </span>
+                    </div>
+                    <p className='text-sm text-gray-700'>{step}</p>
+                  </li>
+                ))}
               </ul>
             </div>
 

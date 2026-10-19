@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Bug, Clock, CheckCircle2, Eye, FileX, Sparkles } from 'lucide-react';
 import type { BugReportStats } from '@boobalan_jkkn/shared';
+import { BUG_STATUS_LABELS } from '@boobalan_jkkn/shared';
 
 interface BugStatsCardsProps {
   stats: BugReportStats | null;
@@ -13,6 +14,9 @@ export function BugStatsCards({ stats, loading }: BugStatsCardsProps) {
   if (loading) return <div>Loading stats...</div>;
   if (!stats) return null;
 
+  // One card per real status. This used to read `by_status.open` and
+  // `by_status.closed` — values the database has never produced — so the Open
+  // and Closed cards showed 0 while New and Won't Fix bugs went uncounted.
   const cards = [
     {
       title: 'Total Bugs',
@@ -21,33 +25,39 @@ export function BugStatsCards({ stats, loading }: BugStatsCardsProps) {
       color: 'text-blue-600',
     },
     {
-      title: 'Open',
-      value: stats.by_status.open,
+      title: BUG_STATUS_LABELS.new,
+      value: stats.by_status.new,
       icon: Sparkles,
-      color: 'text-purple-600',
+      color: 'text-blue-600',
     },
     {
-      title: 'In Progress',
+      title: BUG_STATUS_LABELS.seen,
+      value: stats.by_status.seen,
+      icon: Eye,
+      color: 'text-amber-600',
+    },
+    {
+      title: BUG_STATUS_LABELS.in_progress,
       value: stats.by_status.in_progress,
       icon: Clock,
-      color: 'text-yellow-600',
+      color: 'text-orange-600',
     },
     {
-      title: 'Resolved',
+      title: BUG_STATUS_LABELS.resolved,
       value: stats.by_status.resolved,
       icon: CheckCircle2,
       color: 'text-green-600',
     },
     {
-      title: 'Closed',
-      value: stats.by_status.closed,
+      title: BUG_STATUS_LABELS.wont_fix,
+      value: stats.by_status.wont_fix,
       icon: FileX,
       color: 'text-gray-600',
     },
   ];
 
   return (
-    <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5">
+    <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
       {cards.map((card) => (
         <Card key={card.title}>
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">

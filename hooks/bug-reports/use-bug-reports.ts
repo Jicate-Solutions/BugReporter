@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { BugReportClientService } from '@/lib/services/bug-reports/client';
 import type { FleetBugRollup } from '@/lib/services/bug-reports/client';
@@ -12,6 +12,7 @@ import type {
   BugReportStats,
 } from '@boobalan_jkkn/shared';
 import toast from 'react-hot-toast';
+import { bugStatusLabel } from '@boobalan_jkkn/shared';
 
 /**
  * Hook to fetch all bug reports with filtering and pagination
@@ -22,10 +23,12 @@ export function useBugReports(
 ) {
   const [bugs, setBugs] = useState<BugReport[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<BugReportFilters>(initialFilters);
+  const hasLoaded = useRef(false);
   const pageSize = 10000; // Fetch all bugs for client-side pagination
 
   const fetchBugs = useCallback(async () => {
@@ -35,7 +38,13 @@ export function useBugReports(
     }
 
     try {
-      setLoading(true);
+      // `loading` means "first load, nothing to show yet"; a later refetch is
+      // `refreshing`. Pages render a skeleton for `loading`, and a skeleton that
+      // appears on a background refetch unmounts whatever it replaces —
+      // destroying filters, sort and scroll position. Keeping the two separate
+      // is what stops a status change from looking like a page reload.
+      if (hasLoaded.current) setRefreshing(true);
+      else setLoading(true);
       setError(null);
 
       const effectiveFilters = {
@@ -56,7 +65,9 @@ export function useBugReports(
       setError(message);
       console.error('[hooks/bug-reports] Fetch error:', err);
     } finally {
+      hasLoaded.current = true;
       setLoading(false);
+      setRefreshing(false);
     }
   }, [organizationId, filters, page, pageSize]);
 
@@ -67,6 +78,7 @@ export function useBugReports(
   return {
     bugs,
     loading,
+    refreshing,
     error,
     total,
     page,
@@ -84,13 +96,19 @@ export function useBugReports(
 export function useBugReport(id: string) {
   const [bug, setBug] = useState<BugReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasLoaded = useRef(false);
 
   const fetchBug = useCallback(async () => {
     if (!id) return;
 
     try {
-      setLoading(true);
+      // Same split as useBugReports. Without it, changing a status on the bug
+      // detail page flipped `loading` back to true and the whole page flashed
+      // to a skeleton — indistinguishable from a reload.
+      if (hasLoaded.current) setRefreshing(true);
+      else setLoading(true);
       setError(null);
 
       const data = await BugReportClientService.getBugReportById(id);
@@ -100,8 +118,15 @@ export function useBugReport(id: string) {
       setError(message);
       console.error('[hooks/bug-report] Fetch error:', err);
     } finally {
+      hasLoaded.current = true;
       setLoading(false);
+      setRefreshing(false);
     }
+  }, [id]);
+
+  // A different bug id is a genuine first load again, not a refresh.
+  useEffect(() => {
+    hasLoaded.current = false;
   }, [id]);
 
   useEffect(() => {
@@ -111,6 +136,7 @@ export function useBugReport(id: string) {
   return {
     bug,
     loading,
+    refreshing,
     error,
     refetch: fetchBug,
   };
@@ -122,13 +148,18 @@ export function useBugReport(id: string) {
 export function useUpdateBugStatus() {
   const [updating, setUpdating] = useState(false);
 
-  const updateStatus = useCallback(async (bugId: string, status: string) => {
+  const updateStatus = useCallback(
+    async (bugId: string, status: string, resolutionNotes?: string) => {
     try {
       setUpdating(true);
 
-      const updated = await BugReportClientService.updateBugStatus(bugId, status);
+      const updated = await BugReportClientService.updateBugStatus(
+        bugId,
+        status,
+        resolutionNotes
+      );
 
-      toast.success(`Bug status updated to ${status}`);
+      toast.success(`Bug status updated to ${bugStatusLabel(status)}`);
 
       return updated;
     } catch (err) {
@@ -139,7 +170,9 @@ export function useUpdateBugStatus() {
     } finally {
       setUpdating(false);
     }
-  }, []);
+  },
+    []
+  );
 
   return {
     updateStatus,
@@ -280,7 +313,9 @@ export function useSendMessage() {
 export function useBugStats(organizationId: string) {
   const [stats, setStats] = useState<BugReportStats | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasLoaded = useRef(false);
 
   const fetchStats = useCallback(async (): Promise<boolean> => {
     if (!organizationId) {
@@ -289,7 +324,8 @@ export function useBugStats(organizationId: string) {
     }
 
     try {
-      setLoading(true);
+      if (hasLoaded.current) setRefreshing(true);
+      else setLoading(true);
       setError(null);
 
       const data = await BugReportClientService.getBugStats(organizationId);
@@ -301,7 +337,9 @@ export function useBugStats(organizationId: string) {
       console.error('[hooks/bug-stats] Fetch error:', err);
       return false;
     } finally {
+      hasLoaded.current = true;
       setLoading(false);
+      setRefreshing(false);
     }
   }, [organizationId]);
 
@@ -312,6 +350,7 @@ export function useBugStats(organizationId: string) {
   return {
     stats,
     loading,
+    refreshing,
     error,
     refetch: fetchStats,
   };
@@ -324,7 +363,9 @@ export function useBugStats(organizationId: string) {
 export function useFleetBugRollup(organizationId: string) {
   const [rollup, setRollup] = useState<FleetBugRollup | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasLoaded = useRef(false);
 
   const fetchRollup = useCallback(async (): Promise<boolean> => {
     if (!organizationId) {
@@ -333,7 +374,8 @@ export function useFleetBugRollup(organizationId: string) {
     }
 
     try {
-      setLoading(true);
+      if (hasLoaded.current) setRefreshing(true);
+      else setLoading(true);
       setError(null);
 
       const data = await BugReportClientService.getFleetBugRollup(organizationId);
@@ -345,7 +387,9 @@ export function useFleetBugRollup(organizationId: string) {
       console.error('[hooks/fleet-bug-rollup] Fetch error:', err);
       return false;
     } finally {
+      hasLoaded.current = true;
       setLoading(false);
+      setRefreshing(false);
     }
   }, [organizationId]);
 
@@ -356,6 +400,7 @@ export function useFleetBugRollup(organizationId: string) {
   return {
     rollup,
     loading,
+    refreshing,
     error,
     refetch: fetchRollup,
   };
@@ -367,13 +412,35 @@ export function useFleetBugRollup(organizationId: string) {
 export function useBulkUpdateStatus() {
   const [updating, setUpdating] = useState(false);
 
-  const bulkUpdateStatus = useCallback(async (bugIds: string[], status: string) => {
+  const bulkUpdateStatus = useCallback(
+    async (bugIds: string[], status: string, resolutionNotes?: string) => {
     try {
       setUpdating(true);
 
-      await BugReportClientService.bulkUpdateStatus(bugIds, status);
+      const { updated, failed } = await BugReportClientService.bulkUpdateStatus(
+        bugIds,
+        status,
+        resolutionNotes
+      );
 
-      toast.success(`${bugIds.length} bugs updated to ${status}`);
+      // Report partial success honestly. Some transitions can legitimately be
+      // rejected per-bug, so "20 updated" when 3 were refused would be a lie.
+      if (failed.length && updated.length) {
+        toast.success(
+          `${updated.length} of ${bugIds.length} bugs updated to ${bugStatusLabel(status)}`
+        );
+        toast.error(
+          `${failed.length} could not be updated: ${failed[0].message}`
+        );
+      } else if (failed.length) {
+        toast.error(`No bugs were updated: ${failed[0].message}`);
+      } else {
+        toast.success(
+          `${updated.length} bugs updated to ${bugStatusLabel(status)}`
+        );
+      }
+
+      return { updated, failed };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to bulk update status';
       toast.error(message);
@@ -382,7 +449,9 @@ export function useBulkUpdateStatus() {
     } finally {
       setUpdating(false);
     }
-  }, []);
+  },
+    []
+  );
 
   return {
     bulkUpdateStatus,

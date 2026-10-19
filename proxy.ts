@@ -6,6 +6,13 @@ import { NextResponse, type NextRequest } from 'next/server';
  * Refreshes the user's session before loading Server Component routes
  */
 export async function proxy(request: NextRequest) {
+  // The Bug Status Portal is public and reporter-scoped: its visitors are users
+  // of an integrated application, not BugReporter accounts. Skip the session
+  // round-trip entirely rather than refreshing a session that will never exist.
+  if (request.nextUrl.pathname.startsWith('/portal')) {
+    return NextResponse.next({ request });
+  }
+
   let supabaseResponse = NextResponse.next({
     request
   });

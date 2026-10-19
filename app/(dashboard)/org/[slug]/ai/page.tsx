@@ -6,9 +6,14 @@
  *
  * Data sources:
  *  - LOCAL:  applications.settings.ai (the per-app switch + task menu)
- *  - ENGINE: MyJKKN GET /api/b2a/ai/stats (per-app job aggregates), fetched
- *    server-side with the platform's single MYJKKN_AI_KEY. If the engine is
- *    unreachable the page still renders local state with a banner.
+ *  - ENGINE: MyJKKN GET /api/b2a/ai/stats (per-app job aggregates) and
+ *    GET /api/b2a/ai/job-types?external_only=1 (the real task catalogue), both
+ *    fetched server-side with the platform's single MYJKKN_AI_KEY. If the
+ *    engine is unreachable the page still renders local state with a banner.
+ *
+ * The catalogue is read live rather than from a local constant: this platform
+ * used to hardcode the task list and it drifted out of date, hiding tasks
+ * MyJKKN allowed. See lib/ai/tasks.ts.
  *
  * Server component. Membership is enforced by the org layout (session-scoped
  * getOrganizationBySlug → notFound) and re-checked here explicitly.
@@ -26,7 +31,18 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table';
-import { AVAILABLE_AI_TASKS } from '@/lib/ai/tasks';
+import { FALLBACK_AI_TASKS, fetchAiJobTypeCatalogue } from '@/lib/ai/tasks';
+import Link from 'next/link';
+import { createAdminClient } from '@/lib/supabase/admin';
+import {
+  readEngineTasks,
+  readRunners,
+  readUsage,
+  runnerAlive,
+  type EngineTaskRow,
+  type RunnerRow,
+  type UsageRow
+} from '@/lib/ai-engine/admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -101,6 +117,19 @@ function statusBadge(status: string) {
   return <Badge variant="secondary">{status}</Badge>;
 }
 
+/** JICATE engine headline numbers; one clock read, outside render. */
+function jicateEngineSummary(tasks: EngineTaskRow[], runners: RunnerRow[], usage: UsageRow[]) {
+  const now = Date.now();
+  return {
+    tasksOn: tasks.filter((t) => t.enabled).length,
+    tasksTotal: tasks.length,
+    alive: runners.filter((r) => runnerAlive(r, now)).length,
+    runners: runners.length,
+    runs: usage.length,
+    failed: usage.filter((u) => !u.success).length
+  };
+}
+
 export default async function AiCockpitPage({
   params
 }: {
@@ -139,12 +168,27 @@ export default async function AiCockpitPage({
     .order('name');
   const apps = (appsData ?? []) as AppRow[];
 
-  // Engine truth: per-app usage from MyJKKN (tolerate unreachable).
-  const stats = await fetchEngineStats();
+  // Engine truth: per-app usage + the real task catalogue (tolerate unreachable).
+  // Independent reads, so fetch them together rather than one after the other.
+  const engineAdmin = createAdminClient();
+  const [stats, catalogue, jTasks, jRunners, jUsage] = await Promise.all([
+    fetchEngineStats(),
+    fetchAiJobTypeCatalogue(),
+    readEngineTasks(engineAdmin),
+    readRunners(engineAdmin),
+    readUsage(engineAdmin, org.id, 7)
+  ]);
+  const jicate = jicateEngineSummary(jTasks, jRunners, jUsage);
   const statsByApp = new Map((stats?.apps ?? []).map((a) => [a.app_id, a]));
 
   const enabledCount = apps.filter((a) => a.settings?.ai?.enabled === true).length;
-  const taskLabel = new Map<string, string>(AVAILABLE_AI_TASKS.map((t) => [t.key, t.label]));
+  // Label the per-app "Approved tasks" column from the live catalogue, falling
+  // back to the offline snapshot so keys still read as names when it's down.
+  const taskLabel = new Map<string, string>(
+    catalogue
+      ? catalogue.map((t) => [t.job_type, t.title ?? t.job_type])
+      : FALLBACK_AI_TASKS.map((t) => [t.key, t.label])
+  );
 
   return (
     <div className="space-y-6">
@@ -156,10 +200,35 @@ export default async function AiCockpitPage({
         </p>
       </div>
 
-      {!stats && (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">JICATE&apos;s own AI engine</CardTitle>
+        </CardHeader>
+        <CardContent className="text-muted-foreground space-y-2 text-sm">
+          <p>
+            {jicate.tasksOn} of {jicate.tasksTotal} tasks switched on · workers alive{' '}
+            {jicate.alive} of {jicate.runners} · {jicate.runs} runs in 7 days ({jicate.failed}{' '}
+            failed) · ₹0. Tasks switched off there still run on MyJKKN, shown below.
+          </p>
+          <p>
+            <Link href={`/org/${slug}/ai/models`} className="underline">
+              AI Models
+            </Link>{' '}
+            ·{' '}
+            <Link href={`/org/${slug}/ai/routines`} className="underline">
+              AI Routines
+            </Link>
+          </p>
+        </CardContent>
+      </Card>
+
+      {(!stats || !catalogue) && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-          Couldn&apos;t reach the AI engine for usage numbers just now — showing each
-          app&apos;s local AI settings only. Refresh in a minute.
+          {!stats && !catalogue
+            ? "Couldn't reach the AI engine just now — showing each app's local AI settings and the built-in task list. Refresh in a minute."
+            : !stats
+              ? "Couldn't reach the AI engine for usage numbers just now — showing each app's local AI settings only. Refresh in a minute."
+              : "Couldn't reach the AI engine for the task catalogue just now — usage numbers below are live. Refresh in a minute."}
         </div>
       )}
 
@@ -280,6 +349,72 @@ export default async function AiCockpitPage({
                 <TableRow>
                   <TableCell colSpan={6} className="text-muted-foreground text-center">
                     No applications yet.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Task catalogue{catalogue ? ` (${catalogue.length})` : ''}
+          </CardTitle>
+          <p className="text-muted-foreground text-sm">
+            Every task MyJKKN currently lets an external app run, read live from the
+            engine. These are the tasks you can tick for an app on its edit screen.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Task</TableHead>
+                <TableHead>Lane</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Provider / model</TableHead>
+                <TableHead className="text-right">Expected</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(catalogue ?? []).map((t) => (
+                <TableRow key={t.job_type}>
+                  <TableCell>
+                    <div className="font-medium">{t.title ?? t.job_type}</div>
+                    <code className="text-muted-foreground text-xs">{t.job_type}</code>
+                    {t.description && (
+                      <p className="text-muted-foreground mt-0.5 max-w-[420px] text-xs">
+                        {t.description}
+                      </p>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{t.lane ?? '—'}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    {t.enabled ? (
+                      <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
+                        enabled
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline">disabled</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-xs">
+                    {t.provider ?? '—'}
+                    {t.model_id ? ` · ${t.model_id}` : ''}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-right tabular-nums">
+                    {t.expected_seconds != null ? `${t.expected_seconds}s` : '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {(catalogue ?? []).length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-muted-foreground text-center">
+                    {catalogue ? 'No tasks are external-allowed yet.' : 'Engine unreachable.'}
                   </TableCell>
                 </TableRow>
               )}

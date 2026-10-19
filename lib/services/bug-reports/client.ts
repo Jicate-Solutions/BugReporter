@@ -7,6 +7,13 @@ import type {
   BugReportFilters,
   UpdateBugReportPayload,
   BugReportStats,
+  BugReportStatus,
+} from '@boobalan_jkkn/shared';
+import {
+  BUG_REPORT_CATEGORIES,
+  BUG_STATUSES,
+  TERMINAL_BUG_STATUSES,
+  type BugReportCategory,
 } from '@boobalan_jkkn/shared';
 
 interface BugReportQueryResult extends Omit<BugReport, 'title' | 'reporter_name' | 'reporter_email'> {
@@ -129,7 +136,12 @@ export class BugReportClientService {
           `
           *,
           application:applications(id, name, slug),
-          organization:organizations(id, name)
+          organization:organizations(id, name),
+          messages:bug_report_messages(
+            id, bug_report_id, message_text, message_type, attachment_url,
+            attachment_type, author_kind, author_email, sender_user_id,
+            is_internal, is_deleted, created_at
+          )
         `
         )
         .eq('id', id)
@@ -146,6 +158,16 @@ export class BugReportClientService {
       // Extract metadata fields to top level
       const transformedData = {
         ...data,
+        // Oldest first, so the thread reads as a conversation. PostgREST returns
+        // an embedded relation in no guaranteed order, and a screenshot the
+        // reporter marked up in reply to a question is meaningless above it.
+        messages: (data.messages || [])
+          .filter((m: { is_deleted?: boolean }) => !m.is_deleted)
+          .sort(
+            (a: { created_at: string }, b: { created_at: string }) =>
+              new Date(a.created_at).getTime() -
+              new Date(b.created_at).getTime()
+          ),
         title: data.metadata?.title || 'Untitled',
         reporter_name: data.metadata?.reporter_name || null,
         reporter_email: data.metadata?.reporter_email || null,
@@ -161,11 +183,15 @@ export class BugReportClientService {
   /**
    * Update bug report status
    */
-  static async updateBugStatus(id: string, status: string): Promise<BugReport> {
+  static async updateBugStatus(
+    id: string,
+    status: string,
+    resolutionNotes?: string
+  ): Promise<BugReport> {
     const response = await fetch(`/api/internal/bug-reports/${id}/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, resolution_notes: resolutionNotes }),
     });
 
     if (!response.ok) {
@@ -334,25 +360,33 @@ export class BugReportClientService {
 
       const stats: BugReportStats = {
         total: bugs?.length || 0,
-        by_status: {
-          open: bugs?.filter((b) => b.status === 'open' || b.status === 'new').length || 0,
-          in_progress: bugs?.filter((b) => b.status === 'in_progress').length || 0,
-          resolved: bugs?.filter((b) => b.status === 'resolved').length || 0,
-          closed: bugs?.filter((b) => b.status === 'closed' || b.status === 'wont_fix').length || 0,
-        },
+        // Previously aliased 'open'→'new' and 'closed'→'wont_fix' to paper over
+        // the two competing vocabularies. Now there is only one.
+        by_status: BUG_STATUSES.reduce(
+          (acc, status) => ({
+            ...acc,
+            [status]: bugs?.filter((b) => b.status === status).length || 0,
+          }),
+          {} as Record<BugReportStatus, number>
+        ),
         by_priority: {
           low: 0,
           medium: 0,
           high: 0,
           critical: 0,
         },
-        by_category: {
-          ui: bugs?.filter((b) => b.category === 'ui').length || 0,
-          functionality: bugs?.filter((b) => b.category === 'functionality').length || 0,
-          performance: bugs?.filter((b) => b.category === 'performance').length || 0,
-          security: bugs?.filter((b) => b.category === 'security').length || 0,
-          other: bugs?.filter((b) => b.category === 'other').length || 0,
-        },
+        // Driven by the constant, like by_status above, so it cannot drift from
+        // the vocabulary again. The hand-written version counted `ui` and
+        // `functionality` — neither of which the database has ever held — and
+        // omitted `bug`, `ui_design` and `feature_request`, which between them
+        // are 91% of every report ever filed.
+        by_category: BUG_REPORT_CATEGORIES.reduce(
+          (acc, category) => ({
+            ...acc,
+            [category]: bugs?.filter((b) => b.category === category).length || 0,
+          }),
+          {} as Record<BugReportCategory, number>
+        ),
         recent_count:
           bugs?.filter((b) => {
             const weekAgo = new Date();
@@ -371,28 +405,52 @@ export class BugReportClientService {
   /**
    * Bulk update bug status
    */
-  static async bulkUpdateStatus(bugIds: string[], status: string): Promise<void> {
-    try {
-      const supabase = createClient();
+  /**
+   * Bulk update bug status.
+   *
+   * This used to write straight to the table from the browser, which skipped
+   * status validation, the reporter email, the audit trail, and webhooks — a
+   * bug closed in bulk was indistinguishable from one that changed by itself.
+   * It now drives the same endpoint as a single update, so every bug takes the
+   * identical path through applyStatusChange().
+   */
+  static async bulkUpdateStatus(
+    bugIds: string[],
+    status: string,
+    resolutionNotes?: string
+  ): Promise<{ updated: string[]; failed: { id: string; message: string }[] }> {
+    const results = await Promise.allSettled(
+      bugIds.map((id) => this.updateBugStatus(id, status, resolutionNotes))
+    );
 
-      const updateData: { status: string; resolved_at: string | null } = {
-        status,
-        resolved_at: null,
-      };
+    const updated: string[] = [];
+    const failed: { id: string; message: string }[] = [];
 
-      if (status === 'resolved' || status === 'wont_fix') {
-        updateData.resolved_at = new Date().toISOString();
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') {
+        updated.push(bugIds[i]);
+      } else {
+        failed.push({
+          id: bugIds[i],
+          message:
+            result.reason instanceof Error
+              ? result.reason.message
+              : 'Failed to update bug status.',
+        });
       }
+    });
 
-      const { error } = await supabase.from('bug_reports').update(updateData).in('id', bugIds);
-
-      if (error) throw error;
-
-      console.log(`[BugReportClientService] Bulk updated ${bugIds.length} bugs to ${status}`);
-    } catch (error) {
-      console.error('[BugReportClientService] Error bulk updating status:', error);
-      throw error;
+    // Partial success is reported rather than thrown. With per-bug transition
+    // rules, one rejected bug in a selection of twenty should not hide the
+    // nineteen that succeeded.
+    if (failed.length) {
+      console.warn(
+        `[BugReportClientService] Bulk update: ${updated.length} ok, ${failed.length} failed`,
+        failed
+      );
     }
+
+    return { updated, failed };
   }
 
   /**
@@ -459,10 +517,16 @@ export class BugReportClientService {
 
       const now = Date.now();
       const weekAgoMs = now - 7 * 24 * 60 * 60 * 1000;
-      // Real prod statuses: new · seen · in_progress · resolved · wont_fix.
-      const isOpen = (s: string | null) => s === 'new' || s === 'seen' || s === 'open';
-      const isClosed = (s: string | null) => s === 'wont_fix' || s === 'closed';
-      const isActive = (s: string | null) => s !== 'resolved' && !isClosed(s); // still needs work
+      // Statuses come from the shared constant; the legacy 'open'/'closed'
+      // aliases are gone because the database never produced them.
+      const isOpen = (s: string | null) => s === 'new' || s === 'seen';
+      // The rollup reports `resolved` and `closed` as separate columns, so this
+      // is wont_fix only — NOT every terminal status, or resolved bugs would be
+      // counted twice.
+      const isClosed = (s: string | null) => s === 'wont_fix';
+      const isTerminal = (s: string | null) =>
+        !!s && (TERMINAL_BUG_STATUSES as readonly string[]).includes(s);
+      const isActive = (s: string | null) => !isTerminal(s); // still needs work
 
       const median = (nums: number[]): number | null => {
         if (nums.length === 0) return null;

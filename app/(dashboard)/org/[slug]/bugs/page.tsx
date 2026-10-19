@@ -1,8 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useBugFilters } from '@/hooks/bug-reports/use-bug-filters';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -21,20 +20,16 @@ import { AiDuplicateFinderCard } from './_components/rollups/ai-duplicate-finder
 import toast from 'react-hot-toast';
 
 export default function BugsPage() {
-  const searchParams = useSearchParams();
-  const initialAppSlug = searchParams.get('app') || undefined;
-
-  // Which app the bug table is currently filtered to — drives the per-app AI
-  // section below. The table owns the filter and reports the id up via
-  // onSelectedAppChange; undefined means "all apps" (no per-app AI shown).
-  const [selectedAppId, setSelectedAppId] = useState<string | undefined>(
-    undefined
-  );
+  // Filters live HERE, not in the table. This component never unmounts, so a
+  // refetch after a status change can no longer destroy them — and they are
+  // mirrored to the URL, so they also survive a real reload and can be shared.
+  const [filters, setFilters] = useBugFilters();
 
   const { organization, loading: orgLoading } = useOrganizationContext();
   const {
     bugs,
     loading,
+    refreshing,
     error,
     refetch: refetchBugs
   } = useBugReports(organization?.id || '');
@@ -55,6 +50,9 @@ export default function BugsPage() {
     toast.success('Data refreshed!', { id: 'refresh-bugs' });
   };
 
+  // `loading` is now first-load-only (see useBugReports); a background refetch
+  // reports through `refreshing` instead. That is what stops a status change
+  // from unmounting the table below and wiping every filter, sort and page.
   if (orgLoading || loading) {
     return (
       <div className='space-y-8'>
@@ -105,8 +103,12 @@ export default function BugsPage() {
     );
   }
 
-  const selectedApp = selectedAppId
-    ? applications.find((a) => a.id === selectedAppId)
+  // Derived from the same filter the table renders, so the per-app AI section
+  // can no longer drift out of sync with the dropdown. Previously this was
+  // separate parent state that survived the table's remount while the table's
+  // own filter reset, leaving AI rendered for an app that was no longer filtered.
+  const selectedApp = filters.app
+    ? applications.find((a) => a.slug === filters.app)
     : undefined;
 
   return (
@@ -181,8 +183,9 @@ export default function BugsPage() {
           applications={applications}
           applicationsLoading={appsLoading}
           onStatusChange={() => { refetchBugs(); refetchStats(); }}
-          initialAppSlug={initialAppSlug}
-          onSelectedAppChange={setSelectedAppId}
+          filters={filters}
+          onFiltersChange={setFilters}
+          refreshing={refreshing}
         />
       )}
 

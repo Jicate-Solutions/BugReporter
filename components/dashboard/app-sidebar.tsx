@@ -15,7 +15,9 @@ import {
   Sparkles,
   Shield,
   Activity,
-  CalendarClock
+  CalendarClock,
+  Cpu,
+  ListChecks
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -81,7 +83,19 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       badge: '₹0'
     },
     {
-      title: 'Routines',
+      title: 'AI Models',
+      url: `/org/${orgSlug}/ai/models`,
+      icon: Cpu,
+      badge: null
+    },
+    {
+      title: 'AI Routines',
+      url: `/org/${orgSlug}/ai/routines`,
+      icon: ListChecks,
+      badge: null
+    },
+    {
+      title: 'Scheduled routines',
       url: `/org/${orgSlug}/routines`,
       icon: CalendarClock,
       badge: '₹0'
@@ -128,7 +142,7 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
                 </div>
                 <div className='grid flex-1 text-left text-sm leading-tight ml-1'>
                   <span className='truncate font-bold text-base'>
-                    JKKN Bug Reporter
+                    JICATE Control Tower
                   </span>
                   <span className='truncate text-xs text-muted-foreground font-medium'>
                     {orgName}
@@ -149,10 +163,17 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
           <SidebarGroupContent>
             <SidebarMenu className='space-y-1'>
               {mainNavItems.map((item) => {
+                // A parent item stays unlit when a more specific item owns the path
+                // (/ai must not light up on /ai/models).
                 const isActive =
                   pathname === item.url ||
                   (pathname.startsWith(item.url + '/') &&
-                    item.url !== `/org/${orgSlug}`);
+                    item.url !== `/org/${orgSlug}` &&
+                    !mainNavItems.some(
+                      (other) =>
+                        other.url.length > item.url.length &&
+                        (pathname === other.url || pathname.startsWith(other.url + '/'))
+                    ));
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton

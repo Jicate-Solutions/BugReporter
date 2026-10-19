@@ -81,27 +81,45 @@ export class ApplicationMemberServerService {
         throw new Error(error.message);
       }
 
-      // Fetch user details for each member
-      const membersWithUsers = await Promise.all(
-        (data || []).map(async (member) => {
-          const { data: userData } = await supabase.auth.admin.getUserById(
-            member.user_id
-          );
+      const members = data || [];
 
-          return {
-            ...member,
-            user: userData.user
-              ? {
-                  id: userData.user.id,
-                  email: userData.user.email || '',
-                  user_metadata: userData.user.user_metadata,
-                }
-              : undefined,
-          };
-        })
+      if (members.length === 0) {
+        return [];
+      }
+
+      // Resolve identities from `profiles` in one query. The admin API
+      // (auth.admin.getUserById) is not usable here --- this client is built
+      // from the anon key + the caller's cookies, so it has no service role.
+      // `profiles` is readable by any authenticated user (profiles_select_policy).
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, email, full_name, avatar_url')
+        .in(
+          'id',
+          members.map((member) => member.user_id)
+        );
+
+      const profileById = new Map(
+        (profiles || []).map((profile) => [profile.id, profile])
       );
 
-      return membersWithUsers;
+      return members.map((member) => {
+        const profile = profileById.get(member.user_id);
+
+        return {
+          ...member,
+          user: profile
+            ? {
+                id: profile.id,
+                email: profile.email || '',
+                user_metadata: {
+                  full_name: profile.full_name || undefined,
+                  avatar_url: profile.avatar_url || undefined,
+                },
+              }
+            : undefined,
+        };
+      });
     } catch (error) {
       console.error('[ApplicationMemberService] Error fetching members:', error);
       throw error;
@@ -371,6 +389,66 @@ export class ApplicationMemberServerService {
     } catch (error) {
       console.error('[ApplicationMemberService] Error fetching role:', error);
       return null;
+    }
+  }
+
+  /**
+   * Applications the current user may manage access for.
+   *
+   * Adding/removing members requires super admin OR app maintainer --- both in
+   * this service and in RLS ("admins_add_app_members_fixed"). The UI uses this
+   * to decide where to show the "Manage access" action, so it resolves the
+   * whole set in one query rather than probing per application.
+   */
+  static async getManageableApplicationIds(): Promise<{
+    isSuperAdmin: boolean;
+    applicationIds: string[];
+  }> {
+    try {
+      const supabase = await createClient();
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        return { isSuperAdmin: false, applicationIds: [] };
+      }
+
+      const isSuperAdmin = await SuperAdminServerService.checkIsSuperAdmin(
+        user.id
+      );
+
+      if (isSuperAdmin) {
+        // Super admins can manage every application; callers treat this flag
+        // as "allow all" and ignore the (empty) id list.
+        return { isSuperAdmin: true, applicationIds: [] };
+      }
+
+      const { data, error } = await supabase
+        .from('application_members')
+        .select('application_id')
+        .eq('user_id', user.id)
+        .eq('role', 'maintainer');
+
+      if (error) {
+        console.error(
+          '[ApplicationMemberService] Error fetching maintainer apps:',
+          error
+        );
+        return { isSuperAdmin: false, applicationIds: [] };
+      }
+
+      return {
+        isSuperAdmin: false,
+        applicationIds: (data || []).map((row) => row.application_id),
+      };
+    } catch (error) {
+      console.error(
+        '[ApplicationMemberService] Error fetching maintainer apps:',
+        error
+      );
+      return { isSuperAdmin: false, applicationIds: [] };
     }
   }
 }

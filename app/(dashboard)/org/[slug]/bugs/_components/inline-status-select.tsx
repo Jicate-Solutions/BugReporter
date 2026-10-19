@@ -11,35 +11,35 @@ import {
 } from '@/components/ui/select';
 import { useUpdateBugStatus } from '@/hooks/bug-reports/use-bug-reports';
 import { cn } from '@/lib/utils';
+import {
+  BUG_STATUSES,
+  BUG_STATUS_BADGE_CLASS,
+  BUG_STATUS_LABELS,
+  SELECTABLE_BUG_STATUSES,
+  isBugStatus,
+  offerableBugStatuses,
+  type BugReportStatus
+} from '@boobalan_jkkn/shared';
 
-const STATUS_OPTIONS = [
-  {
-    value: 'new',
-    label: 'New',
-    className: 'bg-blue-100 text-blue-800 border-blue-200 hover:bg-blue-200'
-  },
-  {
-    value: 'seen',
-    label: 'Seen',
-    className: 'bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-200'
-  },
-  {
-    value: 'in_progress',
-    label: 'In Progress',
-    className:
-      'bg-orange-100 text-orange-800 border-orange-200 hover:bg-orange-200'
-  },
-  {
-    value: 'resolved',
-    label: 'Resolved',
-    className: 'bg-green-100 text-green-800 border-green-200 hover:bg-green-200'
-  },
-  {
-    value: 'wont_fix',
-    label: "Won't Fix",
-    className: 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
-  }
-];
+const STATUS_HOVER_CLASS: Record<BugReportStatus, string> = {
+  new: 'hover:bg-blue-200',
+  seen: 'hover:bg-amber-200',
+  in_progress: 'hover:bg-orange-200',
+  ready_for_testing: 'hover:bg-cyan-200',
+  resolved: 'hover:bg-green-200',
+  closed: 'hover:bg-emerald-300',
+  wont_fix: 'hover:bg-gray-200'
+};
+
+// Every status the trigger may have to DRAW, which is all of them — a bug still
+// sitting in the legacy `resolved` has to render as Resolved. What the dropdown
+// OFFERS is a narrower question, answered per-bug by offerableBugStatuses below.
+const STATUS_CLASS = Object.fromEntries(
+  BUG_STATUSES.map((value) => [
+    value,
+    cn(BUG_STATUS_BADGE_CLASS[value], STATUS_HOVER_CLASS[value])
+  ])
+) as Record<BugReportStatus, string>;
 
 interface InlineStatusSelectProps {
   bugId: string;
@@ -60,9 +60,18 @@ export function InlineStatusSelect({
     setOptimisticStatus(currentStatus);
   }, [currentStatus]);
 
-  const config =
-    STATUS_OPTIONS.find((s) => s.value === optimisticStatus) ||
-    STATUS_OPTIONS[0];
+  // Narrowed rather than defaulted through `|| STATUS_OPTIONS[0]`, which turned
+  // any status this list did not carry into a trigger reading "New" — a silent
+  // misreport of the bug's actual state.
+  const current: BugReportStatus = isBugStatus(optimisticStatus)
+    ? optimisticStatus
+    : 'new';
+
+  // `resolved` is legacy: still rendered, no longer offered. Moving a bug into
+  // it is what stranded the ~399 rows the portal cannot complete, so the only
+  // bug that still shows it is one already there — and that row is disabled,
+  // because re-picking the current status is a no-op the server rejects anyway.
+  const options = offerableBugStatuses(current);
 
   const handleChange = async (newStatus: string) => {
     const prevStatus = optimisticStatus;
@@ -91,15 +100,20 @@ export function InlineStatusSelect({
         <SelectTrigger
           className={cn(
             'h-7 w-[120px] rounded-full border px-3 text-xs font-medium shadow-none focus:ring-0 focus:ring-offset-0',
-            config.className
+            STATUS_CLASS[current]
           )}
         >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {STATUS_OPTIONS.map((option) => (
-            <SelectItem key={option.value} value={option.value} className='text-xs'>
-              {option.label}
+          {options.map((option) => (
+            <SelectItem
+              key={option}
+              value={option}
+              disabled={!SELECTABLE_BUG_STATUSES.includes(option)}
+              className='text-xs'
+            >
+              {BUG_STATUS_LABELS[option]}
             </SelectItem>
           ))}
         </SelectContent>
