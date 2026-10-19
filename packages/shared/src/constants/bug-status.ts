@@ -47,26 +47,32 @@ export const TERMINAL_BUG_STATUSES: readonly BugReportStatus[] = [
 /**
  * Who is allowed to move a bug INTO each status.
  *
- * The point of splitting "done" in two is that each half belongs to a different
- * person, and a rule that lives only in the UI is a rule anyone can skip by
- * calling the API. `applyStatusChange` is the single write path, so this map is
- * enforced there for the dashboard, the portal and the public API at once.
+ * A rule that lives only in the UI is a rule anyone can skip by calling the API.
+ * `applyStatusChange` is the single write path, so this map is enforced there
+ * for the dashboard, the portal and the public API at once.
  *
- * `closed` lists both actors on purpose. The client closing is the intended
- * path, but on an application whose reporters have never once opened the portal,
- * a client-only rule would leave every fix parked in `ready_for_testing`
- * forever. A developer closing is recorded in bug_status_events like any other
- * change, so "who accepted this" stays answerable.
+ * `ready_for_testing` and `wont_fix` were reporter-blocked when the states were
+ * introduced, on the reasoning that they are the team's claims about the work.
+ * That was reversed deliberately: on this platform the reporter is the client
+ * who commissioned the work, not an anonymous member of the public, and holding
+ * back three of the seven states made the portal look broken beside the
+ * dashboard. The audit trail, not the vocabulary, is what keeps this honest —
+ * bug_status_events records every change with the actor who made it, so a
+ * client marking their own bug Won't Fix is visible rather than prevented.
  *
- * Statuses absent from this map are open to anyone — the triage states are not
- * claims about whether the work is finished.
+ * `closed` still carries a rule, for the opposite reason: it excludes `api_key`
+ * and `system`. Accepting a fix is a judgement a person makes, and an
+ * integration closing its own bugs would make "someone agreed this works"
+ * unfalsifiable. Both human actors are listed because on an application whose
+ * reporters have never opened the portal, a client-only rule would leave every
+ * fix parked in `ready_for_testing` forever.
+ *
+ * Statuses absent from this map are open to anyone.
  */
 export const STATUS_ACTOR_RULES: Partial<
   Record<BugReportStatus, readonly ('dashboard_user' | 'reporter' | 'api_key' | 'system')[]>
 > = {
-  ready_for_testing: ['dashboard_user', 'api_key', 'system'],
   closed: ['reporter', 'dashboard_user'],
-  wont_fix: ['dashboard_user', 'api_key', 'system'],
 };
 
 /**
@@ -156,6 +162,43 @@ export const LEGACY_BUG_STATUSES: readonly BugReportStatus[] = [
 /** The statuses a control should offer today. */
 export const SELECTABLE_BUG_STATUSES: readonly BugReportStatus[] =
   BUG_STATUSES.filter((s) => !LEGACY_BUG_STATUSES.includes(s));
+
+/**
+ * What a picker should offer, given the status the bug already holds.
+ *
+ * SELECTABLE_BUG_STATUSES alone is not enough for a control that also DISPLAYS
+ * the current value. Drop `resolved` from the options of a bug that is sitting
+ * in `resolved` and the control has nothing matching its own value to render —
+ * a Radix Select falls through to the placeholder and the row goes blank, which
+ * is worse than offering the legacy status was.
+ *
+ * So the current status is always offered, even when legacy. It is never a new
+ * choice: re-selecting the status a bug already has is rejected by
+ * isValidStatusTransition, and callers disable that row anyway. Order follows
+ * BUG_STATUSES so `resolved` stays where the reader expects it rather than
+ * being appended after Won't Fix.
+ */
+export function offerableBugStatuses(
+  current: BugReportStatus
+): readonly BugReportStatus[] {
+  if (!LEGACY_BUG_STATUSES.includes(current)) return SELECTABLE_BUG_STATUSES;
+  return BUG_STATUSES.filter(
+    (s) => s === current || !LEGACY_BUG_STATUSES.includes(s)
+  );
+}
+
+/**
+ * Closing used to require the bug to be in `ready_for_testing` (later also
+ * `resolved`), so that "I tested it and it works" always referred to a fix
+ * somebody had actually made.
+ *
+ * That gate is gone. It removed Closed from the menu on most bugs, which read
+ * as the option being broken rather than as a rule, and the two states it did
+ * allow were not discoverable — a reporter had no way to know that closing
+ * would become available later. Whether a close was earned is now a question
+ * for bug_status_events, which records the state each one came from, rather
+ * than something the workflow refuses outright.
+ */
 
 /**
  * Whether `actor` may move a bug into `status`. See STATUS_ACTOR_RULES.

@@ -36,7 +36,7 @@ export default function DocumentationPage() {
                 <h1 className='text-xl font-bold text-gray-900'>
                   Integration Documentation
                 </h1>
-                <p className='text-xs text-gray-600'>JKKN Bug Reporter</p>
+                <p className='text-xs text-gray-600'>JICATE Control Tower</p>
               </div>
             </Link>
             <HomepageNav />
@@ -296,7 +296,7 @@ npm install file:path/to/packages/bug-reporter-sdk`}</pre>
                           Step 2: Get Your API Key
                         </CardTitle>
                         <CardDescription className='mt-1.5'>
-                          Generate API credentials from the JKKN Bug Reporter platform
+                          Generate API credentials from the JICATE Control Tower
                         </CardDescription>
                       </div>
                       <DocActions tabId="configuration" />
@@ -1304,7 +1304,7 @@ function MyComponent() {
       <footer className='bg-gray-900 text-white py-8'>
         <div className='container mx-auto px-4 text-center'>
           <p className='text-sm text-gray-400'>
-            &copy; 2025 JKKN Bug Reporter. All rights reserved.
+            &copy; 2026 JICATE Solutions. All rights reserved.
           </p>
         </div>
       </footer>

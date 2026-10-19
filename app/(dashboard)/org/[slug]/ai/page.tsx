@@ -32,6 +32,17 @@ import {
   TableRow
 } from '@/components/ui/table';
 import { FALLBACK_AI_TASKS, fetchAiJobTypeCatalogue } from '@/lib/ai/tasks';
+import Link from 'next/link';
+import { createAdminClient } from '@/lib/supabase/admin';
+import {
+  readEngineTasks,
+  readRunners,
+  readUsage,
+  runnerAlive,
+  type EngineTaskRow,
+  type RunnerRow,
+  type UsageRow
+} from '@/lib/ai-engine/admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -106,6 +117,19 @@ function statusBadge(status: string) {
   return <Badge variant="secondary">{status}</Badge>;
 }
 
+/** JICATE engine headline numbers; one clock read, outside render. */
+function jicateEngineSummary(tasks: EngineTaskRow[], runners: RunnerRow[], usage: UsageRow[]) {
+  const now = Date.now();
+  return {
+    tasksOn: tasks.filter((t) => t.enabled).length,
+    tasksTotal: tasks.length,
+    alive: runners.filter((r) => runnerAlive(r, now)).length,
+    runners: runners.length,
+    runs: usage.length,
+    failed: usage.filter((u) => !u.success).length
+  };
+}
+
 export default async function AiCockpitPage({
   params
 }: {
@@ -146,10 +170,15 @@ export default async function AiCockpitPage({
 
   // Engine truth: per-app usage + the real task catalogue (tolerate unreachable).
   // Independent reads, so fetch them together rather than one after the other.
-  const [stats, catalogue] = await Promise.all([
+  const engineAdmin = createAdminClient();
+  const [stats, catalogue, jTasks, jRunners, jUsage] = await Promise.all([
     fetchEngineStats(),
-    fetchAiJobTypeCatalogue()
+    fetchAiJobTypeCatalogue(),
+    readEngineTasks(engineAdmin),
+    readRunners(engineAdmin),
+    readUsage(engineAdmin, org.id, 7)
   ]);
+  const jicate = jicateEngineSummary(jTasks, jRunners, jUsage);
   const statsByApp = new Map((stats?.apps ?? []).map((a) => [a.app_id, a]));
 
   const enabledCount = apps.filter((a) => a.settings?.ai?.enabled === true).length;
@@ -170,6 +199,28 @@ export default async function AiCockpitPage({
           queue behind MyJKKN&apos;s own work; there is no paid fallback.
         </p>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">JICATE&apos;s own AI engine</CardTitle>
+        </CardHeader>
+        <CardContent className="text-muted-foreground space-y-2 text-sm">
+          <p>
+            {jicate.tasksOn} of {jicate.tasksTotal} tasks switched on · workers alive{' '}
+            {jicate.alive} of {jicate.runners} · {jicate.runs} runs in 7 days ({jicate.failed}{' '}
+            failed) · ₹0. Tasks switched off there still run on MyJKKN, shown below.
+          </p>
+          <p>
+            <Link href={`/org/${slug}/ai/models`} className="underline">
+              AI Models
+            </Link>{' '}
+            ·{' '}
+            <Link href={`/org/${slug}/ai/routines`} className="underline">
+              AI Routines
+            </Link>
+          </p>
+        </CardContent>
+      </Card>
 
       {(!stats || !catalogue) && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">

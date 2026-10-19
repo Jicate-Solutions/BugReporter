@@ -49,6 +49,14 @@ SELECT setval(
     1)
 );
 
+-- nextval() is an object privilege, and the generator below runs with the rights
+-- of whoever is inserting — not the sequence's owner. Without this grant the
+-- 8-second hang would simply be traded for "permission denied for sequence".
+-- Explicit rather than relying on ALTER DEFAULT PRIVILEGES having been set for
+-- whichever role happens to run this migration.
+GRANT USAGE, SELECT ON SEQUENCE public.bug_display_id_seq
+  TO anon, authenticated, service_role;
+
 -- ── 2. the generator ─────────────────────────────────────────────────────────
 -- A new name on purpose: the old generate_bug_display_id() is declared
 -- RETURNS TEXT, and Postgres refuses to CREATE OR REPLACE a function with a
@@ -69,6 +77,13 @@ BEGIN
   -- to survive display_ids introduced outside it — hand-written rows, restored
   -- dumps, the 2025-11-14 fallback ids. Bounded, so the failure mode is an error
   -- with a diagnosable message rather than the hang this migration is undoing.
+  --
+  -- Deliberately NOT security definer, so this EXISTS runs under the caller's
+  -- RLS. That means it can miss a colliding row the caller cannot see — but the
+  -- sequence, not this check, is what actually guarantees uniqueness, and the
+  -- UNIQUE constraint catches anything that slips past. A missed collision
+  -- surfaces as a unique violation, which is recoverable; elevating privileges
+  -- to tighten a backstop that is already redundant is not worth it.
   FOR i IN 1..50 LOOP
     n := nextval('public.bug_display_id_seq');
 

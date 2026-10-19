@@ -15,6 +15,12 @@
  *
  * No paid fallback exists anywhere on this path: jobs queue behind MyJKKN's
  * own work (priority 500 vs 100) and run at ₹0 when the Max box is free.
+ *
+ * JICATE AI engine (2026-10-19): a task that is switched ON in this platform's
+ * own `ai_tasks` table runs on the JICATE engine instead (lib/ai-engine/engine.ts),
+ * drained by the JICATE Windows box. Same gates, same request, same poll
+ * envelope — an app cannot tell which engine answered. GET checks this
+ * platform's queue first and falls back to MyJKKN for any other job id.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -25,6 +31,12 @@ import {
   createApiSuccessResponse
 } from '@/lib/middleware/api-key-auth';
 import { AI_TASK_KEYS } from '@/lib/ai/tasks';
+import { createAdminClient } from '@/lib/supabase/admin';
+import {
+  enqueueEngineJob,
+  getEngineTask,
+  readEngineResult
+} from '@/lib/ai-engine/engine';
 import {
   enforceRateLimit,
   AI_RUN_RATE_LIMIT
@@ -77,6 +89,8 @@ export async function OPTIONS() {
 // ─── POST — enqueue a task ──────────────────────────────────────────────────
 
 export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
+  // Per-app throttle, before any body parsing or enqueue. GET polling is
+  // deliberately NOT limited: an SDK polls every few seconds while a job runs.
   const limited = await enforceRateLimit(
     request,
     context,
@@ -84,15 +98,6 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
     AI_RUN_RATE_LIMIT
   );
   if (limited) return limited;
-
-  const engine = engineConfig();
-  if (!engine) {
-    return createApiErrorResponse(
-      'AI_NOT_CONFIGURED',
-      'The AI door is not configured on the platform yet (missing engine URL/key).',
-      503
-    );
-  }
 
   let body: {
     task?: unknown;
@@ -124,7 +129,24 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
     );
   }
   const allowed = Array.isArray(ai.allowed_tasks) ? ai.allowed_tasks : [];
-  if (!allowed.includes(task) || !AI_TASK_KEYS.includes(task)) {
+
+  // Which engine owns this task? A row in ai_tasks = the JICATE engine.
+  let engineTask: Awaited<ReturnType<typeof getEngineTask>> = null;
+  try {
+    engineTask = await getEngineTask(createAdminClient(), task);
+  } catch {
+    return createApiErrorResponse(
+      'AI_UNAVAILABLE',
+      'Could not reach the AI engine. Try again shortly.',
+      502
+    );
+  }
+
+  // A task the JICATE engine has but has switched OFF goes back to MyJKKN when
+  // MyJKKN serves it (the five tasks staged for the move); a JICATE-only task
+  // that is off (leak.coach) is refused below with task_switched_off.
+  const myjkknTask = AI_TASK_KEYS.includes(task);
+  if (!allowed.includes(task) || (!engineTask && !myjkknTask)) {
     return createApiErrorResponse(
       'task_not_permitted',
       `Task "${task}" is not in this app's approved menu. Approved: ${
@@ -142,6 +164,65 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
     typeof body?.dedupe_key === 'string' && body.dedupe_key.length <= 200
       ? body.dedupe_key
       : undefined;
+
+  if (engineTask && !engineTask.enabled && !myjkknTask) {
+    return createApiErrorResponse(
+      'task_switched_off',
+      `Task "${task}" is switched off on the platform right now.`,
+      503
+    );
+  }
+
+  // ── JICATE engine path (task switched ON there) ──
+  if (engineTask?.enabled) {
+    try {
+      const out = await enqueueEngineJob(createAdminClient(), {
+        jobType: task,
+        applicationId: context.application.id,
+        appSlug: context.application.slug,
+        organizationId: context.application.organization_id,
+        payload: payload as Record<string, unknown>,
+        dedupeKey
+      });
+      if (out.ok) {
+        return createApiSuccessResponse(
+          { job_id: out.job_id, status: 'queued', retry_after: out.interactive ? 3 : 30 },
+          202
+        );
+      }
+      if (out.error === 'payload_too_large') {
+        return createApiErrorResponse(
+          'payload_too_large',
+          `payload is larger than this task allows (${out.max_bytes} bytes).`,
+          413
+        );
+      }
+      if (out.error === 'task_switched_off') {
+        return createApiErrorResponse(
+          'task_switched_off',
+          `Task "${task}" is switched off on the platform right now.`,
+          503
+        );
+      }
+      return createApiErrorResponse('task_not_permitted', `Task "${task}" is not available.`, 403);
+    } catch {
+      return createApiErrorResponse(
+        'AI_UNAVAILABLE',
+        'Could not reach the AI engine. Try again shortly.',
+        502
+      );
+    }
+  }
+
+  // ── MyJKKN engine path (unchanged) ──
+  const engine = engineConfig();
+  if (!engine) {
+    return createApiErrorResponse(
+      'AI_NOT_CONFIGURED',
+      'The AI door is not configured on the platform yet (missing engine URL/key).',
+      503
+    );
+  }
 
   try {
     const upstream = await fetch(`${engine.base}/api/b2a/ai/run`, {
@@ -188,6 +269,39 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
 // ─── GET — poll status/result ───────────────────────────────────────────────
 
 export const GET = withApiKeyAuth(async (request: NextRequest, context) => {
+  const jobId = new URL(request.url).searchParams.get('job_id') ?? '';
+  if (!UUID_RE.test(jobId)) {
+    return createApiErrorResponse('BAD_REQUEST', 'job_id (uuid) is required.', 400);
+  }
+
+  // ── JICATE engine first: same envelope MyJKKN returns ──
+  try {
+    const row = await readEngineResult(createAdminClient(), jobId, context.application.slug);
+    if (row) {
+      const done = row.status === 'done' || row.status === 'error';
+      return createApiSuccessResponse(
+        {
+          job_id: jobId,
+          status: row.status,
+          ...(row.status === 'done' ? { result: row.result ?? null } : {}),
+          ...(row.status === 'error' ? { error: row.error ?? 'job failed' } : {}),
+          ...(done ? {} : { retry_after: row.interactive ? 3 : 30 }),
+          requested_at: row.requested_at,
+          completed_at: row.completed_at ?? null
+        },
+        200
+      );
+    }
+  } catch {
+    // Not a fall-through: MyJKKN would answer "no such job" for a JICATE job.
+    return createApiErrorResponse(
+      'AI_UNAVAILABLE',
+      'Could not read the job right now. Try again shortly.',
+      502
+    );
+  }
+
+  // ── MyJKKN engine (unchanged) ──
   const engine = engineConfig();
   if (!engine) {
     return createApiErrorResponse(
@@ -195,11 +309,6 @@ export const GET = withApiKeyAuth(async (request: NextRequest, context) => {
       'The AI door is not configured on the platform yet (missing engine URL/key).',
       503
     );
-  }
-
-  const jobId = new URL(request.url).searchParams.get('job_id') ?? '';
-  if (!UUID_RE.test(jobId)) {
-    return createApiErrorResponse('BAD_REQUEST', 'job_id (uuid) is required.', 400);
   }
 
   try {

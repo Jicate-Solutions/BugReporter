@@ -138,19 +138,6 @@ export async function applyStatusChange(
     };
   }
 
-  // Closing means "I tested the fix and it works", so there has to be a fix to
-  // have tested. Without this a client could close a bug nobody had looked at,
-  // which is the same hole that let 26 reports go straight from New to Resolved
-  // with no developer involved.
-  if (toStatus === 'closed' && fromStatus !== 'ready_for_testing') {
-    return {
-      ok: false,
-      code: 'INVALID_TRANSITION',
-      message:
-        'A report can only be closed once the team has marked it ready for testing.',
-    };
-  }
-
   // Computed before the UPDATE so the reopen bookkeeping below can go into the
   // same write rather than needing a second round trip.
   const occurredAt = new Date().toISOString();

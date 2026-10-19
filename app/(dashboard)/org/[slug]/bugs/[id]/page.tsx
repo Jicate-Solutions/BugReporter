@@ -18,7 +18,13 @@ import { SimilarBugsCard } from './_components/similar-bugs-card';
 import { AttachmentsSection } from './_components/attachments-section';
 import { useState } from 'react';
 import toast from 'react-hot-toast';
-import { BUG_STATUSES, BUG_STATUS_LABELS, bugStatusLabel } from '@boobalan_jkkn/shared';
+import {
+  BUG_STATUS_LABELS,
+  SELECTABLE_BUG_STATUSES,
+  bugStatusLabel,
+  isBugStatus,
+  offerableBugStatuses
+} from '@boobalan_jkkn/shared';
 import { StatusChangeDialog } from './_components/status-change-dialog';
 
 export default function BugDetailPage() {
@@ -105,8 +111,17 @@ export default function BugDetailPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {BUG_STATUSES.map((status) => (
-                  <SelectItem key={status} value={status}>
+                {/* Legacy statuses are drawn but not offered — only the bug
+                    already sitting in one still lists it, disabled, so the
+                    trigger has a value to render. See offerableBugStatuses. */}
+                {offerableBugStatuses(
+                  isBugStatus(bug.status) ? bug.status : 'new'
+                ).map((status) => (
+                  <SelectItem
+                    key={status}
+                    value={status}
+                    disabled={!SELECTABLE_BUG_STATUSES.includes(status)}
+                  >
                     {BUG_STATUS_LABELS[status]}
                   </SelectItem>
                 ))}
