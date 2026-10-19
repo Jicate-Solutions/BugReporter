@@ -21,3 +21,23 @@ CREATE TABLE IF NOT EXISTS public.ai_account_secrets (
 
 ALTER TABLE public.ai_account_secrets ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.ai_account_secrets FROM anon, authenticated;
+
+-- Every key handed to a worker, so the Director can see who fetched what.
+CREATE TABLE IF NOT EXISTS public.ai_account_key_fetches (
+  id          bigserial PRIMARY KEY,
+  runner      text NOT NULL,
+  label       text NOT NULL,
+  job_id      uuid,
+  host        text,
+  granted     boolean NOT NULL,
+  reason      text,
+  fetched_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_account_key_fetches_at_idx ON public.ai_account_key_fetches (fetched_at DESC);
+ALTER TABLE public.ai_account_key_fetches ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS ai_account_key_fetches_super_admin_read ON public.ai_account_key_fetches;
+CREATE POLICY ai_account_key_fetches_super_admin_read ON public.ai_account_key_fetches
+  FOR SELECT TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.super_admins s WHERE s.user_id = auth.uid()));
+REVOKE ALL ON public.ai_account_key_fetches FROM anon;
+REVOKE INSERT, UPDATE, DELETE ON public.ai_account_key_fetches FROM authenticated;

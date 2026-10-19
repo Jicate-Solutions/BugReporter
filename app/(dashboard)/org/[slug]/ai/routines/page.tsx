@@ -165,7 +165,7 @@ export default async function AiRoutinesPage({
     data: { user }
   } = await session.auth.getUser();
   const admin = createAdminClient();
-  const [runners, accounts, live, recent, scheduledRes, canEdit, secretsRes] = await Promise.all([
+  const [runners, accounts, live, recent, scheduledRes, canEdit, secretsRes, fetchesRes] = await Promise.all([
     readRunners(admin),
     readAccounts(admin),
     readLiveQueue(admin, org.id),
@@ -176,8 +176,22 @@ export default async function AiRoutinesPage({
       .eq('organization_id', org.id)
       .order('routine_kind'),
     user ? isSuperAdmin(admin, user.id) : Promise.resolve(false),
-    admin.from('ai_account_secrets').select('label')
+    admin.from('ai_account_secrets').select('label'),
+    admin
+      .from('ai_account_key_fetches')
+      .select('id, runner, label, host, granted, reason, fetched_at')
+      .order('fetched_at', { ascending: false })
+      .limit(15)
   ]);
+  const keyFetches = (fetchesRes.data ?? []) as {
+    id: number;
+    runner: string;
+    label: string;
+    host: string | null;
+    granted: boolean;
+    reason: string | null;
+    fetched_at: string;
+  }[];
   const storedKeys = new Set(((secretsRes.data ?? []) as { label: string }[]).map((x) => x.label));
   const scheduled = (scheduledRes.data ?? []) as ScheduledRoutine[];
 
@@ -269,6 +283,20 @@ export default async function AiRoutinesPage({
               </div>
             ))}
             <AddAccountForm />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Key handouts (latest 15)</p>
+              {keyFetches.length === 0 ? (
+                <p className="text-muted-foreground text-xs">No worker has fetched a stored key yet.</p>
+              ) : (
+                keyFetches.map((f) => (
+                  <p key={f.id} className="text-xs">
+                    {ago(f.fetched_at, now)} · {f.runner}
+                    {f.host ? ` on ${f.host}` : ''} · {f.label} ·{' '}
+                    {f.granted ? 'given' : <span className="text-red-600">refused ({f.reason})</span>}
+                  </p>
+                ))
+              )}
+            </div>
             {boxesOf(runners).map((b) => (
               <div key={b.host} className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
                 <div className="text-sm">
