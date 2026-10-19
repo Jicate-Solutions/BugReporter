@@ -42,6 +42,8 @@ import { SafetyAlertBanner } from '../safety/_components/safety-alert-banner';
 import { RunnerAccountEditor } from './_components/runner-account-editor';
 import { BoxAccountEditor } from './_components/box-account-editor';
 import { AccountPriorityEditor } from './_components/account-priority-editor';
+import { AddAccountForm } from './_components/add-account-form';
+import { RemoveKeyButton } from './_components/remove-key-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -163,7 +165,7 @@ export default async function AiRoutinesPage({
     data: { user }
   } = await session.auth.getUser();
   const admin = createAdminClient();
-  const [runners, accounts, live, recent, scheduledRes, canEdit] = await Promise.all([
+  const [runners, accounts, live, recent, scheduledRes, canEdit, secretsRes] = await Promise.all([
     readRunners(admin),
     readAccounts(admin),
     readLiveQueue(admin, org.id),
@@ -173,8 +175,10 @@ export default async function AiRoutinesPage({
       .select('id, routine_kind, enabled, last_run_at, last_status, applications(name)')
       .eq('organization_id', org.id)
       .order('routine_kind'),
-    user ? isSuperAdmin(admin, user.id) : Promise.resolve(false)
+    user ? isSuperAdmin(admin, user.id) : Promise.resolve(false),
+    admin.from('ai_account_secrets').select('label')
   ]);
+  const storedKeys = new Set(((secretsRes.data ?? []) as { label: string }[]).map((x) => x.label));
   const scheduled = (scheduledRes.data ?? []) as ScheduledRoutine[];
 
   const { now, aliveCount, waiting, running, oldestWait, errors24h } = queueStats(
@@ -252,14 +256,19 @@ export default async function AiRoutinesPage({
                     {a.updated_at ? `read ${ago(a.updated_at, now)}` : 'not used yet'}
                     {a.reported_by ? ` by ${a.reported_by}` : ''}
                   </span>
-                  <div className="ml-auto">
+                  {storedKeys.has(a.label) && (
+                    <span className="text-muted-foreground text-xs">· key in Control Tower</span>
+                  )}
+                  <div className="ml-auto flex items-center gap-1">
                     <AccountPriorityEditor label={a.label} priority={a.priority} />
+                    {storedKeys.has(a.label) && <RemoveKeyButton label={a.label} />}
                   </div>
                 </div>
                 <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} />
                 <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} />
               </div>
             ))}
+            <AddAccountForm />
             {boxesOf(runners).map((b) => (
               <div key={b.host} className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
                 <div className="text-sm">
