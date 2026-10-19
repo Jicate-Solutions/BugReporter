@@ -38,6 +38,16 @@ const bodySchema = z.object({
     .object({
       model_id: z.string().max(100).nullable().optional(),
       account: z.string().regex(/^[a-z0-9][a-z0-9-]{0,30}$/).nullable().optional(),
+      limits: z
+        .object({
+          five_hour: z.number().min(0).max(10).nullable().optional(),
+          seven_day: z.number().min(0).max(10).nullable().optional(),
+          five_hour_resets_at: z.number().int().positive().nullable().optional(),
+          seven_day_resets_at: z.number().int().positive().nullable().optional(),
+          overage_enabled: z.boolean().nullable().optional()
+        })
+        .nullable()
+        .optional(),
       input_tokens: intOrNull,
       output_tokens: intOrNull,
       duration_ms: intOrNull
@@ -117,6 +127,9 @@ export async function POST(request: NextRequest) {
   if (body.usage?.account) {
     await admin.from('ai_runners').update({ account_in_use: body.usage.account }).eq('name', runner);
   }
+  if (body.usage?.account && body.usage.limits) {
+    await recordAccountUsage(admin, body.usage.account, body.usage.limits, runner);
+  }
   if (outcome.status === 'done' && result?.safeguard === true) {
     await raiseSafetyAlert(admin, body.job_id);
   }
@@ -149,6 +162,33 @@ async function refundAttempt(
     .eq('status', 'running')
     .eq('claimed_by', runner)
     .eq('attempts', attempts);
+}
+
+/** Store the latest 5-hour / 7-day usage reading for one account label. */
+async function recordAccountUsage(
+  admin: ReturnType<typeof createAdminClient>,
+  label: string,
+  l: {
+    five_hour?: number | null;
+    seven_day?: number | null;
+    five_hour_resets_at?: number | null;
+    seven_day_resets_at?: number | null;
+    overage_enabled?: boolean | null;
+  },
+  runner: string
+) {
+  const at = (s?: number | null) => (s ? new Date(s * 1000).toISOString() : null);
+  const { error } = await admin.from('ai_accounts').upsert({
+    label,
+    five_hour_util: l.five_hour ?? null,
+    seven_day_util: l.seven_day ?? null,
+    five_hour_resets_at: at(l.five_hour_resets_at),
+    seven_day_resets_at: at(l.seven_day_resets_at),
+    overage_enabled: l.overage_enabled ?? null,
+    reported_by: runner,
+    updated_at: new Date().toISOString()
+  });
+  if (error) console.error('[ai-engine/complete] account usage not stored:', error.message);
 }
 
 /**

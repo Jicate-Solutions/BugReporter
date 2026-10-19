@@ -1,8 +1,9 @@
 /**
  * PATCH /api/internal/ai-engine/runners — choose a worker's Claude account.
  *
- * Platform admins only. Body: { name, account: label | null, account_fallback? }
- * account null = the box's own sign-in. A label must be one the worker itself
+ * Platform admins only. Body: { name, account: label | 'auto' | null, account_fallback? }
+ * account null = the box's own sign-in; 'auto' = the Tower picks the account with
+ * the most allowance left at each claim. A label must be one the worker itself
  * reported holding, so a typo can't point a worker at an account it lacks.
  * Takes effect from the worker's next claim.
  */
@@ -48,7 +49,7 @@ export async function PATCH(request: NextRequest) {
     .maybeSingle();
   if (!row) return fail('NOT_FOUND', 'No such worker.', 404);
   const available = (row as { accounts_available: string[] | null }).accounts_available ?? [];
-  if (account && account !== 'default' && !available.includes(account)) {
+  if (account && account !== 'default' && account !== 'auto' && !available.includes(account)) {
     return fail(
       'ACCOUNT_NOT_ON_BOX',
       `${name} has no account called "${account}". Add it on the Windows box first.`,

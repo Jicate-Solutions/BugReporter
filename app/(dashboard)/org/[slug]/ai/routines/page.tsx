@@ -34,10 +34,14 @@ import {
   secondsBetween,
   type JobRow,
   type RunnerRow,
-  isSuperAdmin
+  type AccountRow,
+  isSuperAdmin,
+  readAccounts
 } from '@/lib/ai-engine/admin';
 import { SafetyAlertBanner } from '../safety/_components/safety-alert-banner';
 import { RunnerAccountEditor } from './_components/runner-account-editor';
+import { BoxAccountEditor } from './_components/box-account-editor';
+import { AccountPriorityEditor } from './_components/account-priority-editor';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +51,59 @@ function statusBadge(status: string) {
   if (status === 'error') return <Badge variant="destructive">error</Badge>;
   if (status === 'running') return <Badge variant="outline">running</Badge>;
   return <Badge variant="secondary">waiting</Badge>;
+}
+
+/** Workers grouped by Windows computer, with the account they share (or null). */
+function boxesOf(runners: RunnerRow[]) {
+  const map = new Map<string, RunnerRow[]>();
+  for (const r of runners) {
+    const host = r.host ?? 'unknown box';
+    map.set(host, [...(map.get(host) ?? []), r]);
+  }
+  return [...map.entries()].map(([host, rs]) => {
+    const accounts = new Set(rs.map((r) => r.account ?? 'default'));
+    const common = rs
+      .map((r) => r.accounts_available ?? [])
+      .reduce((a, b) => a.filter((x) => b.includes(x)));
+    return {
+      host,
+      workers: rs.map((r) => r.name),
+      current: accounts.size === 1 ? [...accounts][0] : null,
+      labels: common
+    };
+  });
+}
+
+function pct(v: number | null) {
+  return v == null ? null : Math.round(v * 100);
+}
+
+function istTime(iso: string | null) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function UsageBar({ label, value, resets }: { label: string; value: number | null; resets: string | null }) {
+  const p = pct(value);
+  const color = p == null ? 'bg-muted' : p >= 90 ? 'bg-red-500' : p >= 75 ? 'bg-amber-500' : 'bg-green-500';
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs">
+        <span>{label}</span>
+        <span className="text-muted-foreground">
+          {p == null ? 'no reading yet' : `${p}% used`} · resets {istTime(resets)}
+        </span>
+      </div>
+      <div className="bg-muted h-2 overflow-hidden rounded">
+        <div className={`h-2 ${color}`} style={{ width: `${Math.min(p ?? 0, 100)}%` }} />
+      </div>
+    </div>
+  );
 }
 
 /** One clock read per request, outside render, for every "ago" on the page. */
@@ -106,8 +163,9 @@ export default async function AiRoutinesPage({
     data: { user }
   } = await session.auth.getUser();
   const admin = createAdminClient();
-  const [runners, live, recent, scheduledRes, canEdit] = await Promise.all([
+  const [runners, accounts, live, recent, scheduledRes, canEdit] = await Promise.all([
     readRunners(admin),
+    readAccounts(admin),
     readLiveQueue(admin, org.id),
     readRecentJobs(admin, org.id, 50),
     admin
@@ -170,6 +228,50 @@ export default async function AiRoutinesPage({
           </Card>
         ))}
       </div>
+
+      {canEdit && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Claude accounts</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <p className="text-muted-foreground text-sm">
+              How much of each account&apos;s allowance is used, from the latest job that ran on it.
+              &quot;default&quot; is each box&apos;s own sign-in. Switch a whole box below, or pick
+              &quot;auto&quot;: workers use the account with the lowest priority number that still
+              has allowance, move to the next when it runs out, and come back when it renews.
+            </p>
+            {accounts.length === 0 && (
+              <p className="text-muted-foreground text-sm">No readings yet. They appear after the next job.</p>
+            )}
+            {accounts.map((a: AccountRow) => (
+              <div key={a.label} className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{a.label}</span>
+                  <span className="text-muted-foreground text-xs">
+                    {a.updated_at ? `read ${ago(a.updated_at, now)}` : 'not used yet'}
+                    {a.reported_by ? ` by ${a.reported_by}` : ''}
+                  </span>
+                  <div className="ml-auto">
+                    <AccountPriorityEditor label={a.label} priority={a.priority} />
+                  </div>
+                </div>
+                <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} />
+                <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} />
+              </div>
+            ))}
+            {boxesOf(runners).map((b) => (
+              <div key={b.host} className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+                <div className="text-sm">
+                  <span className="font-medium">{b.host}</span>
+                  <span className="text-muted-foreground"> · {b.workers.join(', ')}</span>
+                </div>
+                <BoxAccountEditor host={b.host} workers={b.workers} current={b.current} labels={b.labels} />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

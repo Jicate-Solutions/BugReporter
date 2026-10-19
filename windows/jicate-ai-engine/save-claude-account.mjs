@@ -20,8 +20,8 @@ import { platform, userInfo, tmpdir } from 'node:os';
 import { execFileSync, execFile } from 'node:child_process';
 
 const label = process.argv[2] || '';
-if (!/^[a-z0-9][a-z0-9-]{0,30}$/.test(label) || label === 'default') {
-  console.error('usage: node save-claude-account.mjs <label>   (a-z 0-9 -, not "default")');
+if (!/^[a-z0-9][a-z0-9-]{0,30}$/.test(label) || label === 'default' || label === 'auto') {
+  console.error('usage: node save-claude-account.mjs <label>   (a-z 0-9 -, not "default" or "auto")');
   process.exit(1);
 }
 const dir = process.env.ACCOUNTS_DIR || resolve(dirname(fileURLToPath(import.meta.url)), 'accounts');

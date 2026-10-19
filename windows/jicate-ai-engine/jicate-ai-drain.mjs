@@ -58,7 +58,7 @@ import { execFile } from 'node:child_process';
 import { readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = process.env.ENV_FILE || resolve(HERE, `${process.env.RUNNER || 'jicate-1'}.env`);
@@ -181,7 +181,7 @@ function runClaude(job, label = 'default') {
   mkdirSync(SANDBOX, { recursive: true });
   const env = envFor(label);
   const args = [
-    '-p', '--model', job.model, '--output-format', 'json',
+    '-p', '--model', job.model, '--output-format', 'stream-json', '--verbose',
     '--restricted',              // ignore project/local settings and hooks
     '--strict-mcp-config',       // no MCP servers
     '--no-session-persistence',  // no transcript on disk
@@ -197,8 +197,26 @@ function runClaude(job, label = 'default') {
         if (err && err.killed) {
           return reject(new RunError(`timed out after ${timeout} ms`, { retry: true }));
         }
+        // stream-json: one JSON object per line. The "result" line carries the
+        // answer; the "rate_limit_event" line carries this account's 5-hour and
+        // weekly allowance used (older CLIs may not send it).
         let d = null;
-        try { d = JSON.parse(stdout); } catch { /* handled below */ }
+        let rl = null;
+        for (const line of String(stdout).split(/\r?\n/)) {
+          if (!line.startsWith('{')) continue;
+          let o;
+          try { o = JSON.parse(line); } catch { continue; }
+          if (o.type === 'result') d = o;
+          else if (o.type === 'rate_limit_event') rl = o.rate_limit_info;
+        }
+        const w = rl?.unifiedWindows;
+        const limits = w ? {
+          five_hour: Number.isFinite(w.five_hour?.utilization) ? w.five_hour.utilization : null,
+          seven_day: Number.isFinite(w.seven_day?.utilization) ? w.seven_day.utilization : null,
+          five_hour_resets_at: Number.isFinite(w.five_hour?.resetsAt) ? w.five_hour.resetsAt : null,
+          seven_day_resets_at: Number.isFinite(w.seven_day?.resetsAt) ? w.seven_day.resetsAt : null,
+          overage_enabled: typeof rl.overageEnabled === 'boolean' ? rl.overageEnabled : null,
+        } : null;
         if (!d) {
           const msg = String(stderr || err?.message || stdout || 'no output').slice(0, 300);
           return reject(new RunError(`claude failed: ${msg}`, {
@@ -214,9 +232,9 @@ function runClaude(job, label = 'default') {
         const num = (v) => (Number.isFinite(v) ? v : null);
         const usage = answered
           ? { model_id: answered, input_tokens: num(mu[answered].inputTokens),
-              output_tokens: num(mu[answered].outputTokens) }
+              output_tokens: num(mu[answered].outputTokens), limits }
           : { model_id: job.model, input_tokens: num(d.usage?.input_tokens),
-              output_tokens: num(d.usage?.output_tokens) };
+              output_tokens: num(d.usage?.output_tokens), limits };
         if (d.is_error) {
           const msg = String(d.result ?? d.subtype ?? 'error').slice(0, 300);
           const limited = RATE_LIMIT_RE.test(msg);
@@ -253,6 +271,7 @@ async function runWithAccounts(job, choice) {
       return { ...out, label };
     } catch (e) {
       lastErr = e;
+      if (e && typeof e === 'object') e.account = label;
       if (!(e?.rateLimited || e?.authFailed)) throw e;
       cooling.set(label, Date.now() + (e.authFailed ? COOLDOWN_AUTH_MS : COOLDOWN_LIMIT_MS));
       logErr(`account ${label} ${e.authFailed ? 'key failed' : 'hit its limit'}; ${tryList.length > 1 ? 'trying the next account' : 'no other account to try'}`);
@@ -262,7 +281,7 @@ async function runWithAccounts(job, choice) {
 }
 
 async function drainOnce() {
-  const { job, account } = await post('/api/internal/ai-engine/claim', { accounts: listAccounts() });
+  const { job, account } = await post('/api/internal/ai-engine/claim', { accounts: listAccounts(), host: hostname() });
   if (!job) return { worked: false };
 
   // Log ids only - never the payload or the answer.
@@ -285,7 +304,7 @@ async function drainOnce() {
     await post('/api/internal/ai-engine/complete', {
       job_id: job.job_id, error: msg, retry: e?.retry !== false,
       rate_limited: Boolean(e?.rateLimited),
-      usage: { ...(e?.usage || {}), duration_ms: Date.now() - started },
+      usage: { ...(e?.usage || {}), ...(e?.account ? { account: e.account } : {}), duration_ms: Date.now() - started },
     }).catch((e2) => logErr(`release failed: ${String(e2?.message || e2).slice(0, 200)}`));
     return { worked: true, rateLimited: Boolean(e?.rateLimited) };
   }

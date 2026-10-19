@@ -10,6 +10,9 @@
  *      each morning (from 9 am India time) until all are followed up.
  *   4. Failing jobs: 3 or more jobs ended in error in the last 30 minutes →
  *      one email, at most every 2 hours.
+ *   5. Account nearly used up: a Claude account passes 90% of its 5-hour or
+ *      weekly allowance → one email for that account; it re-arms once the
+ *      reading drops back below 90% (after the reset).
  *
  * Recipient: AI_ALERT_EMAIL (comma-separated allowed). Unset → nothing is sent
  * and the run says so. State lives in ai_engine_watch. Called by the cron route.
@@ -234,6 +237,45 @@ export async function runEngineWatch(admin: SupabaseClient, origin: string): Pro
         next.last_failure_email_at = new Date(now).toISOString();
         sent.push(`failures:${rows.length}`);
       }
+    }
+  }
+
+  // 5. Accounts nearly used up (state lives on each ai_accounts row).
+  const { data: accts } = await admin
+    .from('ai_accounts')
+    .select('label, five_hour_util, seven_day_util, five_hour_resets_at, seven_day_resets_at, alerted_at');
+  for (const a of (accts ?? []) as {
+    label: string;
+    five_hour_util: number | null;
+    seven_day_util: number | null;
+    five_hour_resets_at: string | null;
+    seven_day_resets_at: string | null;
+    alerted_at: string | null;
+  }[]) {
+    const five = Number(a.five_hour_util ?? 0);
+    const week = Number(a.seven_day_util ?? 0);
+    const high = five >= 0.9 || week >= 0.9;
+    if (high && !a.alerted_at && to.length) {
+      const which = week >= 0.9 ? 'weekly' : '5-hour';
+      const resets = week >= 0.9 ? a.seven_day_resets_at : a.five_hour_resets_at;
+      const when = resets
+        ? new Date(resets).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: 'numeric', minute: '2-digit' })
+        : 'unknown';
+      const ok = await send(
+        to,
+        `Claude account "${a.label}" is ${Math.round(Math.max(five, week) * 100)}% used`,
+        [
+          `The Claude account "${a.label}" has used ${Math.round(week * 100)}% of its weekly allowance and ${Math.round(five * 100)}% of its 5-hour allowance. Its ${which} allowance resets ${when} (India time).`,
+          'Switch the busy Windows box to another account, or to "auto", on the AI Routines page before it runs out.'
+        ],
+        routinesLink
+      );
+      if (ok) {
+        await admin.from('ai_accounts').update({ alerted_at: new Date(now).toISOString() }).eq('label', a.label);
+        sent.push(`account:${a.label}`);
+      }
+    } else if (!high && a.alerted_at) {
+      await admin.from('ai_accounts').update({ alerted_at: null }).eq('label', a.label);
     }
   }
 
