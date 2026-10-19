@@ -37,12 +37,21 @@ if (!BASE || TOKEN.length < 32) {
 }
 
 async function call(method, path, body) {
-  const r = await fetch(`${BASE}/api/internal/mailbox${path}`, {
+  const req = () => fetch(`${BASE}/api/internal/mailbox${path}`, {
     method,
     headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(30_000),
   });
+  let r;
+  try {
+    r = await req();
+  } catch (e) {
+    // A dropped connection (often an idle socket the server already closed):
+    // one quick retry before calling it a failure.
+    await new Promise((ok) => setTimeout(ok, 1_000));
+    try { r = await req(); } catch (e2) { throw new Error(`${e2.message} (${e2.cause?.code || e.cause?.code || 'network'})`); }
+  }
   const text = await r.text();
   let data = null;
   try { data = JSON.parse(text); } catch { /* keep null */ }
@@ -129,7 +138,7 @@ try {
         await new Promise((r) => setTimeout(r, 10_000));
       } catch (e) {
         fails += 1;
-        if (fails === 1 || fails % 30 === 0) console.log(`[jicate-mail] cannot reach the mailbox: ${e.message}`);
+        if (fails === 3 || fails % 30 === 0) console.log(`[jicate-mail] cannot reach the mailbox: ${e.message}`);
         await new Promise((r) => setTimeout(r, Math.min(10_000 * fails, 120_000)));
       }
     }
@@ -152,7 +161,7 @@ try {
         await new Promise((r) => setTimeout(r, 30_000));
       } catch (e) {
         fails += 1;
-        if (fails === 1 || fails % 30 === 0) console.log(`[jicate-mail] cannot reach the mailbox: ${e.message}`);
+        if (fails === 3 || fails % 30 === 0) console.log(`[jicate-mail] cannot reach the mailbox: ${e.message}`);
         await new Promise((r) => setTimeout(r, Math.min(30_000 * fails, 300_000)));
       }
     }

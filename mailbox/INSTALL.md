@@ -40,7 +40,7 @@ If refused at any step: report the exact error and stop.
 
 SHA-256 of every file
 ---------------------
-  jicate-mail.mjs      855ae4891ffd4882ee6c27175a9c9ec8abaa62abb3ecf34f4e589f62fb398b32
+  jicate-mail.mjs      dec110ab6c0c9f9cd1c31a7db962c01afbfb5b74ffa7764899f07c55afa1eed0
   new-mail-token.mjs   da7774b158c06b6a9dc776d06c26196698d0b250c45e4b6f1a420f0de3c94e4f
   jicate-ai-drain.mjs  a8d2a3dcc50f288a6b6d47971edcc20e02f090775359bf5e769caf75440df417
                        (Windows AI box only: the updated worker, see below)
