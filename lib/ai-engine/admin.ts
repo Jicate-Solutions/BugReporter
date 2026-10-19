@@ -15,6 +15,8 @@ export interface EngineTaskRow {
   description: string;
   instructions: string;
   model: string;
+  /** low | medium | high | xhigh | max; null = the CLI default. */
+  effort: string | null;
   output_format: 'text' | 'json';
   interactive: boolean;
   enabled: boolean;
@@ -97,7 +99,7 @@ export async function readEngineTasks(admin: SupabaseClient): Promise<EngineTask
   const { data } = await admin
     .from('ai_tasks')
     .select(
-      'job_type, title, description, instructions, model, output_format, interactive, enabled, max_inflight, max_payload_bytes, timeout_seconds, max_answer_words, updated_at'
+      'job_type, title, description, instructions, model, effort, output_format, interactive, enabled, max_inflight, max_payload_bytes, timeout_seconds, max_answer_words, updated_at'
     )
     .order('job_type');
   return (data ?? []) as EngineTaskRow[];
