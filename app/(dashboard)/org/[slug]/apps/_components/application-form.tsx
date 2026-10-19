@@ -455,11 +455,12 @@ export function ApplicationForm({
                             </code>
                             {/* Switched off upstream. Still tickable on purpose:
                                 approving is a permission, not a run — the app
-                                keeps the approval for when MyJKKN turns it back
-                                on. Marked so nobody expects it to work today. */}
+                                keeps the approval for when its engine (MyJKKN or
+                                JICATE) turns it back on. Marked so nobody
+                                expects it to work today. */}
                             {!task.enabled && (
                               <span className='ml-2 rounded-sm border border-amber-300 px-1.5 py-0.5 align-middle text-[10px] font-normal text-amber-700 dark:border-amber-700 dark:text-amber-400'>
-                                switched off in MyJKKN
+                                switched off
                               </span>
                             )}
                           </p>

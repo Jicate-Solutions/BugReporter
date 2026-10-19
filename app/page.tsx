@@ -34,10 +34,10 @@ export default function Home() {
               </div>
               <div>
                 <h1 className='text-xl font-bold text-gray-900'>
-                  JKKN Bug Reporter
+                  JICATE Control Tower
                 </h1>
                 <p className='text-xs text-gray-600'>
-                  Centralized Bug Tracking Platform
+                  Bugs, AI, routines and uptime for every JICATE app
                 </p>
               </div>
             </div>
@@ -375,7 +375,7 @@ export default function Home() {
                   <Bug className='h-6 w-6' />
                 </div>
                 <div>
-                  <span className='font-bold text-lg'>JKKN Bug Reporter</span>
+                  <span className='font-bold text-lg'>JICATE Control Tower</span>
                 </div>
               </div>
               <p className='text-sm text-gray-400 leading-relaxed'>
@@ -484,7 +484,7 @@ export default function Home() {
             </div>
           </div>
           <div className='border-t border-gray-800 pt-8 text-center text-sm text-gray-400'>
-            <p>&copy; 2025 JKKN Bug Reporter Platform. All rights reserved.</p>
+            <p>&copy; 2026 JICATE Solutions. All rights reserved.</p>
             <p className='mt-2'>
               Built for JKKN Institution | Powered by Next.js & Supabase
             </p>

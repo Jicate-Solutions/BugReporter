@@ -20,10 +20,16 @@
  * (fn_ai_external_result matches on app_id), so cross-org reads are impossible.
  *
  * Cost: forwarded to MyJKKN's engine on lane=max → ₹0 (no paid path exists).
+ *
+ * JICATE AI engine (2026-10-19): a task switched ON in this platform's own
+ * ai_tasks runs on the JICATE engine instead, under the same reporter-<orgId>
+ * tag, and GET reads this platform's queue first. Same response shapes.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { engineServes, enqueueForOrg, readEngineResult } from '@/lib/ai-engine/engine';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -177,11 +183,6 @@ async function buildFleetStats(
 // ── POST — enqueue ──────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const engine = engineConfig();
-  if (!engine) {
-    return err('AI_NOT_CONFIGURED', 'The AI engine is not configured on the platform yet.', 503);
-  }
-
   const body = (await request.json().catch(() => null)) as {
     kind?: string;
     organizationId?: string;
@@ -268,6 +269,29 @@ export async function POST(request: NextRequest) {
     return err('BAD_REQUEST', "kind must be 'brief' or 'triage'.", 400);
   }
 
+  // ── JICATE engine (task switched ON there) ──
+  const admin = createAdminClient();
+  if (await engineServes(admin, task)) {
+    try {
+      const out = await enqueueForOrg(admin, org.id, task, payload, dedupeKey);
+      if (out.ok) {
+        return NextResponse.json(
+          { job_id: out.job_id, status: 'queued', retry_after: out.interactive ? 3 : 15 },
+          { status: 202 }
+        );
+      }
+      return err(out.error, 'The AI engine refused the request.', out.error === 'payload_too_large' ? 413 : 503);
+    } catch {
+      return err('AI_UNAVAILABLE', 'Could not reach the AI engine. Try again shortly.', 502);
+    }
+  }
+
+  // ── MyJKKN engine (unchanged) ──
+  const engine = engineConfig();
+  if (!engine) {
+    return err('AI_NOT_CONFIGURED', 'The AI engine is not configured on the platform yet.', 503);
+  }
+
   try {
     const upstream = await fetch(`${engine.base}/api/b2a/ai/run`, {
       method: 'POST',
@@ -298,10 +322,6 @@ export async function POST(request: NextRequest) {
 // ── GET — poll ──────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const engine = engineConfig();
-  if (!engine) {
-    return err('AI_NOT_CONFIGURED', 'The AI engine is not configured on the platform yet.', 503);
-  }
   const url = new URL(request.url);
   const jobId = url.searchParams.get('job_id') ?? '';
   const organizationId = url.searchParams.get('organizationId') ?? '';
@@ -310,6 +330,33 @@ export async function GET(request: NextRequest) {
   const gate = await requireMember(organizationId);
   if ('error' in gate) return gate.error;
   const appId = appIdFor(gate.org.id);
+
+  // ── JICATE engine first: same shape MyJKKN returns ──
+  try {
+    const row = await readEngineResult(createAdminClient(), jobId, appId);
+    if (row) {
+      const done = row.status === 'done' || row.status === 'error';
+      return NextResponse.json(
+        {
+          job_id: jobId,
+          status: row.status,
+          ...(row.status === 'done' ? { result: row.result ?? null } : {}),
+          ...(row.status === 'error' ? { error: row.error ?? 'job failed' } : {}),
+          ...(done ? {} : { retry_after: row.interactive ? 3 : 15 }),
+          requested_at: row.requested_at,
+          completed_at: row.completed_at ?? null
+        },
+        { status: 200 }
+      );
+    }
+  } catch {
+    return err('AI_UNAVAILABLE', 'Could not read the job right now. Try again shortly.', 502);
+  }
+
+  const engine = engineConfig();
+  if (!engine) {
+    return err('AI_NOT_CONFIGURED', 'The AI engine is not configured on the platform yet.', 503);
+  }
 
   try {
     const upstream = await fetch(
