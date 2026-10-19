@@ -1,13 +1,13 @@
 // ============================================================================
-// JICATE AI engine — drain (JICATE Windows AI box)
+// JICATE AI engine - drain (JICATE Windows AI box)
 // ----------------------------------------------------------------------------
 // Takes ONE job at a time from the JICATE Control Tower (the central bug
 // reporter), runs the finished prompt it is given through the Max-seat Claude
-// CLI (headless `claude -p`, ₹0), and hands the answer back. The recipe and the
+// CLI (headless `claude -p`, Rs 0), and hands the answer back. The recipe and the
 // prompt are built by the server; this file never needs to change when a task
 // is added or reworded.
 //
-// WHY THIS IS NOT THE MyJKKN DRAIN: Director, 2026-10-19 — JICATE AI work runs
+// WHY THIS IS NOT THE MyJKKN DRAIN: Director, 2026-10-19 - JICATE AI work runs
 // on JICATE's own engine, not in MyJKKN's database or queue. This drain talks
 // only to two Control Tower routes.
 //
@@ -23,7 +23,7 @@
 //
 // LESSONS CARRIED OVER FROM THE MyJKKN MAX LANE
 // - The claim reply is an envelope; the server unwraps {job, spec} and sends a
-//   ready job. `job: null` means idle — never misread as an error.
+//   ready job. `job: null` means idle - never misread as an error.
 // - Person-waiting (interactive) jobs are ordered first by the server; this
 //   drain polls every IDLE_MS (default 3 s) so a reply lands well inside 60 s.
 // - Per-job credential file: NOT NEEDED here. Jobs run with no tools, so no
@@ -31,11 +31,11 @@
 //   give each job its own randomly named credential file, deleted in a finally.
 // - Timeouts kill with SIGKILL (a polite signal can leave claude.exe alive).
 // - Every run is reported to /complete, success or failure, so the usage
-//   ledger (ai_usage) has a row for every run and the Models page shows ₹0.
+//   ledger (ai_usage) has a row for every run and the Models page shows Rs 0.
 // - Always-on = Task Scheduler TimeTrigger every minute + IgnoreNew, never
 //   AtLogOn alone. Prove it by killing the process, not by reading the task.
 //
-// ENV (from ENV_FILE, default <runner>.env next to this script — exactly two lines):
+// ENV (from ENV_FILE, default <runner>.env next to this script - exactly two lines):
 //   JICATE_AI_URL=https://jkkn-centralized-bug-reporter.vercel.app
 //   JICATE_AI_RUNNER_TOKEN=<generated on this box by new-runner-token.ps1>
 // Optional process env (set by run-jicate-ai-drain.cmd): SANDBOX, IDLE_MS,
@@ -58,13 +58,13 @@ const ENV_FILE = process.env.ENV_FILE || resolve(HERE, `${process.env.RUNNER || 
 
 /**
  * Read one key from a dotenv file. Strips whitespace, surrounding quotes and a
- * trailing LITERAL "\n" — values pasted from other tools have arrived that way
+ * trailing LITERAL "\n" - values pasted from other tools have arrived that way
  * before and produce a token that silently never matches.
  */
 function fromEnvFile(key) {
   try {
     for (const raw of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-      const line = raw.replace(/\r$/, '').replace(/^﻿/, '');
+      const line = raw.replace(/\r$/, '').replace(/^\uFEFF/, '');
       if (line.startsWith(`${key}=`)) {
         return line
           .slice(key.length + 1)
@@ -185,7 +185,7 @@ async function drainOnce() {
   const { job } = await post('/api/internal/ai-engine/claim', {});
   if (!job) return { worked: false };
 
-  // Log ids only — never the payload or the answer.
+  // Log ids only - never the payload or the answer.
   log(`claimed ${job.job_id} ${job.job_type} attempt=${job.attempts} model=${job.model}`);
   const started = Date.now();
   try {
