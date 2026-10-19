@@ -49,7 +49,10 @@ complete) and nothing else.
    Each prints one line: `runner=jicate-1 sha256=<64 hex>`. Send ONLY those two lines to the Mac
    tab "jicate ai engine" with SendMessage. Never open, print, copy or send the `.env` files.
    Wait for the Mac tab to answer that both hashes are registered.
-6. **Register the tasks.** Unelevated `Register-ScheduledTask` may be denied; use:
+6. **Register the tasks.** Unelevated `Register-ScheduledTask` may be denied; use the commands
+   below. The task files carry no at-logon trigger on purpose: a LogonTrigger without a UserId
+   means "any user's logon", which only an administrator may register ("Access is denied" on
+   DESKTOP-1LB1FCS, 2026-10-19). The every-minute trigger already starts the worker after logon.
    ```
    schtasks.exe /create /tn "ai.jicate.engine-1" /xml C:\jicate-ai\ai.jicate.engine-1.xml /f
    schtasks.exe /create /tn "ai.jicate.engine-2" /xml C:\jicate-ai\ai.jicate.engine-2.xml /f
