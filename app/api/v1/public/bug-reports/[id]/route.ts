@@ -1,11 +1,11 @@
 import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import {
-  withApiKeyAuth,
   createApiErrorResponse,
   createApiSuccessResponse,
   corsPreflightResponse,
 } from '@/lib/middleware/api-key-auth';
+import { withServerKeyAuth } from '@/lib/middleware/server-key-auth';
 import {
   getBugPortalConfig,
   normalizeReporterEmail,
@@ -46,7 +46,7 @@ function serviceClient() {
  * - reporter_email: REQUIRED
  * - include_messages: include the thread (default true)
  */
-export const GET = withApiKeyAuth(
+export const GET = withServerKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
@@ -151,7 +151,7 @@ export const GET = withApiKeyAuth(
  * Request body:
  * - resolution_notes: the note to append
  */
-export const PATCH = withApiKeyAuth(
+export const PATCH = withServerKeyAuth(
   async (
     request: NextRequest,
     context: ApiRequestContext,
