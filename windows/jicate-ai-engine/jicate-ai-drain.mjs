@@ -105,6 +105,7 @@ const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const COOLDOWN_LIMIT_MS = 30 * 60_000;
 const COOLDOWN_AUTH_MS = 6 * 60 * 60_000;
 const cooling = new Map(); // label -> until (ms)
+let noEffortFlag = false;   // set once if this box's CLI rejects --effort
 
 const SELFTEST   = process.env.SELFTEST === '1';
 
@@ -188,6 +189,11 @@ function runClaude(job, label = 'default') {
     '--disable-slash-commands',  // no skills
     '--allowedTools', '',        // pure text: no files, no shell, no network
   ];
+  // Effort chosen per task on the AI Models page; skipped when the CLI on this
+  // box is too old to know the flag (see runWithAccounts).
+  if (job.effort && /^(low|medium|high|xhigh|max)$/.test(job.effort) && !noEffortFlag) {
+    args.push('--effort', job.effort);
+  }
   const timeout = Math.max(10_000, Number(job.timeout_ms) || 120_000);
   return new Promise((resolvePromise, reject) => {
     const child = execFile(
@@ -270,6 +276,16 @@ async function runWithAccounts(job, choice) {
       const out = await runClaude(job, label);
       return { ...out, label };
     } catch (e) {
+      if (!noEffortFlag && job.effort && /unknown option.*effort/i.test(String(e?.message))) {
+        noEffortFlag = true;
+        logErr('this Claude CLI does not know --effort; running without it from now on');
+        try {
+          const out = await runClaude(job, label);
+          return { ...out, label };
+        } catch (e2) {
+          e = e2;
+        }
+      }
       lastErr = e;
       if (e && typeof e === 'object') e.account = label;
       if (!(e?.rateLimited || e?.authFailed)) throw e;
@@ -285,7 +301,7 @@ async function drainOnce() {
   if (!job) return { worked: false };
 
   // Log ids only - never the payload or the answer.
-  log(`claimed ${job.job_id} ${job.job_type} attempt=${job.attempts} model=${job.model} account=${account?.use || 'default'}`);
+  log(`claimed ${job.job_id} ${job.job_type} attempt=${job.attempts} model=${job.model} effort=${job.effort || 'default'} account=${account?.use || 'default'}`);
   const started = Date.now();
   try {
     const { answer, usage, label } = await runWithAccounts(job, account);

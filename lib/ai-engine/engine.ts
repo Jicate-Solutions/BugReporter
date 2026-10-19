@@ -43,6 +43,8 @@ export interface ClaimedEngineJob {
   output_format: 'text' | 'json';
   timeout_ms: number;
   prompt: string;
+  /** low | medium | high | xhigh | max, or null for the CLI default. */
+  effort: string | null;
 }
 
 /** The engine's task list (enabled or not). Returns [] on error, never throws. */
@@ -160,7 +162,11 @@ export async function claimEngineJob(
   // that the hard way.
   if (!envelope?.job || !envelope.spec) return null;
   const { job, spec } = envelope;
+  // Effort is read fresh here rather than in the claim SQL, so the column can
+  // be added without replacing that function.
+  const { data: t } = await admin.from('ai_tasks').select('effort').eq('job_type', job.job_type).maybeSingle();
   return {
+    effort: (t as { effort: string | null } | null)?.effort ?? null,
     job_id: job.id,
     job_type: job.job_type,
     attempts: job.attempts,

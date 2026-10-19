@@ -22,11 +22,21 @@ import {
 } from '@/components/ui/select';
 
 const MODELS = ['sonnet', 'opus', 'haiku', 'fable'];
+const EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_LABEL: Record<string, string> = {
+  default: 'default',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'extra high',
+  max: 'max'
+};
 
 export interface EditableTask {
   job_type: string;
   enabled: boolean;
   model: string;
+  effort: string | null;
   interactive: boolean;
   max_inflight: number;
   timeout_seconds: number;
@@ -40,6 +50,7 @@ export function EngineTaskEditor({ task }: { task: EditableTask }) {
   const dirty =
     draft.enabled !== task.enabled ||
     draft.model !== task.model ||
+    draft.effort !== task.effort ||
     draft.interactive !== task.interactive ||
     draft.max_inflight !== task.max_inflight ||
     draft.timeout_seconds !== task.timeout_seconds;
@@ -54,6 +65,7 @@ export function EngineTaskEditor({ task }: { task: EditableTask }) {
           job_type: task.job_type,
           enabled: draft.enabled,
           model: draft.model,
+          effort: draft.effort,
           interactive: draft.interactive,
           max_inflight: draft.max_inflight,
           timeout_seconds: draft.timeout_seconds
@@ -98,6 +110,24 @@ export function EngineTaskEditor({ task }: { task: EditableTask }) {
             {models.map((m) => (
               <SelectItem key={m} value={m}>
                 {m}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1">
+        <Label className="text-xs">Effort</Label>
+        <Select
+          value={draft.effort ?? 'default'}
+          onValueChange={(v) => setDraft({ ...draft, effort: v === 'default' ? null : v })}
+        >
+          <SelectTrigger className="h-8 w-28">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EFFORTS.map((e) => (
+              <SelectItem key={e} value={e}>
+                {EFFORT_LABEL[e]}
               </SelectItem>
             ))}
           </SelectContent>
