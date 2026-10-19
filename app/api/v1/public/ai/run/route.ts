@@ -37,6 +37,10 @@ import {
   getEngineTask,
   readEngineResult
 } from '@/lib/ai-engine/engine';
+import {
+  enforceRateLimit,
+  AI_RUN_RATE_LIMIT
+} from '@/lib/middleware/rate-limit';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,6 +48,8 @@ const UUID_RE =
 interface AiSettings {
   enabled?: boolean;
   allowed_tasks?: string[];
+  /** Per-app override of the 30/min AI run limit (e.g. Plug the Leak: a whole class asks at once). */
+  runs_per_minute?: number;
 }
 
 function engineConfig(): { base: string; key: string } | null {
@@ -85,6 +91,20 @@ export async function OPTIONS() {
 // ─── POST — enqueue a task ──────────────────────────────────────────────────
 
 export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
+  // Per-app throttle, before any body parsing or enqueue. GET polling is
+  // deliberately NOT limited: an SDK polls every few seconds while a job runs.
+  // An app may carry its own limit in settings.ai.runs_per_minute (1-1000).
+  const ai = await readAiSettings(context.application.id);
+  const perMinute =
+    Number.isInteger(ai.runs_per_minute) && ai.runs_per_minute! >= 1 && ai.runs_per_minute! <= 1000
+      ? ai.runs_per_minute!
+      : AI_RUN_RATE_LIMIT.applicationPerWindow;
+  const limited = await enforceRateLimit(context, 'ai:run', {
+    ...AI_RUN_RATE_LIMIT,
+    applicationPerWindow: perMinute
+  });
+  if (limited) return limited;
+
   let body: {
     task?: unknown;
     payload?: unknown;
@@ -105,8 +125,7 @@ export const POST = withApiKeyAuth(async (request: NextRequest, context) => {
     );
   }
 
-  // Gate 1+2: per-app AI switch + per-app task menu (fresh read, not cached)
-  const ai = await readAiSettings(context.application.id);
+  // Gate 1+2: per-app AI switch + per-app task menu (fresh read above, not cached)
   if (ai.enabled !== true) {
     return createApiErrorResponse(
       'ai_not_enabled',

@@ -11,6 +11,10 @@ import {
   getBugPortalConfig,
   normalizeReporterEmail,
 } from '@/lib/services/bug-portal/config';
+import {
+  enforceRateLimit,
+  REPORTER_WRITE_RATE_LIMIT,
+} from '@/lib/middleware/rate-limit';
 import type {
   GetBugReportDetailsResponse,
   UpdateBugReportStatusRequest,
@@ -159,6 +163,13 @@ export const PATCH = pausedForSecurityFix(withApiKeyAuth(
     routeContext?: { params: Promise<Record<string, string>> }
   ) => {
     try {
+      const limited = await enforceRateLimit(
+        context,
+        'bug-reports:update',
+        REPORTER_WRITE_RATE_LIMIT
+      );
+      if (limited) return limited;
+
       const params = await routeContext!.params;
       const { id } = params;
       const body = (await request.json()) as UpdateBugReportStatusRequest & {

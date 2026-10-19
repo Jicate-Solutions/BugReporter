@@ -18,6 +18,9 @@ export const PUBLIC_CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, x-api-key',
+  // Retry-After is set on 429 responses. Without exposing it, a browser SDK on
+  // another origin cannot read it and has no way to know how long to back off.
+  'Access-Control-Expose-Headers': 'Retry-After',
   'Access-Control-Max-Age': '86400'
 } as const;
 
@@ -183,7 +186,8 @@ export function createApiErrorResponse<T = unknown>(
   code: string,
   message: string,
   status: number = 400,
-  details?: Record<string, unknown>
+  details?: Record<string, unknown>,
+  extraHeaders?: Record<string, string>
 ): NextResponse<ApiResponse<T>> {
   const response: ApiResponse<T> = {
     success: false,
@@ -197,7 +201,8 @@ export function createApiErrorResponse<T = unknown>(
   return NextResponse.json(response, {
     status,
     headers: {
-      ...PUBLIC_CORS_HEADERS
+      ...PUBLIC_CORS_HEADERS,
+      ...extraHeaders
     }
   });
 }

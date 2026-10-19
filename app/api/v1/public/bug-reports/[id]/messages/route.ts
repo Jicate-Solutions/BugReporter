@@ -11,6 +11,10 @@ import {
   getBugPortalConfig,
   normalizeReporterEmail,
 } from '@/lib/services/bug-portal/config';
+import {
+  enforceRateLimit,
+  REPORTER_WRITE_RATE_LIMIT,
+} from '@/lib/middleware/rate-limit';
 import { enqueueWebhook } from '@/lib/webhooks/events';
 import type {
   SendBugReportMessageRequest,
@@ -142,6 +146,13 @@ export const POST = pausedForSecurityFix(withApiKeyAuth(
     routeContext?: { params: Promise<Record<string, string>> }
   ) => {
     try {
+      const limited = await enforceRateLimit(
+        context,
+        'bug-reports:message',
+        REPORTER_WRITE_RATE_LIMIT
+      );
+      if (limited) return limited;
+
       const { id: bugReportId } = await routeContext!.params;
       const body = (await request.json()) as SendBugReportMessageRequest & {
         reporter_email?: string;
