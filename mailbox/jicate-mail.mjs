@@ -10,13 +10,16 @@
 //   node jicate-mail.mjs read                   print unread messages, then mark them read
 //   node jicate-mail.mjs watch                  never exits: prints one line per new message
 //                                               (run it under the Monitor tool in a Claude tab)
+//   node jicate-mail.mjs notify                 never exits: a desktop popup per new message, no
+//                                               Claude needed; mail stays unread for the tab to read
 //
 // Config: ~/.jicate-mail/config.json  { "url": "https://...", "token": "..." }
 // written by new-mail-token.mjs. Node 18+ only, no packages. Pure ASCII on purpose.
 
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
 
 const CONFIG = join(homedir(), '.jicate-mail', 'config.json');
 let cfg;
@@ -69,6 +72,37 @@ async function takeUnread() {
   return msgs;
 }
 
+// Desktop popup. Text goes through environment variables / argument arrays,
+// never a shell command line, so a message body cannot run anything.
+function popup(title, text) {
+  const env = { ...process.env, JM_TITLE: title, JM_TEXT: text };
+  const done = () => {};
+  if (platform() === 'win32') {
+    const ps = [
+      'Add-Type -AssemblyName System.Windows.Forms, System.Drawing',
+      '$n = New-Object System.Windows.Forms.NotifyIcon',
+      '$n.Icon = [System.Drawing.SystemIcons]::Information',
+      '$n.Visible = $true',
+      "$n.ShowBalloonTip(15000, $env:JM_TITLE, $env:JM_TEXT, 'Info')",
+      'Start-Sleep -Seconds 16',
+      '$n.Dispose()',
+    ].join('; ');
+    execFile('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', ps], { env, windowsHide: true }, done);
+  } else if (platform() === 'darwin') {
+    execFile('osascript', ['-e', 'display notification (system attribute "JM_TEXT") with title (system attribute "JM_TITLE")'], { env }, done);
+  } else {
+    execFile('notify-send', [title, text], { env }, done);
+  }
+}
+
+const SEEN = join(homedir(), '.jicate-mail', 'notified.json');
+function loadSeen() {
+  try { return new Set(JSON.parse(readFileSync(SEEN, 'utf8'))); } catch { return new Set(); }
+}
+function saveSeen(set) {
+  try { writeFileSync(SEEN, JSON.stringify([...set].slice(-500))); } catch { /* best effort */ }
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 try {
   if (cmd === 'whoami') {
@@ -99,8 +133,31 @@ try {
         await new Promise((r) => setTimeout(r, Math.min(10_000 * fails, 120_000)));
       }
     }
+  } else if (cmd === 'notify') {
+    const seen = loadSeen();
+    let fails = 0;
+    console.log('[jicate-mail] desktop popups on; checks every 30 s');
+    for (;;) {
+      try {
+        const d = await call('GET', '');
+        const fresh = (d.messages || []).filter((m) => !seen.has(m.id));
+        for (const m of fresh) {
+          const first = m.body.split(/\r?\n/)[0].slice(0, 120);
+          popup(`Mail for ${d.box} from ${m.from}`, first || '(empty)');
+          console.log(`popup from=${m.from} id=${m.id}`);
+          seen.add(m.id);
+        }
+        if (fresh.length) saveSeen(seen);
+        fails = 0;
+        await new Promise((r) => setTimeout(r, 30_000));
+      } catch (e) {
+        fails += 1;
+        if (fails === 1 || fails % 30 === 0) console.log(`[jicate-mail] cannot reach the mailbox: ${e.message}`);
+        await new Promise((r) => setTimeout(r, Math.min(30_000 * fails, 300_000)));
+      }
+    }
   } else {
-    console.log('usage: jicate-mail.mjs whoami | send <to> <text...> | read | watch');
+    console.log('usage: jicate-mail.mjs whoami | send <to> <text...> | read | watch | notify');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {

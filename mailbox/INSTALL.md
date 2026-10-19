@@ -31,12 +31,16 @@ Needs Node 18 or newer. No admin rights, no packages.
    under the Monitor tool in that tab (it never exits; each new message arrives
    as one notification). Without watch, the tab sees mail only when someone
    runs "read".
+6. Optional, no Claude needed: a desktop popup for each new message.
+     node jicate-mail.mjs notify
+   Leave it running in its own window (it never exits). Mail stays unread, so
+   the Claude tab still gets it with "read" or "watch".
 
 If refused at any step: report the exact error and stop.
 
 SHA-256 of every file
 ---------------------
-  jicate-mail.mjs      9574a3f2f95176690dda3bc388ccc1e4ccb79b0836b5bfb109f14f921f731534
+  jicate-mail.mjs      855ae4891ffd4882ee6c27175a9c9ec8abaa62abb3ecf34f4e589f62fb398b32
   new-mail-token.mjs   da7774b158c06b6a9dc776d06c26196698d0b250c45e4b6f1a420f0de3c94e4f
   jicate-ai-drain.mjs  a8d2a3dcc50f288a6b6d47971edcc20e02f090775359bf5e769caf75440df417
                        (Windows AI box only: the updated worker, see below)
