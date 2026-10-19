@@ -24,6 +24,8 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getAvailableAiTasks } from '@/lib/ai/tasks';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { listEngineTasks } from '@/lib/ai-engine/engine';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,6 +43,20 @@ export async function GET() {
 
   // Never throws: falls back to the offline snapshot if MyJKKN is unreachable,
   // so the tick-list always renders something usable.
-  const tasks = await getAvailableAiTasks();
+  const [myjkknTasks, engineTasks] = await Promise.all([
+    getAvailableAiTasks(),
+    listEngineTasks(createAdminClient())
+  ]);
+  // JICATE engine tasks (this platform's own ai_tasks) join the menu. On a key
+  // clash the JICATE engine wins, because the public door routes it there.
+  const engineKeys = new Set(engineTasks.map((t) => t.job_type));
+  const tasks = [
+    ...myjkknTasks.filter((t) => !engineKeys.has(t.key)),
+    ...engineTasks.map((t) => ({
+      key: t.job_type,
+      label: `${t.title}${t.enabled ? '' : ' (switched off)'}`,
+      description: `${t.description} · JICATE engine`
+    }))
+  ];
   return NextResponse.json({ tasks }, { headers: { 'Cache-Control': 'no-store' } });
 }
