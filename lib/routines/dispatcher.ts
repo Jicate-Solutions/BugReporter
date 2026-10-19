@@ -64,6 +64,8 @@ export async function runDispatcher(admin: SupabaseClient): Promise<DispatchSumm
   // ── PRUNE (first — always runs) ──────────────────────────────────────────────
   const { data: pruned } = await admin.rpc('fn_app_routine_prune', { p_days: 90 });
   summary.pruned = typeof pruned === 'number' ? pruned : 0;
+  // JICATE AI engine retention rides the same cron: jobs 90 days, ledger 365.
+  await admin.rpc('fn_ai_engine_prune', { p_job_days: 90, p_usage_days: 365 });
 
   // ── FIRE ──────────────────────────────────────────────────────────────────────
   const { data: due, error: dueErr } = await admin.rpc('fn_app_routine_claim_due', { p_limit: 15 });

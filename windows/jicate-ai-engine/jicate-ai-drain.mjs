@@ -11,12 +11,15 @@
 // on JICATE's own engine, not in MyJKKN's database or queue. This drain talks
 // only to two Control Tower routes.
 //
-// LEAST PRIVILEGE: this box holds NO database key. It holds one bearer token
-// that opens exactly two routes:
+// LEAST PRIVILEGE: this box holds NO database key. Each worker holds one random
+// token that setup generated ON THIS BOX; the Control Tower stores only its
+// SHA-256 hash, bound to this worker's name. The token never leaves the box.
+// It opens exactly two routes:
 //   POST {JICATE_AI_URL}/api/internal/ai-engine/claim     -> { job } | { job: null }
 //   POST {JICATE_AI_URL}/api/internal/ai-engine/complete  -> { status }
-// If the token leaks, the holder can take queued AI jobs and answer them. It
-// cannot read any table, any bug, or anything in MyJKKN.
+// If the token leaks, the holder can take queued AI jobs as this one worker and
+// answer them. It cannot read any table, any bug, or anything in MyJKKN.
+// Revoke it in the Control Tower (ai_runner_tokens.revoked_at) and it stops.
 //
 // LESSONS CARRIED OVER FROM THE MyJKKN MAX LANE
 // - The claim reply is an envelope; the server unwraps {job, spec} and sends a
@@ -32,13 +35,14 @@
 // - Always-on = Task Scheduler TimeTrigger every minute + IgnoreNew, never
 //   AtLogOn alone. Prove it by killing the process, not by reading the task.
 //
-// ENV (from ENV_FILE, default engine.env next to this script — exactly two lines):
+// ENV (from ENV_FILE, default <runner>.env next to this script — exactly two lines):
 //   JICATE_AI_URL=https://jkkn-centralized-bug-reporter.vercel.app
-//   JICATE_AI_RUNNER_TOKEN=<typed in by the Director; never written in a doc>
+//   JICATE_AI_RUNNER_TOKEN=<generated on this box by new-runner-token.ps1>
 // Optional process env (set by run-jicate-ai-drain.cmd): SANDBOX, IDLE_MS,
 //   RUNNER, CLAUDE_BIN, ONESHOT=1.
 //
 // USAGE
+//   SELFTEST=1 node jicate-ai-drain.mjs  # one local "pong" through claude, no server
 //   ONESHOT=1 node jicate-ai-drain.mjs   # take at most one job, then exit
 //   node jicate-ai-drain.mjs             # forever loop (Task Scheduler)
 // ============================================================================
@@ -50,7 +54,7 @@ import { dirname, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ENV_FILE = process.env.ENV_FILE || resolve(HERE, 'engine.env');
+const ENV_FILE = process.env.ENV_FILE || resolve(HERE, `${process.env.RUNNER || 'jicate-1'}.env`);
 
 /**
  * Read one key from a dotenv file. Strips whitespace, surrounding quotes and a
@@ -76,6 +80,7 @@ function fromEnvFile(key) {
 
 const BASE       = (process.env.JICATE_AI_URL || fromEnvFile('JICATE_AI_URL')).replace(/\/+$/, '');
 const TOKEN      = process.env.JICATE_AI_RUNNER_TOKEN || fromEnvFile('JICATE_AI_RUNNER_TOKEN');
+// For logs only: the server takes the runner name from the token, not from us.
 const RUNNER     = process.env.RUNNER || 'jicate-1';
 const ONESHOT    = process.env.ONESHOT === '1';
 const IDLE_MS    = Number(process.env.IDLE_MS || 3000);
@@ -85,7 +90,9 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const SANDBOX    = process.env.SANDBOX || join(tmpdir(), 'jicate-ai-sandbox');
 const RATE_LIMIT_PAUSE_MS = 60_000;
 
-if (!BASE || !TOKEN) {
+const SELFTEST   = process.env.SELFTEST === '1';
+
+if (!SELFTEST && (!BASE || !TOKEN)) {
   console.error(`[jicate-ai] missing JICATE_AI_URL or JICATE_AI_RUNNER_TOKEN (looked in ${ENV_FILE})`);
   process.exit(1);
 }
@@ -175,7 +182,7 @@ function runClaude(job) {
 }
 
 async function drainOnce() {
-  const { job } = await post('/api/internal/ai-engine/claim', { runner: RUNNER });
+  const { job } = await post('/api/internal/ai-engine/claim', {});
   if (!job) return { worked: false };
 
   // Log ids only — never the payload or the answer.
@@ -185,7 +192,7 @@ async function drainOnce() {
     const { answer, usage } = await runClaude(job);
     if (!answer) throw new RunError('claude returned empty output', { retry: true });
     const done = await post('/api/internal/ai-engine/complete', {
-      job_id: job.job_id, runner: RUNNER, answer,
+      job_id: job.job_id, answer,
       usage: { ...usage, duration_ms: Date.now() - started },
     });
     log(`DONE ${job.job_id} status=${done?.status} in ${Date.now() - started}ms`);
@@ -196,14 +203,25 @@ async function drainOnce() {
     // Report it so the ledger records the failed run and the job is retried
     // (the server gives up after 3 attempts).
     await post('/api/internal/ai-engine/complete', {
-      job_id: job.job_id, runner: RUNNER, error: msg, retry: e?.retry !== false,
+      job_id: job.job_id, error: msg, retry: e?.retry !== false,
       usage: { ...(e?.usage || {}), duration_ms: Date.now() - started },
     }).catch((e2) => logErr(`release failed: ${String(e2?.message || e2).slice(0, 200)}`));
     return { worked: true, rateLimited: Boolean(e?.rateLimited) };
   }
 }
 
+async function selftest() {
+  // Proves claude.exe path, the Max sign-in and the locked-down flags on this box.
+  const started = Date.now();
+  const { answer, usage } = await runClaude({
+    model: 'sonnet', timeout_ms: 120_000, prompt: 'Reply with exactly: pong',
+  });
+  log(`SELFTEST answer=${JSON.stringify(answer)} model=${usage.model_id} in ${Date.now() - started}ms`);
+  if (answer.toLowerCase().replace(/[^a-z]/g, '') !== 'pong') process.exit(2);
+}
+
 async function main() {
+  if (SELFTEST) return selftest();
   log(`start runner=${RUNNER} url=${BASE} idle=${IDLE_MS}ms oneshot=${ONESHOT} bin=${CLAUDE_BIN}`);
   for (;;) {
     let outcome = { worked: false };
@@ -211,8 +229,9 @@ async function main() {
       outcome = await drainOnce();
     } catch (e) {
       logErr(`claim error: ${String(e?.message || e).slice(0, 300)}`);
-      // 401/503 = wrong or missing token: slow down instead of hammering.
-      if (e?.status === 401 || e?.status === 503) await new Promise((r) => setTimeout(r, 60_000));
+      // 401 = token not registered yet / revoked; 404 = server not deployed yet;
+      // 503 = server misconfigured. Slow down instead of hammering.
+      if ([401, 404, 503].includes(e?.status)) await new Promise((r) => setTimeout(r, 60_000));
     }
     if (ONESHOT) break;
     if (outcome.rateLimited) {

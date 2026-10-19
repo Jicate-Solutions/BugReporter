@@ -1,8 +1,8 @@
 /**
  * POST /api/internal/ai-engine/claim — a JICATE AI engine runner takes ONE job.
  *
- * Auth: `Authorization: Bearer <JICATE_AI_RUNNER_TOKEN>` only (lib/ai-engine/runner-auth.ts).
- * Body (optional): { "runner": "jicate-1" } — recorded as claimed_by and as a heartbeat.
+ * Auth: `Authorization: Bearer <runner token>` only (lib/ai-engine/runner-auth.ts).
+ * The runner name (claimed_by, heartbeat) comes from the token's row, not the body.
  *
  * 200 { job: null }                                     nothing to do
  * 200 { job: { job_id, job_type, attempts, model,
@@ -13,19 +13,18 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { checkEngineRunnerAuth, cleanRunnerName } from '@/lib/ai-engine/runner-auth';
+import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { claimEngineJob } from '@/lib/ai-engine/engine';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const denied = checkEngineRunnerAuth(request);
-  if (denied) return denied;
-
-  const body = (await request.json().catch(() => null)) as { runner?: unknown } | null;
+  const admin = createAdminClient();
+  const auth = await checkEngineRunnerAuth(request, admin);
+  if (!auth.ok) return auth.response;
 
   try {
-    const job = await claimEngineJob(createAdminClient(), cleanRunnerName(body?.runner));
+    const job = await claimEngineJob(admin, auth.runner);
     return NextResponse.json({ job }, { status: 200, headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
     console.error('[ai-engine/claim] failed:', e instanceof Error ? e.message : e);

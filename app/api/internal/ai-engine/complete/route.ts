@@ -1,10 +1,10 @@
 /**
  * POST /api/internal/ai-engine/complete — a runner hands back one job.
  *
- * Auth: `Authorization: Bearer <JICATE_AI_RUNNER_TOKEN>` only.
+ * Auth: `Authorization: Bearer <runner token>` only; the runner name comes from the token.
  * Body:
- *   { job_id, runner, answer, usage? }                 success
- *   { job_id, runner, error, retry?, usage? }          failure (retry → back in the queue, max 3 tries)
+ *   { job_id, answer, usage? }                 success
+ *   { job_id, error, retry?, usage? }          failure (retry → back in the queue, max 3 tries)
  *   usage = { model_id?, input_tokens?, output_tokens?, duration_ms? }
  *
  * Every call writes one ledger row (ai_usage), success or failure, at ₹0.
@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { checkEngineRunnerAuth, cleanRunnerName } from '@/lib/ai-engine/runner-auth';
+import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { readSpecForJob, shapeResult } from '@/lib/ai-engine/engine';
 
 export const dynamic = 'force-dynamic';
@@ -42,8 +42,9 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const denied = checkEngineRunnerAuth(request);
-  if (denied) return denied;
+  const admin = createAdminClient();
+  const auth = await checkEngineRunnerAuth(request, admin);
+  if (!auth.ok) return auth.response;
 
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
@@ -53,8 +54,7 @@ export async function POST(request: NextRequest) {
     );
   }
   const body = parsed.data;
-  const runner = cleanRunnerName(body.runner);
-  const admin = createAdminClient();
+  const runner = auth.runner;
 
   let ok = false;
   let result: Record<string, unknown> | null = null;
