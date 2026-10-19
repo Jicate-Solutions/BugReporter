@@ -6,6 +6,8 @@
  *   2. Safety alerts: open alerts raised since the last email → one email, at
  *      most once an hour; alerts raised in between are counted in the next one.
  *      The email carries counts and a link only, never the learner's words.
+ *   3. Reminder: while any alert has stayed open for over a day, one reminder
+ *      each morning (from 9 am India time) until all are followed up.
  *
  * Recipient: AI_ALERT_EMAIL (comma-separated allowed). Unset → nothing is sent
  * and the run says so. State lives in ai_engine_watch. Called by the cron route.
@@ -16,6 +18,8 @@ import { Resend } from 'resend';
 
 const DOWN_AFTER_MS = 15 * 60_000;
 const SAFETY_EMAIL_GAP_MS = 60 * 60_000;
+const REMINDER_AFTER_MS = 24 * 60 * 60_000;
+const REMINDER_HOUR_IST = 9;
 
 export interface WatchSummary {
   recipients: number;
@@ -26,6 +30,14 @@ export interface WatchSummary {
 interface WatchState {
   workers_down?: boolean;
   last_safety_email_at?: string;
+  /** India date (YYYY-MM-DD) of the last open-alert reminder. */
+  last_reminder_date?: string;
+}
+
+/** India date and hour for a moment, without depending on the server's zone. */
+function indiaClock(ms: number): { date: string; hour: number } {
+  const ist = new Date(ms + 330 * 60_000);
+  return { date: ist.toISOString().slice(0, 10), hour: ist.getUTCHours() };
 }
 
 async function readState(admin: SupabaseClient): Promise<WatchState> {
@@ -152,6 +164,36 @@ export async function runEngineWatch(admin: SupabaseClient, origin: string): Pro
       if (ok) {
         next.last_safety_email_at = new Date(now).toISOString();
         sent.push(`safety:${alerts.length}`);
+      }
+    }
+  }
+
+  // 3. Daily reminder for alerts still open after a day.
+  const clock = indiaClock(now);
+  if (to.length && clock.hour >= REMINDER_HOUR_IST && state.last_reminder_date !== clock.date) {
+    const { data: stale } = await admin
+      .from('ai_safety_alerts')
+      .select('id, organization_id, created_at')
+      .is('followed_up_at', null)
+      .lt('created_at', new Date(now - REMINDER_AFTER_MS).toISOString())
+      .order('created_at', { ascending: true });
+    const old = (stale ?? []) as { id: string; organization_id: string | null; created_at: string }[];
+    if (old.length) {
+      const slug = await linkSlug(admin, old[0].organization_id);
+      const ok = await send(
+        to,
+        old.length === 1
+          ? 'Reminder: a safety alert is still open'
+          : `Reminder: ${old.length} safety alerts are still open`,
+        [
+          `${old.length === 1 ? 'One safety alert has' : `${old.length} safety alerts have`} been waiting for more than a day without being marked followed up.`,
+          'Read them in the Control Tower, pass each one to the right person, then mark it followed up. This reminder comes once a morning until they are all done.'
+        ],
+        slug ? `${origin}/org/${slug}/ai/safety` : origin
+      );
+      if (ok) {
+        next.last_reminder_date = clock.date;
+        sent.push(`reminder:${old.length}`);
       }
     }
   }
