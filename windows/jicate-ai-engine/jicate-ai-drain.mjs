@@ -161,11 +161,18 @@ function runClaude(job) {
             retry: true, rateLimited: RATE_LIMIT_RE.test(msg),
           }));
         }
-        const usage = {
-          model_id: Object.keys(d.modelUsage || {})[0] || job.model,
-          input_tokens: Number.isFinite(d.usage?.input_tokens) ? d.usage.input_tokens : null,
-          output_tokens: Number.isFinite(d.usage?.output_tokens) ? d.usage.output_tokens : null,
-        };
+        // modelUsage also lists the CLI's side-work model (Haiku), in no fixed
+        // order. Record the model asked for, else the one that wrote the most.
+        const mu = d.modelUsage || {};
+        const ids = Object.keys(mu);
+        const answered = ids.find((id) => id.includes(job.model))
+          || ids.sort((a, b) => (mu[b]?.outputTokens || 0) - (mu[a]?.outputTokens || 0))[0];
+        const num = (v) => (Number.isFinite(v) ? v : null);
+        const usage = answered
+          ? { model_id: answered, input_tokens: num(mu[answered].inputTokens),
+              output_tokens: num(mu[answered].outputTokens) }
+          : { model_id: job.model, input_tokens: num(d.usage?.input_tokens),
+              output_tokens: num(d.usage?.output_tokens) };
         if (d.is_error) {
           const msg = String(d.result ?? d.subtype ?? 'error').slice(0, 300);
           const limited = RATE_LIMIT_RE.test(msg);
