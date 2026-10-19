@@ -7,6 +7,25 @@ import type { ApiResponse, ApiRequestContext } from '@boobalan_jkkn/shared';
  * Validates API keys for public SDK endpoints
  */
 
+/**
+ * CORS headers shared by every public response and preflight handler.
+ *
+ * PATCH was missing from the method list even though the public bug-report
+ * route exposes it, so a cross-origin PATCH preflight was rejected by the
+ * browser before the handler ever ran.
+ */
+export const PUBLIC_CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, x-api-key',
+  'Access-Control-Max-Age': '86400'
+} as const;
+
+/** Standard preflight response for public routes. */
+export function corsPreflightResponse(): Response {
+  return new Response(null, { status: 200, headers: PUBLIC_CORS_HEADERS });
+}
+
 export interface ApiKeyAuthResult {
   success: boolean;
   context?: ApiRequestContext;
@@ -63,6 +82,7 @@ export async function validateApiKey(
         organization_id,
         api_key,
         created_at,
+        settings,
         organizations (
           id,
           name,
@@ -115,7 +135,8 @@ export async function validateApiKey(
         id: application.id,
         name: application.name,
         slug: application.slug,
-        organization_id: application.organization_id
+        organization_id: application.organization_id,
+        settings: application.settings ?? undefined
       },
       organization: {
         id: organization.id,
@@ -176,9 +197,7 @@ export function createApiErrorResponse<T = unknown>(
   return NextResponse.json(response, {
     status,
     headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, x-api-key'
+      ...PUBLIC_CORS_HEADERS
     }
   });
 }
@@ -198,9 +217,7 @@ export function createApiSuccessResponse<T = unknown>(
   return NextResponse.json(response, {
     status,
     headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, x-api-key'
+      ...PUBLIC_CORS_HEADERS
     }
   });
 }

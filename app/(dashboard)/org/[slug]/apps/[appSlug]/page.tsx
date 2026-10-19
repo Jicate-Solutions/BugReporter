@@ -16,6 +16,7 @@ import { Separator } from '@/components/ui/separator';
 import Link from 'next/link';
 import { ApplicationStats } from '../_components/application-stats';
 import { ApiKeyDisplay } from '../_components/api-key-display';
+import { BugPortalPrompt } from './_components/bug-portal-prompt';
 import {
   ExternalLink,
   Settings,
@@ -70,6 +71,12 @@ export default async function ApplicationPage({
     <div className='space-y-8'>
       {/* Stats Section */}
       <ApplicationStats stats={stats} />
+
+      <BugPortalPrompt
+        application={application}
+        orgSlug={organization.slug}
+        totalBugs={stats.total_bugs}
+      />
 
       <div className='grid gap-6 lg:grid-cols-2'>
         {/* Application Information */}

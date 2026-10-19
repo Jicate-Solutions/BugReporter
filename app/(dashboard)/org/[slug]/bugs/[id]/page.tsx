@@ -2,9 +2,10 @@
 
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBugReport } from '@/hooks/bug-reports/use-bug-reports';
@@ -17,14 +18,23 @@ import { SimilarBugsCard } from './_components/similar-bugs-card';
 import { AttachmentsSection } from './_components/attachments-section';
 import { useState } from 'react';
 import toast from 'react-hot-toast';
+import {
+  BUG_STATUS_LABELS,
+  SELECTABLE_BUG_STATUSES,
+  bugStatusLabel,
+  isBugStatus,
+  offerableBugStatuses
+} from '@boobalan_jkkn/shared';
+import { StatusChangeDialog } from './_components/status-change-dialog';
 
 export default function BugDetailPage() {
   const params = useParams();
   const id = params?.id as string;
 
   const { organization } = useOrganizationContext();
-  const { bug, loading, refetch } = useBugReport(id);
+  const { bug, loading, refreshing, refetch } = useBugReport(id);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -53,15 +63,22 @@ export default function BugDetailPage() {
   const reporterName = bug.reporter_name;
   const reporterEmail = bug.reporter_email;
 
-  const handleStatusChange = async (newStatus: string) => {
+  // Selecting a status opens the note dialog rather than writing immediately —
+  // the note is the reporter-facing half of a status change, and asking for it
+  // after the fact means it never gets written.
+  const handleStatusChange = async (note: string) => {
+    if (!pendingStatus) return;
     setIsUpdating(true);
     try {
-      await BugReportClientService.updateBugStatus(bug.id, newStatus);
-      toast.success(`Bug status updated to ${newStatus}`);
+      await BugReportClientService.updateBugStatus(bug.id, pendingStatus, note);
+      toast.success(`Bug status updated to ${bugStatusLabel(pendingStatus)}`);
+      setPendingStatus(null);
       refetch();
     } catch (error) {
       console.error('Error updating status:', error);
-      toast.error('Failed to update bug status');
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to update bug status'
+      );
     } finally {
       setIsUpdating(false);
     }
@@ -80,22 +97,34 @@ export default function BugDetailPage() {
           <p className="text-muted-foreground">Bug Report #{bug.id.substring(0, 8)}</p>
         </div>
         <div className="flex items-center gap-3">
+          {refreshing && (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          )}
           <div className="flex flex-col items-end gap-2">
             <label className="text-sm font-medium text-muted-foreground">Status</label>
             <Select
               value={bug.status}
-              onValueChange={handleStatusChange}
+              onValueChange={setPendingStatus}
               disabled={isUpdating}
             >
               <SelectTrigger className="w-[180px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="new">New</SelectItem>
-                <SelectItem value="seen">Seen</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
-                <SelectItem value="wont_fix">Won't Fix</SelectItem>
+                {/* Legacy statuses are drawn but not offered — only the bug
+                    already sitting in one still lists it, disabled, so the
+                    trigger has a value to render. See offerableBugStatuses. */}
+                {offerableBugStatuses(
+                  isBugStatus(bug.status) ? bug.status : 'new'
+                ).map((status) => (
+                  <SelectItem
+                    key={status}
+                    value={status}
+                    disabled={!SELECTABLE_BUG_STATUSES.includes(status)}
+                  >
+                    {BUG_STATUS_LABELS[status]}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -227,13 +256,39 @@ export default function BugDetailPage() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2 text-sm">
                       <span className="font-medium">
-                        {message.user?.[0]?.email || 'Unknown'}
+                        {message.author_kind === 'reporter'
+                          ? message.author_email || 'Reporter'
+                          : 'Your team'}
                       </span>
                       <span className="text-muted-foreground">
                         {new Date(message.created_at).toLocaleString()}
                       </span>
+                      {message.is_internal && (
+                        <Badge variant="outline">Internal</Badge>
+                      )}
                     </div>
-                    <p className="mt-1 text-sm">{message.message}</p>
+                    <p className="mt-1 text-sm whitespace-pre-wrap">
+                      {message.message_text}
+                    </p>
+                    {/* A screenshot the reporter marked up. This is usually the
+                        whole content of the note — the words above it are often
+                        just "remove this" — so it is shown, not linked. */}
+                    {message.attachment_url && (
+                      <a
+                        href={message.attachment_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 block max-w-md overflow-hidden rounded-md border transition-colors hover:border-foreground/30"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={message.attachment_url}
+                          alt="The screenshot, marked up by the reporter"
+                          loading="lazy"
+                          className="max-h-72 w-full bg-white object-contain object-top"
+                        />
+                      </a>
+                    )}
                   </div>
                 </div>
               ))}
@@ -241,6 +296,15 @@ export default function BugDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      <StatusChangeDialog
+        open={pendingStatus !== null}
+        fromStatus={bug.status}
+        toStatus={pendingStatus}
+        submitting={isUpdating}
+        onCancel={() => setPendingStatus(null)}
+        onConfirm={handleStatusChange}
+      />
     </div>
   );
 }

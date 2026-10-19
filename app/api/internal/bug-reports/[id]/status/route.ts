@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { EmailService } from '@/lib/services/email/email.service';
-
-const VALID_STATUSES = ['new', 'seen', 'in_progress', 'resolved', 'wont_fix'];
+import { applyStatusChange } from '@/lib/services/bug-status/service';
+import { BUG_STATUSES } from '@boobalan_jkkn/shared';
 
 /**
  * PATCH /api/internal/bug-reports/:id/status
- * Updates bug report status and fires an email notification to the reporter.
+ * Updates bug report status.
  *
  * Body: { status: string; resolution_notes?: string }
  * Auth: Supabase session cookie (user must be logged in)
+ *
+ * The actual write lives in applyStatusChange(), which is the only path allowed
+ * to touch bug_reports.status. This route is now just authentication plus a
+ * mapping from its result codes to HTTP. Notably, `resolution_notes` is finally
+ * persisted — it used to be accepted here and then forwarded only to the email,
+ * so the note vanished the moment the message was sent.
  */
 export async function PATCH(
   request: NextRequest,
@@ -18,7 +23,6 @@ export async function PATCH(
   try {
     const { id } = await params;
 
-    // Parse request body
     let body: { status?: string; resolution_notes?: string };
     try {
       body = await request.json();
@@ -27,77 +31,68 @@ export async function PATCH(
     }
 
     const { status, resolution_notes } = body;
-
-    // Validate status
-    if (!status || !VALID_STATUSES.includes(status)) {
+    if (!status) {
       return NextResponse.json(
-        { message: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}.` },
+        { message: `Status is required. One of: ${BUG_STATUSES.join(', ')}.` },
         { status: 400 }
       );
     }
 
-    // Create authenticated Supabase client
+    // Session gate. RLS still applies to everything this user can see; the
+    // status write itself runs with the service role inside applyStatusChange,
+    // which is why the membership check below is not optional.
     const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
 
-    // Verify user is authenticated
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) {
       return NextResponse.json({ message: 'Unauthorized.' }, { status: 401 });
     }
 
-    // Fetch the bug report with metadata, application, and organization info
-    const { data: bug, error: fetchError } = await supabase
+    // Confirm this user can actually see the bug under RLS before handing off to
+    // the service-role writer. Without this, any authenticated user on the
+    // platform could change the status of any bug in any organization.
+    const { data: visible, error: visibilityError } = await supabase
       .from('bug_reports')
-      .select('*, application:applications(id, name, slug), organization:organizations(id, name)')
+      .select('id')
       .eq('id', id)
-      .single();
+      .maybeSingle();
 
-    if (fetchError || !bug) {
-      return NextResponse.json({ message: 'Bug report not found.' }, { status: 404 });
-    }
-
-    // Build update payload — set resolved_at for terminal statuses
-    const updatePayload: { status: string; resolved_at: string | null } = {
-      status,
-      resolved_at: null,
-    };
-    if (status === 'resolved' || status === 'wont_fix') {
-      updatePayload.resolved_at = new Date().toISOString();
-    }
-
-    // Update the bug status in the database
-    const { data: updatedBug, error: updateError } = await supabase
-      .from('bug_reports')
-      .update(updatePayload)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (updateError) {
-      console.error('[InternalStatusAPI] DB update error:', updateError);
+    if (visibilityError) {
+      console.error('[InternalStatusAPI] Visibility check failed:', visibilityError);
       return NextResponse.json(
-        { message: updateError.message || 'Failed to update bug status.' },
+        { message: 'Failed to update bug status.' },
         { status: 500 }
       );
     }
-
-    // Fire-and-forget email notification if reporter email is present
-    const reporterEmail = bug?.metadata?.reporter_email;
-    if (reporterEmail && status) {
-      EmailService.sendStatusUpdateNotification({
-        reporterEmail,
-        reporterName: bug?.metadata?.reporter_name,
-        bugId: id,
-        bugTitle: bug?.metadata?.title || 'Bug Report',
-        newStatus: status,
-        appName: bug?.application?.name || 'App',
-        orgName: bug?.organization?.name || 'Organization',
-        developerNote: resolution_notes,
-        bugViewUrl: undefined,
-      }).catch(err => console.error('[InternalStatusAPI] Email failed:', err));
+    if (!visible) {
+      return NextResponse.json({ message: 'Bug report not found.' }, { status: 404 });
     }
 
-    return NextResponse.json({ success: true, bug: updatedBug });
+    const result = await applyStatusChange({
+      bugId: id,
+      toStatus: status,
+      note: resolution_notes,
+      actor: {
+        kind: 'dashboard_user',
+        userId: user.id,
+        label: user.email ?? null,
+      },
+    });
+
+    if (!result.ok) {
+      const httpStatus =
+        result.code === 'NOT_FOUND'
+          ? 404
+          : result.code === 'DB_ERROR'
+            ? 500
+            : 400;
+      return NextResponse.json({ message: result.message }, { status: httpStatus });
+    }
+
+    return NextResponse.json({ success: true, bug: result.bug });
   } catch (error) {
     console.error('[InternalStatusAPI] Unexpected error:', error);
     return NextResponse.json(

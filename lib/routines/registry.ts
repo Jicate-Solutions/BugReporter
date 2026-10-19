@@ -77,7 +77,7 @@ async function buildBugStats(
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const monthAgo = now - 30 * day;
-  const isClosed = (s: string | null) => s === 'wont_fix' || s === 'closed';
+  const isClosed = (s: string | null) => s === 'wont_fix';
   const isActive = (s: string | null) => s !== 'resolved' && !isClosed(s);
 
   const total = bugs.length;

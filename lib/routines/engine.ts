@@ -1,10 +1,18 @@
 /**
- * MyJKKN AI Door client for the routine dispatcher (server-side, ₹0 Max lane).
+ * AI engine client for the routine dispatcher (server-side, ₹0 Max lane).
  *
  * Unlike the internal AI route (session-authed), the dispatcher runs on a cron
  * with no session, so it calls the Door directly with MYJKKN_AI_KEY, tagged
  * app_id = reporter-<organizationId> (per-org isolation — unchanged).
+ *
+ * JICATE AI engine (2026-10-19): a task switched ON in this platform's own
+ * ai_tasks runs on the JICATE engine instead, under the same reporter-<orgId>
+ * tag. pollJob reads this platform's queue first and falls back to MyJKKN for
+ * any other job id, so runs already in flight on MyJKKN still complete.
  */
+
+import { createAdminClient } from '@/lib/supabase/admin';
+import { engineServes, enqueueForOrg, readEngineResult } from '@/lib/ai-engine/engine';
 
 export interface EngineConfig {
   base: string;
@@ -34,6 +42,15 @@ export async function enqueueJob(
   payload: Record<string, string>,
   dedupeKey?: string
 ): Promise<EnqueueResult> {
+  const admin = createAdminClient();
+  if (await engineServes(admin, task)) {
+    try {
+      const out = await enqueueForOrg(admin, organizationId, task, payload, dedupeKey);
+      return out.ok ? { jobId: out.job_id, error: null } : { jobId: null, error: out.error };
+    } catch (e) {
+      return { jobId: null, error: e instanceof Error ? e.message : 'JICATE engine unreachable' };
+    }
+  }
   try {
     const res = await fetch(`${cfg.base}/api/b2a/ai/run`, {
       method: 'POST',
@@ -72,6 +89,18 @@ export async function pollJob(
   jobId: string,
   timeoutMs: number = TIMEOUT_MS
 ): Promise<PollResult> {
+  try {
+    const local = await readEngineResult(createAdminClient(), jobId, appIdFor(organizationId));
+    if (local) {
+      const answer =
+        local.result && typeof local.result === 'object'
+          ? ((local.result as { answer?: unknown }).answer as string | undefined) ?? null
+          : null;
+      return { status: local.status as PollResult['status'], answer, error: local.error };
+    }
+  } catch (e) {
+    return { status: 'unknown', answer: null, error: e instanceof Error ? e.message : 'poll failed' };
+  }
   try {
     const res = await fetch(
       `${cfg.base}/api/b2a/ai/run?job_id=${encodeURIComponent(jobId)}&app_id=${encodeURIComponent(appIdFor(organizationId))}`,

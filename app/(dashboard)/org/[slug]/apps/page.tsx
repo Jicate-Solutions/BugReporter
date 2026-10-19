@@ -23,12 +23,17 @@ import {
 } from 'lucide-react';
 import { useApplications } from '@/hooks/applications/use-applications';
 import { useOrganizationContext } from '@/hooks/organizations/use-organization-context';
+import { useManageableApplications } from '@/hooks/application-members/use-application-members';
+import { ManageAccessDialog } from './_components/manage-access-dialog';
 
 export default function ApplicationsPage() {
   const { organization, loading: orgLoading } = useOrganizationContext();
   const { applications, loading, error } = useApplications(
     organization?.id || ''
   );
+  // Sharing an app requires super admin or app maintainer, both here and in
+  // RLS --- hide the action rather than let the insert fail at the database.
+  const { canManage } = useManageableApplications();
 
   if (orgLoading || loading) {
     return (
@@ -312,6 +317,12 @@ export default function ApplicationsPage() {
                         View Details
                       </Link>
                     </Button>
+                    {canManage(app.id) && (
+                      <ManageAccessDialog
+                        applicationId={app.id}
+                        applicationName={app.name}
+                      />
+                    )}
                     <Button variant='outline' size='sm' asChild>
                       <Link
                         href={`/org/${organization.slug}/apps/${app.slug}/edit`}

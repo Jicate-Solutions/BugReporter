@@ -36,7 +36,7 @@ export default function DocumentationPage() {
                 <h1 className='text-xl font-bold text-gray-900'>
                   Integration Documentation
                 </h1>
-                <p className='text-xs text-gray-600'>JKKN Bug Reporter</p>
+                <p className='text-xs text-gray-600'>JICATE Control Tower</p>
               </div>
             </Link>
             <HomepageNav />
@@ -126,11 +126,12 @@ export default function DocumentationPage() {
 
             {/* Detailed Steps */}
             <Tabs defaultValue="installation" className='space-y-8'>
-              <TabsList className='grid w-full grid-cols-5 lg:w-auto'>
+              <TabsList className='grid w-full grid-cols-3 lg:w-auto lg:grid-cols-6'>
                 <TabsTrigger value="installation">Installation</TabsTrigger>
                 <TabsTrigger value="configuration">Configuration</TabsTrigger>
                 <TabsTrigger value="nextjs">Next.js Setup</TabsTrigger>
                 <TabsTrigger value="features">Features</TabsTrigger>
+                <TabsTrigger value="portal">Status Portal</TabsTrigger>
                 <TabsTrigger value="advanced">Advanced</TabsTrigger>
               </TabsList>
 
@@ -295,7 +296,7 @@ npm install file:path/to/packages/bug-reporter-sdk`}</pre>
                           Step 2: Get Your API Key
                         </CardTitle>
                         <CardDescription className='mt-1.5'>
-                          Generate API credentials from the JKKN Bug Reporter platform
+                          Generate API credentials from the JICATE Control Tower
                         </CardDescription>
                       </div>
                       <DocActions tabId="configuration" />
@@ -933,6 +934,76 @@ export default function LeaderboardPage() {
                 </Card>
               </TabsContent>
 
+              {/* Bug Status Portal Tab */}
+              <TabsContent value="portal" className='space-y-6'>
+                <Card>
+                  <CardHeader>
+                    <div className='flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4'>
+                      <div>
+                        <CardTitle>Bug Status Portal</CardTitle>
+                        <CardDescription className='mt-1.5'>
+                          Let reporters track their own bugs and reply to your
+                          team. Off by default — enable it per application.
+                        </CardDescription>
+                      </div>
+                      <DocActions tabId="portal" />
+                    </div>
+                  </CardHeader>
+                  <CardContent className='space-y-6'>
+                    <ol className='space-y-4'>
+                      <li className='flex gap-3'>
+                        <span className='flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium'>
+                          1
+                        </span>
+                        <div>
+                          <p className='font-medium'>Turn it on</p>
+                          <p className='text-sm text-muted-foreground'>
+                            Your application &rarr; Settings &rarr; Bug Status
+                            Portal &rarr; flip the switch.
+                          </p>
+                        </div>
+                      </li>
+                      <li className='flex gap-3'>
+                        <span className='flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium'>
+                          2
+                        </span>
+                        <div>
+                          <p className='font-medium'>Copy the link</p>
+                          <p className='text-sm text-muted-foreground'>
+                            It arrives with your application&apos;s slug already
+                            filled in.
+                          </p>
+                        </div>
+                      </li>
+                      <li className='flex gap-3'>
+                        <span className='flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium'>
+                          3
+                        </span>
+                        <div>
+                          <p className='font-medium'>Paste it into your app</p>
+                          <p className='text-sm text-muted-foreground'>
+                            Append the signed-in user&apos;s email. No SDK
+                            upgrade and no API key required.
+                          </p>
+                        </div>
+                      </li>
+                    </ol>
+
+                    <pre className='rounded-md bg-muted p-4 text-xs overflow-x-auto'>
+{`<a href={\`https://<your-bugreporter-host>/portal/my-app?u=\${encodeURIComponent(user.email)}\`}>
+  My bug reports
+</a>`}
+                    </pre>
+
+                    <p className='text-sm text-muted-foreground'>
+                      Use the download button above for the full reference —
+                      per-reporter scoping, the read and notes endpoints, signed
+                      links, and webhook signature verification.
+                    </p>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
               {/* Advanced Tab */}
               <TabsContent value="advanced" className='space-y-6'>
                 <Card>
@@ -1233,7 +1304,7 @@ function MyComponent() {
       <footer className='bg-gray-900 text-white py-8'>
         <div className='container mx-auto px-4 text-center'>
           <p className='text-sm text-gray-400'>
-            &copy; 2025 JKKN Bug Reporter. All rights reserved.
+            &copy; 2026 JICATE Solutions. All rights reserved.
           </p>
         </div>
       </footer>
