@@ -41,9 +41,10 @@
 // Optional process env (set by run-jicate-ai-drain.cmd): SANDBOX, IDLE_MS,
 //   RUNNER, CLAUDE_BIN, ONESHOT=1, ACCOUNTS_DIR.
 //
-// Claude accounts: the box's own sign-in is "default". Each extra account is
-// a file <ACCOUNTS_DIR>\<label>.token holding that account's long-lived key
-// (made with `claude setup-token`, saved by save-claude-account.mjs). The
+// Claude accounts: the box's own sign-in is "default". An extra account's key
+// is either kept in the Control Tower (added on the AI Routines page; fetched
+// here on demand and held in memory only) or in a file
+// <ACCOUNTS_DIR>\<label>.token (saved by save-claude-account.mjs). The
 // worker tells the Control Tower which labels it has (names only, never keys);
 // the Control Tower says which one to use and whether to fall back to the
 // others when an account hits its limit or its key stops working.
@@ -106,6 +107,8 @@ const COOLDOWN_LIMIT_MS = 30 * 60_000;
 const COOLDOWN_AUTH_MS = 6 * 60 * 60_000;
 const cooling = new Map(); // label -> until (ms)
 let noEffortFlag = false;   // set once if this box's CLI rejects --effort
+let centralLabels = [];     // accounts whose key the Control Tower holds
+const keyCache = new Map(); // label -> { key, at } (memory only, 10 min)
 
 const SELFTEST   = process.env.SELFTEST === '1';
 
@@ -162,14 +165,36 @@ function listAccounts() {
   }
 }
 
+/** One account's key: a local file first, else the Control Tower (cached 10 min). */
+async function keyFor(label) {
+  try {
+    const k = readFileSync(join(ACCOUNTS_DIR, `${label}.token`), 'utf8').trim();
+    if (k) return k;
+  } catch { /* no local file */ }
+  const hit = keyCache.get(label);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.key;
+  if (!centralLabels.includes(label)) return '';
+  try {
+    const r = await fetch(`${BASE}/api/internal/ai-engine/account-key?label=${encodeURIComponent(label)}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+    const d = r.ok ? await r.json() : null;
+    if (d?.key) {
+      keyCache.set(label, { key: d.key, at: Date.now() });
+      return d.key;
+    }
+  } catch { /* treated as no key */ }
+  return '';
+}
+
 /** Environment for one account: its key, or the box's own sign-in for "default". */
-function envFor(label) {
+async function envFor(label) {
   const env = { ...process.env };
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
   if (label === 'default') return env;
-  let key = '';
-  try { key = readFileSync(join(ACCOUNTS_DIR, `${label}.token`), 'utf8').trim(); } catch { /* missing */ }
-  if (!key) throw new RunError(`account ${label}: no key file`, { retry: true, authFailed: true });
+  const key = await keyFor(label);
+  if (!key) throw new RunError(`account ${label}: no key on this box or in the Control Tower`, { retry: true, authFailed: true });
   env.CLAUDE_CODE_OAUTH_TOKEN = key;
   return env;
 }
@@ -178,9 +203,9 @@ function envFor(label) {
  * One headless Claude call on the Max seat. No tools, no MCP, no hooks, no
  * skills, no transcript on disk. Returns { answer, usage }.
  */
-function runClaude(job, label = 'default') {
+async function runClaude(job, label = 'default') {
   mkdirSync(SANDBOX, { recursive: true });
-  const env = envFor(label);
+  const env = await envFor(label);
   const args = [
     '-p', '--model', job.model, '--output-format', 'stream-json', '--verbose',
     '--restricted',              // ignore project/local settings and hooks
@@ -265,7 +290,7 @@ function runClaude(job, label = 'default') {
  */
 async function runWithAccounts(job, choice) {
   const chosen = choice?.use && LABEL_RE.test(choice.use) ? choice.use : 'default';
-  const all = [chosen, ...listAccounts(), 'default'].filter((l, i, a) => a.indexOf(l) === i);
+  const all = [chosen, ...listAccounts(), ...centralLabels, 'default'].filter((l, i, a) => a.indexOf(l) === i);
   const order = choice?.fallback === false ? [chosen] : all;
   const now = Date.now();
   const ready = order.filter((l) => !(cooling.get(l) > now));
@@ -290,6 +315,7 @@ async function runWithAccounts(job, choice) {
       if (e && typeof e === 'object') e.account = label;
       if (!(e?.rateLimited || e?.authFailed)) throw e;
       cooling.set(label, Date.now() + (e.authFailed ? COOLDOWN_AUTH_MS : COOLDOWN_LIMIT_MS));
+      if (e.authFailed) keyCache.delete(label); // fetch afresh next time: the key may have been replaced
       logErr(`account ${label} ${e.authFailed ? 'key failed' : 'hit its limit'}; ${tryList.length > 1 ? 'trying the next account' : 'no other account to try'}`);
     }
   }
@@ -298,6 +324,10 @@ async function runWithAccounts(job, choice) {
 
 async function drainOnce() {
   const { job, account } = await post('/api/internal/ai-engine/claim', { accounts: listAccounts(), host: hostname() });
+  if (Array.isArray(account?.central)) {
+    centralLabels = account.central.filter((l) => LABEL_RE.test(l));
+    for (const l of keyCache.keys()) if (!centralLabels.includes(l)) keyCache.delete(l); // key removed in the Tower
+  }
   if (!job) return { worked: false };
 
   // Log ids only - never the payload or the answer.

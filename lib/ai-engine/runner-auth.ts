@@ -9,9 +9,12 @@
  *
  *   Authorization: Bearer <runner token>
  *
- * The token opens /api/internal/ai-engine/claim and /complete and nothing more.
- * It is not a database key: if it leaks, the holder can take queued AI jobs as
- * that one runner and answer them. Revoke by setting revoked_at.
+ * The token opens /api/internal/ai-engine/claim, /complete and /account-key.
+ * It is not a database key. If it leaks, the holder can take queued AI jobs as
+ * that one runner and answer them, AND — while holding a running job — fetch
+ * the keys of Claude accounts stored in the Control Tower (every fetch is
+ * logged in ai_account_key_fetches and shown on AI Routines). Revoke by setting
+ * revoked_at.
  *
  * - an X-API-Key header → 401. Application keys never drive the engine.
  * - missing or short token → 401. Unknown or revoked hash → 401.

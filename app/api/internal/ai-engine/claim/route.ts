@@ -88,29 +88,38 @@ export async function POST(request: NextRequest) {
   try {
     const job = await claimEngineJob(admin, auth.runner);
     // After the claim, which has upserted this runner's heartbeat row.
-    if (body.accounts || body.host) {
-      await admin
+    const [{ data: r }, { data: sec }] = await Promise.all([
+      admin
         .from('ai_runners')
-        .update({
-          ...(body.accounts ? { accounts_available: body.accounts } : {}),
-          ...(body.host ? { host: body.host } : {})
-        })
-        .eq('name', auth.runner);
-    }
-    const { data: r } = await admin
-      .from('ai_runners')
-      .select('account, account_fallback, accounts_available')
-      .eq('name', auth.runner)
-      .maybeSingle();
+        .select('account, account_fallback, accounts_available, host')
+        .eq('name', auth.runner)
+        .maybeSingle(),
+      // Accounts whose key is kept in the Control Tower are available to every
+      // worker; the worker fetches the key itself (/api/internal/ai-engine/account-key).
+      admin.from('ai_account_secrets').select('label')
+    ]);
     const row = r as {
       account: string | null;
       account_fallback: boolean;
       accounts_available: string[] | null;
+      host: string | null;
     } | null;
+    const central = ((sec ?? []) as { label: string }[]).map((x) => x.label);
+    const local = body.accounts ?? (row?.accounts_available ?? []).filter((l) => !central.includes(l));
+    const held = [...new Set([...local, ...central])].sort();
+    const before = [...(row?.accounts_available ?? [])].sort();
+    // Write only when something changed: this runs on every poll.
+    if (held.join() !== before.join() || (body.host && body.host !== row?.host)) {
+      await admin
+        .from('ai_runners')
+        .update({ accounts_available: held, ...(body.host ? { host: body.host } : {}) })
+        .eq('name', auth.runner);
+    }
     let use = row?.account ?? null;
+
     // Make sure every label this worker holds (and "default") has a row, so it
     // can be given a priority on the AI Routines page before its first reading.
-    if (body.accounts) {
+    if (body.accounts && held.join() !== before.join()) {
       await admin
         .from('ai_accounts')
         .upsert(
@@ -119,11 +128,11 @@ export async function POST(request: NextRequest) {
         );
     }
     if (use === 'auto') {
-      const labels = ['default', ...(row?.accounts_available ?? []).filter((l) => l !== 'default')];
+      const labels = ['default', ...held.filter((l) => l !== 'default')];
       const best = await pickAuto(admin, labels);
       use = best === 'default' ? null : best;
     }
-    const account = { use, fallback: row?.account_fallback ?? true };
+    const account = { use, fallback: row?.account_fallback ?? true, central };
     return NextResponse.json({ job, account }, { status: 200, headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
     console.error('[ai-engine/claim] failed:', e instanceof Error ? e.message : e);
