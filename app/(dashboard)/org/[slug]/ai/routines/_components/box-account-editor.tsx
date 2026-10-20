@@ -23,7 +23,6 @@ const MIXED = '__mixed__';
 
 export function BoxAccountEditor({
   host,
-  workers,
   current,
   labels
 }: {
@@ -43,19 +42,17 @@ export function BoxAccountEditor({
   async function save() {
     setSaving(true);
     try {
-      for (const name of workers) {
-        const res = await fetch('/api/internal/ai-engine/runners', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, account: choice === DEFAULT ? null : choice })
-        });
-        if (!res.ok) {
-          const json = await res.json().catch(() => null);
-          toast.error(`${name}: ${json?.error?.message ?? 'could not save'}`);
-          return;
-        }
+      const res = await fetch('/api/internal/ai-engine/boxes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host, account: choice })
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        toast.error(json?.error?.message ?? 'Could not save the change.');
+        return;
       }
-      toast.success(`${host} will use ${choice} from its next job.`);
+      toast.success(`${host} switches to ${choice} within a minute (workers from their next job).`);
       router.refresh();
     } finally {
       setSaving(false);

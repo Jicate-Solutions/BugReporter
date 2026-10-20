@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { claimEngineJob } from '@/lib/ai-engine/engine';
+import { pickAuto, resolveBoxAccount } from '@/lib/ai-engine/accounts';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,46 +38,6 @@ const bodySchema = z
     host: z.string().max(100).optional()
   })
   .catch({});
-
-type AccountReading = {
-  label: string;
-  priority: number | null;
-  five_hour_util: number | null;
-  seven_day_util: number | null;
-  five_hour_resets_at: string | null;
-  seven_day_resets_at: string | null;
-};
-
-const FULL = 0.95;
-
-/** Priority order, skipping accounts out of allowance until they renew. */
-async function pickAuto(admin: ReturnType<typeof createAdminClient>, labels: string[]) {
-  const { data } = await admin
-    .from('ai_accounts')
-    .select('label, priority, five_hour_util, seven_day_util, five_hour_resets_at, seven_day_resets_at')
-    .in('label', labels);
-  const byLabel = new Map(((data ?? []) as AccountReading[]).map((r) => [r.label, r]));
-  const now = Date.now();
-  // A reading taken before its window renewed no longer counts.
-  const used = (util: number | null, resets: string | null) =>
-    util == null || (resets && new Date(resets).getTime() <= now) ? 0 : Number(util);
-  const info = labels.map((l) => {
-    const r = byLabel.get(l);
-    const five = used(r?.five_hour_util ?? null, r?.five_hour_resets_at ?? null);
-    const week = used(r?.seven_day_util ?? null, r?.seven_day_resets_at ?? null);
-    const renews = Math.min(
-      ...[r?.five_hour_resets_at, r?.seven_day_resets_at]
-        .filter((t): t is string => Boolean(t))
-        .map((t) => new Date(t).getTime())
-        .filter((t) => t > now),
-      Number.MAX_SAFE_INTEGER
-    );
-    return { l, prio: r?.priority ?? 100, five, week, ok: five < FULL && week < FULL, renews };
-  });
-  const usable = info.filter((a) => a.ok).sort((a, b) => a.prio - b.prio || a.week - b.week || a.five - b.five);
-  if (usable.length) return usable[0].l;
-  return info.sort((a, b) => a.renews - b.renews)[0].l;
-}
 
 export async function POST(request: NextRequest) {
   const admin = createAdminClient();
@@ -127,7 +88,12 @@ export async function POST(request: NextRequest) {
           { onConflict: 'label', ignoreDuplicates: true }
         );
     }
-    if (use === 'auto') {
+    // A box-wide choice in the Control Tower wins over the worker's own setting,
+    // so every worker on a box and the box agent use one account.
+    const boxChoice = await resolveBoxAccount(admin, body.host ?? row?.host);
+    if (boxChoice !== undefined) {
+      use = boxChoice;
+    } else if (use === 'auto') {
       const labels = ['default', ...held.filter((l) => l !== 'default')];
       const best = await pickAuto(admin, labels);
       use = best === 'default' ? null : best;

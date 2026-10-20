@@ -165,7 +165,7 @@ export default async function AiRoutinesPage({
     data: { user }
   } = await session.auth.getUser();
   const admin = createAdminClient();
-  const [runners, accounts, live, recent, scheduledRes, canEdit, secretsRes, fetchesRes] = await Promise.all([
+  const [runners, accounts, live, recent, scheduledRes, canEdit, secretsRes, fetchesRes, boxesRes] = await Promise.all([
     readRunners(admin),
     readAccounts(admin),
     readLiveQueue(admin, org.id),
@@ -181,8 +181,19 @@ export default async function AiRoutinesPage({
       .from('ai_account_key_fetches')
       .select('id, runner, label, host, granted, reason, fetched_at')
       .order('fetched_at', { ascending: false })
-      .limit(15)
+      .limit(15),
+    admin.from('ai_boxes').select('host, account, chosen_label, applied_label, applied_at, agent_seen_at')
   ]);
+  const boxRows = new Map(
+    ((boxesRes.data ?? []) as {
+      host: string;
+      account: string | null;
+      chosen_label: string | null;
+      applied_label: string | null;
+      applied_at: string | null;
+      agent_seen_at: string | null;
+    }[]).map((b) => [b.host.toLowerCase(), b])
+  );
   const keyFetches = (fetchesRes.data ?? []) as {
     id: number;
     runner: string;
@@ -297,15 +308,35 @@ export default async function AiRoutinesPage({
                 ))
               )}
             </div>
-            {boxesOf(runners).map((b) => (
-              <div key={b.host} className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
-                <div className="text-sm">
-                  <span className="font-medium">{b.host}</span>
-                  <span className="text-muted-foreground"> · {b.workers.join(', ')}</span>
+            {boxesOf(runners).map((b) => {
+              const row = boxRows.get(b.host.toLowerCase());
+              const agentAlive = row?.agent_seen_at && now - new Date(row.agent_seen_at).getTime() < 180_000;
+              return (
+                <div key={b.host} className="space-y-1 border-t pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm">
+                      <span className="font-medium">{b.host}</span>
+                      <span className="text-muted-foreground"> · {b.workers.join(', ')}</span>
+                    </div>
+                    <BoxAccountEditor
+                      host={b.host}
+                      workers={b.workers}
+                      current={row?.account ?? b.current}
+                      labels={b.labels}
+                    />
+                  </div>
+                  <p className="text-muted-foreground text-xs">
+                    {!row?.agent_seen_at
+                      ? 'Whole-box switching: account agent not installed on this box yet (only the JICATE workers follow the choice).'
+                      : `Whole box ${agentAlive ? 'is on' : 'was last on'} ${row.applied_label ?? 'its own sign-in'}` +
+                        (row.account === 'auto' ? ` · auto picks ${row.chosen_label ?? 'its own sign-in'}` : '') +
+                        ` · agent seen ${ago(row.agent_seen_at, now)}` +
+                        (row.applied_at ? ` · switched ${ago(row.applied_at, now)}` : '') +
+                        '. Claude tabs pick up a switch when reopened.'}
+                  </p>
                 </div>
-                <BoxAccountEditor host={b.host} workers={b.workers} current={b.current} labels={b.labels} />
-              </div>
-            ))}
+              );
+            })}
           </CardContent>
         </Card>
       )}
