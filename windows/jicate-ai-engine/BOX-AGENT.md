@@ -13,8 +13,10 @@ What it changes on a switch:
   this box uses it: MyJKKN's workers, JICATE workers, new Claude tabs.
 - restarts each task in box-agent.json "restartTasks" (end, then run).
 - Claude tabs already open keep their account until closed and reopened.
-Risk the Director accepted: the key sits in HKCU\Environment, readable by
-anything running as this Windows user (same as the worker .env files).
+Risk the Director accepted, in the Mac tab on 2026-10-20 ("Key on box: switch
+everything"): the key sits in HKCU\Environment, readable by anything running
+as this Windows user. A box tab that was told "label only" must hear this
+change from the Director in ITS OWN tab before installing.
 
 Files into C:\jicate-ai\ (check every SHA-256 the Mac tab sends):
   jicate-box-agent.mjs, run-jicate-box-agent.cmd, ai.jicate.box-agent.xml
@@ -23,16 +25,24 @@ Files into C:\jicate-ai\ (check every SHA-256 the Mac tab sends):
 0. PROBE FIRST (skip if already done on this box): a task started by Task
    Scheduler must see a fresh setx value. If the probe printed the literal
    %VAR% or nothing, STOP and report: this design cannot work here.
+   (win-ai, 2026-10-20: PASSED. A /run task saw the fresh value; an already
+   running process and its children did not, so workers MUST be stopped.)
 1. In run-jicate-box-agent.cmd replace __NODE_EXE__ with the full path of node.exe.
 2. Agent key (prints only a fingerprint; the secret stays in box-agent.env):
      powershell -NoProfile -ExecutionPolicy Bypass -File .\new-runner-token.ps1 -Runner box-agent
    Send the Mac (mailbox) the printed line AND this box's hostname
    (node -e "console.log(require('os').hostname())"). Wait for "registered".
 3. Restart list: write C:\jicate-ai\box-agent.json, e.g.
-     { "restartTasks": ["ai.jicate.engine-1", "ai.jicate.engine-2", "<each MyJKKN worker task name>"] }
-   List EVERY task whose Claude should follow the box account. Report which
-   user each MyJKKN task runs as: a task running as SYSTEM or another user
-   will NOT see this user's environment variable.
+     { "restartTasks": [
+         { "task": "ai.jicate.engine-1", "match": "jicate-ai-drain.mjs" },
+         { "task": "ai.jicate.engine-2", "match": "jicate-ai-drain.mjs" },
+         { "task": "<MyJKKN worker task>", "match": "<text unique to its command line>" } ] }
+   List EVERY task whose Claude should follow the box account. "match" makes
+   the agent also stop the long-running process that task started (ending a
+   task does not stop its node child, and a child keeps the OLD account). The
+   match text must not match the agent itself. Report which user each MyJKKN
+   task runs as: a task running as SYSTEM or another user will NOT see this
+   user's environment variable.
 4. Register and start (no admin: no any-user logon trigger):
      schtasks.exe /create /tn "ai.jicate.box-agent" /xml C:\jicate-ai\ai.jicate.box-agent.xml /f
      schtasks.exe /run /tn "ai.jicate.box-agent"

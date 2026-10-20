@@ -13,7 +13,13 @@
 //
 // Files next to this script (made at install, readable by this user only):
 //   box-agent.env   JICATE_AI_URL=... and JICATE_AI_RUNNER_TOKEN=<agent token>
-//   box-agent.json  { "restartTasks": ["ai.jicate.engine-1", ...] }
+//   box-agent.json  { "restartTasks": [ "ai.jicate.engine-1",
+//                     { "task": "ai.jicate.engine-2", "match": "jicate-ai-drain.mjs" }, ... ] }
+//                   "match" (optional): also stop every process whose command
+//                   line contains it. Needed for long-running workers: ending
+//                   the task does not stop the node it started, and a child of
+//                   an old process keeps the OLD environment (probe, win-ai
+//                   2026-10-20).
 //   box-agent.state the label last applied (no secret)
 // The key itself is never written to a file or a log by this script; it lives
 // in HKCU\Environment, readable by this Windows user (accepted by the Director).
@@ -48,7 +54,10 @@ if (!BASE || TOKEN.length < 32) {
 }
 let config = { restartTasks: [] };
 try { config = JSON.parse(readFileSync(resolve(HERE, 'box-agent.json'), 'utf8')); } catch { /* none */ }
-const RESTART = (config.restartTasks || []).filter((t) => /^[\w .\\-]{1,200}$/.test(t));
+const SAFE = /^[\w .\\-]{1,200}$/;
+const RESTART = (config.restartTasks || [])
+  .map((t) => (typeof t === 'string' ? { task: t } : t))
+  .filter((t) => t && SAFE.test(t.task || '') && (t.match == null || (SAFE.test(t.match) && !/box-agent/i.test(t.match))));
 
 const ts = () => new Date().toISOString();
 const log = (...a) => console.log(ts(), '[box-agent]', ...a);
@@ -86,15 +95,29 @@ function setBoxAccount(key) {
   }
 }
 
+/** Stop every process (not this agent) whose command line contains `match`. */
+function stopMatching(match) {
+  const ps = [
+    "$m = $env:JM_MATCH",
+    "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($m) -and $_.ProcessId -ne $PID -and $_.ProcessId -ne [int]$env:JM_SELF } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+  ].join('; ');
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    stdio: 'ignore', windowsHide: true, env: { ...process.env, JM_MATCH: match, JM_SELF: String(process.pid) },
+  });
+}
+
 function restartTasks() {
   const done = [];
-  for (const t of RESTART) {
-    try { execFileSync('schtasks', ['/end', '/tn', t], { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
+  for (const { task, match } of RESTART) {
+    try { execFileSync('schtasks', ['/end', '/tn', task], { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
+    if (match) {
+      try { stopMatching(match); } catch (e) { log(`could not stop "${match}": ${String(e?.message || e).slice(0, 120)}`); }
+    }
     try {
-      execFileSync('schtasks', ['/run', '/tn', t], { stdio: 'ignore', windowsHide: true });
-      done.push(t);
+      execFileSync('schtasks', ['/run', '/tn', task], { stdio: 'ignore', windowsHide: true });
+      done.push(task);
     } catch (e) {
-      log(`could not restart ${t}: ${String(e?.message || e).slice(0, 120)}`);
+      log(`could not restart ${task}: ${String(e?.message || e).slice(0, 120)}`);
     }
   }
   return done;
