@@ -11,6 +11,12 @@ export interface RoutineCatalogEntry {
   whatItDoes: string;
   defaultDaysOfWeek: number[];
   defaultMinuteOfDay: number;
+  /**
+   * True for kinds computed by the target app itself over HTTPS (the answer comes
+   * back in the same request — no AI-engine job to poll). The client uses this to
+   * pick a longer run-now deadline; the server registry carries the real executor.
+   */
+  direct?: true;
 }
 
 export const ROUTINE_CATALOG: RoutineCatalogEntry[] = [
@@ -21,6 +27,46 @@ export const ROUTINE_CATALOG: RoutineCatalogEntry[] = [
       "A plain-English read of the app's bugs — where things stand, what to fix first, and what to watch out for.",
     defaultDaysOfWeek: [1, 2, 3, 4, 5],
     defaultMinuteOfDay: 210 // 03:30 UTC ≈ 09:00 IST
+  },
+  // ── BuildWise lane — the app computes, the console keeps the receipt ─────────
+  // These call BuildWise's own /api/jobs/* endpoints over HTTPS and file the
+  // returned summary here. Any alerts they cause are DRAFT rows inside BuildWise
+  // itself — this platform never sends anything to a human.
+  {
+    id: 'buildwise.cash-digest',
+    name: 'BuildWise: daily cash digest',
+    whatItDoes:
+      "Asks BuildWise for the day's cash picture — money in, money out, where balances stand — and files the summary here.",
+    defaultDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    defaultMinuteOfDay: 890, // 14:50 UTC ≈ 20:20 IST
+    direct: true
+  },
+  {
+    id: 'buildwise.budget-watchdog',
+    name: 'BuildWise: budget watchdog',
+    whatItDoes:
+      'Has BuildWise compare spend against each project budget and draft internal alerts for lines running hot. Drafts stay inside BuildWise — nothing is sent to anyone.',
+    defaultDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    defaultMinuteOfDay: 905, // 15:05 UTC ≈ 20:35 IST
+    direct: true
+  },
+  {
+    id: 'buildwise.anomaly-scan',
+    name: 'BuildWise: anomaly scan',
+    whatItDoes:
+      'Weekly sweep where BuildWise looks for transactions that break its usual patterns and drafts internal flags for review. Summary lands here.',
+    defaultDaysOfWeek: [0], // Sundays (0=Sun, matching Postgres DOW)
+    defaultMinuteOfDay: 920, // 15:20 UTC ≈ 20:50 IST
+    direct: true
+  },
+  {
+    id: 'buildwise.reconcile',
+    name: 'BuildWise: weekly reconcile',
+    whatItDoes:
+      'Weekly reconciliation pass — BuildWise checks its books line up (Tally vs recorded transactions) and reports what matched and what needs a look.',
+    defaultDaysOfWeek: [0], // Sundays
+    defaultMinuteOfDay: 935, // 15:35 UTC ≈ 21:05 IST
+    direct: true
   }
 ];
 

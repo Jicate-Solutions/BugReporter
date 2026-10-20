@@ -29,6 +29,16 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
+## Environment variables
+
+### BuildWise routine lane
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `BUILDWISE_JOBS_SECRET` | Yes, for the `buildwise.*` routines | Shared secret sent as the `x-jobs-secret` header when the routine dispatcher (and the run-now route) POSTs BuildWise's `/api/jobs/<name>` endpoints. Must match the value BuildWise itself is deployed with. Without it, every `buildwise.*` run records an error. |
+
+The `buildwise.*` routines are direct HTTPS compute calls to the target app (resolved from `applications.app_url`) — they never go through the MyJKKN AI engine.
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.

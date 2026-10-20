@@ -59,6 +59,7 @@ interface AppRow {
 // Run-now request deadlines. Without these a hung POST/poll leaves the spinner
 // stuck forever (mirrors the AI-card timeout fix from PR #9).
 const RUN_POST_TIMEOUT_MS = 15000; // enqueue is a quick Door call
+const RUN_DIRECT_POST_TIMEOUT_MS = 70000; // direct kinds compute in-request (server allows 60s)
 const RUN_POLL_TIMEOUT_MS = 10000; // the GET waits up to 8s server-side; give headroom
 
 // Deadline for the direct supabase-js mutations (add / enable / schedule / delete).
@@ -249,11 +250,14 @@ export function RoutinesManager({
   const runNow = async (r: RoutineRow) => {
     setBusyId(r.id);
     try {
+      // Direct kinds (buildwise.*) compute inside the POST itself — give them the
+      // full in-request budget instead of the quick-enqueue deadline.
+      const isDirect = !!getCatalogEntry(r.routine_kind)?.direct;
       const res = await fetch('/api/internal/routines/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routineId: r.id }),
-        signal: AbortSignal.timeout(RUN_POST_TIMEOUT_MS)
+        signal: AbortSignal.timeout(isDirect ? RUN_DIRECT_POST_TIMEOUT_MS : RUN_POST_TIMEOUT_MS)
       });
       const json = await res.json();
       if (!res.ok) {
@@ -261,7 +265,9 @@ export function RoutinesManager({
         return;
       }
       if (json.status === 'done') {
-        toast.success('Ran — nothing to report.');
+        // Direct kinds return the result in the POST; engine kinds only land here
+        // on an "all clear" (nothing to report, no job enqueued).
+        toast.success(json.result ? 'Routine ran — result below.' : 'Ran — nothing to report.');
         await load();
         return;
       }
