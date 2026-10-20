@@ -35,6 +35,11 @@ export interface BugReporterConfig {
    * SDK's own API calls are automatically excluded
    */
   networkExcludePatterns?: RegExp[];
+  /**
+   * Heading shown on the bug form. Client-facing apps set their own.
+   * @default 'JKKN Bug Bounty'
+   */
+  title?: string;
 }
 
 export interface BugReporterContextValue {
@@ -53,6 +58,7 @@ export interface BugReporterProviderProps {
   networkCapture?: boolean;
   networkBufferSize?: number;
   networkExcludePatterns?: RegExp[];
+  title?: string;
 }
 
 export const BugReporterContext = createContext<BugReporterContextValue | null>(
@@ -74,6 +80,7 @@ export function BugReporterProvider({
   networkCapture,
   networkBufferSize,
   networkExcludePatterns,
+  title,
 }: BugReporterProviderProps) {
   const [apiClient, setApiClient] = useState<BugReporterApiClient | null>(null);
 
@@ -86,11 +93,17 @@ export function BugReporterProvider({
     networkCapture,
     networkBufferSize,
     networkExcludePatterns,
+    title,
   };
 
   useEffect(() => {
     if (enabled && apiKey && apiUrl) {
-      const client = new BugReporterApiClient({ apiUrl, apiKey, debug });
+      const client = new BugReporterApiClient({
+        apiUrl,
+        apiKey,
+        debug,
+        reporterEmail: userContext?.email,
+      });
       setApiClient(client);
       consoleLogger.startCapture();
 
