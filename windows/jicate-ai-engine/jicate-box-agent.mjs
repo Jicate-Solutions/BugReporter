@@ -20,7 +20,12 @@
 //                   the task does not stop the node it started, and a child of
 //                   an old process keeps the OLD environment (probe, win-ai
 //                   2026-10-20).
-//   box-agent.state the label last applied (no secret)
+//   box-agent.state the label last applied, and "+restart" while a restart
+//                   is still owed (no secret)
+// Restarts wait until the Control Tower says none of this box's JICATE workers
+// is mid-job (up to 10 minutes, then restart anyway), so a switch never cuts a
+// job short. MyJKKN's jobs are not visible to the Tower; their tasks restart
+// at the same moment.
 // The key itself is never written to a file or a log by this script; it lives
 // in HKCU\Environment, readable by this Windows user (accepted by the Director).
 //
@@ -123,16 +128,32 @@ function restartTasks() {
   return done;
 }
 
+const MAX_WAIT_CHECKS = 10; // minutes to wait for idle workers before restarting anyway
+let waited = 0;
+
 async function checkOnce() {
-  const have = stateRead() || 'default';
+  const raw = stateRead() || 'default';
+  const owed = raw.endsWith('+restart');
+  const have = owed ? raw.slice(0, -'+restart'.length) : raw;
   const d = await call('GET', `?have=${encodeURIComponent(have)}`);
   const want = d.label || 'default';
-  if (want === have) return;
-  if (want !== 'default' && !d.key) throw new Error(`server chose ${want} but sent no key`);
-  setBoxAccount(want === 'default' ? '' : d.key);
+  if (want !== have) {
+    if (want !== 'default' && !d.key) throw new Error(`server chose ${want} but sent no key`);
+    setBoxAccount(want === 'default' ? '' : d.key);
+    stateWrite(`${want}+restart`);
+    log(`box account set ${have} -> ${want}; restarting workers when idle`);
+  } else if (!owed) {
+    return;
+  }
+  if ((d.busy ?? 0) > 0 && waited < MAX_WAIT_CHECKS) {
+    waited += 1;
+    log(`waiting: ${d.busy} job(s) running on this box (${waited}/${MAX_WAIT_CHECKS})`);
+    return;
+  }
+  waited = 0;
   const restarted = restartTasks();
   stateWrite(want);
-  log(`box switched ${have} -> ${want}; restarted ${restarted.length} task(s): ${restarted.join(', ') || 'none'}`);
+  log(`box switched to ${want}; restarted ${restarted.length} task(s): ${restarted.join(', ') || 'none'}`);
   await call('POST', '', { applied: want === 'default' ? null : want, restarted });
 }
 
