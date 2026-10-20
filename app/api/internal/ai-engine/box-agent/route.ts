@@ -5,7 +5,9 @@
  * sha256 is stored, in ai_box_agent_tokens, bound to one host). Separate from
  * worker runner tokens: a worker token can never receive box-wide keys.
  *
- *   GET  ?have=<label|default>   which account the box should use now.
+ *   GET  ?have=<label|default>   which account the box should use now, and
+ *        `busy`: how many JICATE jobs this box's workers are running right now
+ *        (the agent waits for 0 before restarting workers, so no job is cut).
  *        200 { host, label }            (label null = the box's own sign-in;
  *                                        no Control Tower choice also = null)
  *        200 { host, label, key }       only when label differs from `have`,
@@ -52,11 +54,20 @@ export async function GET(request: NextRequest) {
     .upsert({ host, agent_seen_at: new Date().toISOString() }, { onConflict: 'host' });
 
   const choice = await resolveBoxAccount(admin, host);
+  const { data: workers } = await admin.from('ai_runners').select('name').eq('host', host);
+  const names = ((workers ?? []) as { name: string }[]).map((w) => w.name);
+  const { count: busy } = names.length
+    ? await admin
+        .from('ai_jobs')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'running')
+        .in('claimed_by', names)
+    : { count: 0 };
   const label = choice ?? null; // no choice = leave the box on its own sign-in
   const have = new URL(request.url).searchParams.get('have') ?? '';
   const haveLabel = have === '' || have === 'default' ? null : have;
   if (label === null || label === haveLabel) {
-    return NextResponse.json({ host, label }, { headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json({ host, label, busy: busy ?? 0 }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
   const log = (granted: boolean, reason: string) =>
@@ -69,7 +80,7 @@ export async function GET(request: NextRequest) {
   try {
     const key = openAccountKey((data as { ciphertext: string }).ciphertext);
     await log(true, 'box agent');
-    return NextResponse.json({ host, label, key }, { headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json({ host, label, key, busy: busy ?? 0 }, { headers: { 'Cache-Control': 'no-store' } });
   } catch {
     await log(false, 'box agent: key could not be opened');
     return fail('KEY_UNAVAILABLE', 'Key could not be opened.', 503);
