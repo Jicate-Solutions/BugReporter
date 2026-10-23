@@ -18,6 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { PROBE_APP_SLUG, PROBE_JOB_TYPE } from '@/lib/ai-engine/accounts';
 
 export interface EngineTask {
   job_type: string;
@@ -45,6 +46,11 @@ export interface ClaimedEngineJob {
   prompt: string;
   /** low | medium | high | xhigh | max, or null for the CLI default. */
   effort: string | null;
+  /**
+   * The account a Control Tower check job must run on (system.account_probe).
+   * Read by the claim route only; never sent to the worker.
+   */
+  account_pin?: string | null;
 }
 
 /** The engine's task list (enabled or not). Returns [] on error, never throws. */
@@ -154,7 +160,7 @@ export async function claimEngineJob(
   const { data, error } = await admin.rpc('fn_ai_engine_claim', { p_runner: runner });
   if (error) throw new Error(`claim failed: ${error.message}`);
   const envelope = data as {
-    job: { id: string; job_type: string; attempts: number; payload: unknown } | null;
+    job: { id: string; job_type: string; app_slug?: string; attempts: number; payload: unknown } | null;
     spec: EngineSpec | null;
   } | null;
   // The envelope is {job, spec}. Reading anything else (data[0].id, data.id)
@@ -165,7 +171,14 @@ export async function claimEngineJob(
   // Effort is read fresh here rather than in the claim SQL, so the column can
   // be added without replacing that function.
   const { data: t } = await admin.from('ai_tasks').select('effort').eq('job_type', job.job_type).maybeSingle();
+  // Only a check job the Control Tower itself queued may choose its account.
+  const pinLabel = (job.payload as { label?: unknown } | null)?.label;
+  const account_pin =
+    job.job_type === PROBE_JOB_TYPE && job.app_slug === PROBE_APP_SLUG && typeof pinLabel === 'string'
+      ? pinLabel
+      : null;
   return {
+    account_pin,
     effort: (t as { effort: string | null } | null)?.effort ?? null,
     job_id: job.id,
     job_type: job.job_type,
