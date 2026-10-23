@@ -20,6 +20,9 @@
  * workers drain accounts in priority order and switch back when one renews.
  * If none has allowance, the one that renews first.
  *
+ * A Control Tower check job (system.account_probe) runs on the account it
+ * names, whatever the box or worker setting, so its reading is that account's.
+ *
  * The runner gets a finished prompt; the recipe lives in the database.
  */
 
@@ -47,7 +50,8 @@ export async function POST(request: NextRequest) {
   const body = bodySchema.parse(await request.json().catch(() => ({})));
 
   try {
-    const job = await claimEngineJob(admin, auth.runner);
+    const claimed = await claimEngineJob(admin, auth.runner);
+    const { account_pin: pin = null, ...job } = claimed ?? { account_pin: null };
     // After the claim, which has upserted this runner's heartbeat row.
     const [{ data: r }, { data: sec }] = await Promise.all([
       admin
@@ -98,8 +102,13 @@ export async function POST(request: NextRequest) {
       const best = await pickAuto(admin, labels);
       use = best === 'default' ? null : best;
     }
-    const account = { use, fallback: row?.account_fallback ?? true, central };
-    return NextResponse.json({ job, account }, { status: 200, headers: { 'Cache-Control': 'no-store' } });
+    let fallback = row?.account_fallback ?? true;
+    if (pin && central.includes(pin)) {
+      use = pin;
+      fallback = false; // a check of one account must never run on another
+    }
+    const account = { use, fallback, central };
+    return NextResponse.json({ job: claimed ? job : null, account }, { status: 200, headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
     console.error('[ai-engine/claim] failed:', e instanceof Error ? e.message : e);
     return NextResponse.json(

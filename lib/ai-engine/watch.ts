@@ -20,6 +20,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
+import { enqueueAccountProbes, PROBE_JOB_TYPE } from '@/lib/ai-engine/accounts';
 
 const DOWN_AFTER_MS = 15 * 60_000;
 const SAFETY_EMAIL_GAP_MS = 60 * 60_000;
@@ -33,6 +34,8 @@ export interface WatchSummary {
   recipients: number;
   workers: 'up' | 'down' | 'none-registered';
   sent: string[];
+  /** Accounts a check job was queued for this run. */
+  probes: string[];
 }
 
 interface WatchState {
@@ -214,6 +217,7 @@ export async function runEngineWatch(admin: SupabaseClient, origin: string): Pro
       .from('ai_jobs')
       .select('job_type, error')
       .eq('status', 'error')
+      .neq('job_type', PROBE_JOB_TYPE)
       .gt('completed_at', new Date(now - FAILURE_WINDOW_MS).toISOString())
       .limit(50);
     const rows = (failed ?? []) as { job_type: string; error: string | null }[];
@@ -279,6 +283,9 @@ export async function runEngineWatch(admin: SupabaseClient, origin: string): Pro
     }
   }
 
+  // 6. Keep account readings fresh: one tiny check job per stored account that is due.
+  const probes = await enqueueAccountProbes(admin);
+
   if (JSON.stringify(next) !== JSON.stringify(state)) await writeState(admin, next);
-  return { recipients: to.length, workers, sent };
+  return { recipients: to.length, workers, sent, probes };
 }

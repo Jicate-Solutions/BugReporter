@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { readSpecForJob, shapeResult } from '@/lib/ai-engine/engine';
+import { PROBE_JOB_TYPE } from '@/lib/ai-engine/accounts';
 
 export const dynamic = 'force-dynamic';
 
@@ -94,6 +95,12 @@ export async function POST(request: NextRequest) {
     error = 'runner sent neither answer nor error';
   }
 
+  // An account check is never retried: its reading (kept below) is the point,
+  // and a re-queued check of a full account would loop. The cron queues the next.
+  const { data: jt } = await admin.from('ai_jobs').select('job_type').eq('id', body.job_id).maybeSingle();
+  const isProbe = (jt as { job_type: string } | null)?.job_type === PROBE_JOB_TYPE;
+  if (isProbe) retry = false;
+
   // Before completing, so a limit-reached try can never be the one that fails the job.
   if (!ok && retry && body.rate_limited) await refundAttempt(admin, body.job_id, runner);
 
@@ -124,7 +131,7 @@ export async function POST(request: NextRequest) {
       { status: 409 }
     );
   }
-  if (body.usage?.account) {
+  if (body.usage?.account && !isProbe) {
     await admin.from('ai_runners').update({ account_in_use: body.usage.account }).eq('name', runner);
   }
   if (body.usage?.account && body.usage.limits) {
