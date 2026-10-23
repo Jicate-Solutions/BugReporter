@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { buildAddAccountBody } from './add-account-body';
 
 export function AddAccountForm() {
   const router = useRouter();
@@ -21,13 +22,15 @@ export function AddAccountForm() {
   const [saving, setSaving] = useState(false);
 
   async function save() {
-    const p = priority.trim() === '' ? null : Number(priority);
+    // An empty Priority box sends no priority at all, so re-pasting a key for an
+    // existing account keeps the priority it already has (a new account gets none).
+    const body = buildAddAccountBody(label, key, priority);
     setSaving(true);
     try {
       const res = await fetch('/api/internal/ai-engine/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: label.trim(), key: key.trim(), priority: p })
+        body: JSON.stringify(body)
       });
       const json = await res.json().catch(() => null);
       if (!res.ok) {
@@ -49,7 +52,7 @@ export function AddAccountForm() {
       <p className="text-sm font-medium">Add a Claude account</p>
       <p className="text-muted-foreground text-xs">
         On any computer, run <code>claude setup-token</code> in a terminal, sign in to the account,
-        and paste the key it prints here. Using an existing name replaces that account&apos;s key.
+        and paste the key it prints here. Using an existing name replaces that account&apos;s key; leave Priority empty to keep its current priority.
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="space-y-1">
