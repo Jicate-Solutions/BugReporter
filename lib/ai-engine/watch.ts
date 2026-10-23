@@ -13,6 +13,10 @@
  *   5. Account nearly used up: a Claude account passes 90% of its 5-hour or
  *      weekly allowance → one email for that account; it re-arms once the
  *      reading drops back below 90% (after the reset).
+ *   6. One box dark (decision 2026-10-23): a Windows box whose workers and box
+ *      agent have all been silent for 10 minutes → one email naming that box,
+ *      one more when it is back. Rule 1 only fires when EVERY worker is down,
+ *      so a single box stuck at its login screen went unnoticed.
  *
  * Recipient: AI_ALERT_EMAIL (comma-separated allowed). Unset → nothing is sent
  * and the run says so. State lives in ai_engine_watch. Called by the cron route.
@@ -29,6 +33,13 @@ const REMINDER_HOUR_IST = 9;
 const FAILURE_WINDOW_MS = 30 * 60_000;
 const FAILURE_THRESHOLD = 3;
 const FAILURE_EMAIL_GAP_MS = 2 * 60 * 60_000;
+export const BOX_DARK_AFTER_MS = 10 * 60_000;
+
+/** Mailbox names for the boxes, so an email says which computer it means. */
+const BOX_NAMES: Record<string, string> = {
+  Biometric: 'win-first, the first box',
+  'DESKTOP-1LB1FCS': 'win-ai, the second box'
+};
 
 export interface WatchSummary {
   recipients: number;
@@ -44,6 +55,32 @@ interface WatchState {
   /** India date (YYYY-MM-DD) of the last open-alert reminder. */
   last_reminder_date?: string;
   last_failure_email_at?: string;
+  /** Hosts a "box is dark" email went out for and no "back" email yet. */
+  dark_boxes?: string[];
+}
+
+/**
+ * Hosts whose every signal is older than BOX_DARK_AFTER_MS: each worker's
+ * check-in and, when the box has one, its box agent's check-in. A host with
+ * any fresh signal is alive.
+ */
+export function darkHosts(
+  runners: { host: string | null; last_seen_at: string | null }[],
+  boxes: { host: string; agent_seen_at: string | null }[],
+  now: number
+): string[] {
+  const newest = new Map<string, number>();
+  const see = (host: string | null, at: string | null) => {
+    if (!host) return;
+    const t = at ? new Date(at).getTime() : 0;
+    newest.set(host, Math.max(newest.get(host) ?? 0, Number.isFinite(t) ? t : 0));
+  };
+  for (const r of runners) see(r.host, r.last_seen_at);
+  for (const b of boxes) see(b.host, b.agent_seen_at);
+  return [...newest.entries()]
+    .filter(([, t]) => now - t >= BOX_DARK_AFTER_MS)
+    .map(([h]) => h)
+    .sort();
 }
 
 /** India date and hour for a moment, without depending on the server's zone. */
@@ -283,7 +320,54 @@ export async function runEngineWatch(admin: SupabaseClient, origin: string): Pro
     }
   }
 
-  // 6. Keep account readings fresh: one tiny check job per stored account that is due.
+  // 6. One box dark while the other keeps working.
+  const { data: boxRows } = await admin.from('ai_boxes').select('host, agent_seen_at');
+  const { data: hostRows } = await admin.from('ai_runners').select('host, last_seen_at');
+  const dark = darkHosts(
+    (hostRows ?? []) as { host: string | null; last_seen_at: string | null }[],
+    (boxRows ?? []) as { host: string; agent_seen_at: string | null }[],
+    now
+  );
+  const wasDark = state.dark_boxes ?? [];
+  const stillDark = wasDark.filter((h) => dark.includes(h));
+  const nowDark = [...stillDark];
+  for (const host of dark.filter((h) => !wasDark.includes(h))) {
+    if (!to.length) break;
+    const name = BOX_NAMES[host] ? `${host} (${BOX_NAMES[host]})` : host;
+    const ok = await send(
+      to,
+      `Windows box ${host} has gone quiet`,
+      [
+        `Nothing on ${name} has checked in for 10 minutes: none of its JICATE workers, and not its box agent.`,
+        'The other box keeps answering AI jobs, but anything running only on this one has stopped. It may be switched off, offline, or stuck at the Windows login screen.',
+        'You will get one more email when it is back.'
+      ],
+      routinesLink
+    );
+    if (ok) {
+      nowDark.push(host);
+      sent.push(`box-dark:${host}`);
+    }
+  }
+  for (const host of wasDark.filter((h) => !dark.includes(h))) {
+    if (!to.length) {
+      nowDark.push(host);
+      continue;
+    }
+    const ok = await send(
+      to,
+      `Windows box ${host} is back`,
+      [`${BOX_NAMES[host] ? `${host} (${BOX_NAMES[host]})` : host} is checking in again.`],
+      routinesLink
+    );
+    if (ok) sent.push(`box-back:${host}`);
+    else nowDark.push(host);
+  }
+  nowDark.sort();
+  if (nowDark.length) next.dark_boxes = nowDark;
+  else delete next.dark_boxes;
+
+  // 7. Keep account readings fresh: one tiny check job per stored account that is due.
   const probes = await enqueueAccountProbes(admin);
 
   if (JSON.stringify(next) !== JSON.stringify(state)) await writeState(admin, next);
