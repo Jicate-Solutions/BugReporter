@@ -151,6 +151,17 @@ class RunError extends Error {
 
 const RATE_LIMIT_RE = /rate.?limit|usage limit|too many requests|\b429\b|overloaded/i;
 const AUTH_FAIL_RE = /failed to authenticate|oauth access token|invalid api key|not logged in|\b401\b/i;
+// Short reason for the log when an account is skipped: the error's first 160
+// chars with anything key-like removed (sk-ant-... and any 32+ char run of
+// base64/hex-like characters). Never the key itself.
+function redactReason(msg) {
+  return String(msg ?? '')
+    .replace(/sk-ant-[A-Za-z0-9_\-+/=]*/gi, '[redacted]')
+    .replace(/[A-Za-z0-9+/=_\-]{32,}/g, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+}
 
 /** Labels of the extra accounts on this box (file names only). */
 function listAccounts() {
@@ -283,6 +294,14 @@ async function runClaude(job, label = 'default') {
   });
 }
 
+// A run that works on a label ends its cool-down, even when it was run anyway
+// because no other account was ready.
+function clearCooling(label) {
+  const wasCooling = cooling.get(label) > Date.now();
+  cooling.delete(label);
+  if (wasCooling) log(`account ${label} works again; cool-down cleared`);
+}
+
 /**
  * Run the job on the chosen account; with fallback on, move to the next
  * account when one hits its limit or its key fails. Order: chosen, the other
@@ -299,6 +318,7 @@ async function runWithAccounts(job, choice) {
   for (const label of tryList) {
     try {
       const out = await runClaude(job, label);
+      clearCooling(label);
       return { ...out, label };
     } catch (e) {
       if (!noEffortFlag && job.effort && /unknown option.*effort/i.test(String(e?.message))) {
@@ -306,6 +326,7 @@ async function runWithAccounts(job, choice) {
         logErr('this Claude CLI does not know --effort; running without it from now on');
         try {
           const out = await runClaude(job, label);
+          clearCooling(label);
           return { ...out, label };
         } catch (e2) {
           e = e2;
@@ -316,7 +337,7 @@ async function runWithAccounts(job, choice) {
       if (!(e?.rateLimited || e?.authFailed)) throw e;
       cooling.set(label, Date.now() + (e.authFailed ? COOLDOWN_AUTH_MS : COOLDOWN_LIMIT_MS));
       if (e.authFailed) keyCache.delete(label); // fetch afresh next time: the key may have been replaced
-      logErr(`account ${label} ${e.authFailed ? 'key failed' : 'hit its limit'}; ${tryList.length > 1 ? 'trying the next account' : 'no other account to try'}`);
+      logErr(`account ${label} ${e.authFailed ? 'key failed' : 'hit its limit'} (${redactReason(e.message)}); ${tryList.length > 1 ? 'trying the next account' : 'no other account to try'}`);
     }
   }
   throw lastErr;
@@ -343,7 +364,8 @@ async function drainOnce() {
     log(`DONE ${job.job_id} status=${done?.status} in ${Date.now() - started}ms`);
     return { worked: true };
   } catch (e) {
-    const msg = String(e?.message || e).slice(0, 900);
+    // Keys never reach the log or the server, even in a raw CLI error.
+    const msg = String(e?.message || e).replace(/sk-ant-[A-Za-z0-9_\-+/=]*/gi, '[redacted]').slice(0, 900);
     logErr(`FAIL ${job.job_id}: ${msg}${e?.rateLimited ? ' RATE-LIMITED' : ''}`);
     // Report it so the ledger records the failed run and the job is retried
     // (the server gives up after 3 attempts).
