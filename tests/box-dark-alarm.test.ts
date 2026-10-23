@@ -56,7 +56,11 @@ describe('darkHosts', () => {
 });
 
 /** A tiny stand-in for the database: each table returns fixed rows. */
-function fakeAdmin(tables: Record<string, unknown[]>, state: { value: Record<string, unknown> }) {
+function fakeAdmin(
+  tables: Record<string, unknown[]>,
+  state: { value: Record<string, unknown> },
+  failing: string[] = []
+) {
   const builder = (table: string) => {
     const b: Record<string, unknown> = {};
     const self = () => b;
@@ -66,7 +70,12 @@ function fakeAdmin(tables: Record<string, unknown[]>, state: { value: Record<str
       state.value = row.value;
       return { error: null };
     };
-    b.then = (res: (v: unknown) => unknown) => res({ data: tables[table] ?? [], count: 0 });
+    b.then = (res: (v: unknown) => unknown) =>
+      res(
+        failing.includes(table)
+          ? { data: null, error: { message: 'network down' }, count: 0 }
+          : { data: tables[table] ?? [], count: 0 }
+      );
     return b;
   };
   return { from: builder, rpc: async () => ({ data: null }) } as unknown as SupabaseClient;
@@ -112,6 +121,15 @@ describe('runEngineWatch, one box dark', () => {
     expect(third.sent).toEqual(['box-back:Biometric']);
     expect(mails[1].subject).toBe('Windows box Biometric is back');
     expect(state.value.dark_boxes).toBeUndefined();
+  });
+
+  it('keeps a dark box dark, with no false "back" email, when a read fails', async () => {
+    const state = { value: { dark_boxes: ['Biometric'], last_reminder_date: '2026-10-24' } as Record<string, unknown> };
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await runEngineWatch(fakeAdmin(quietFirstBox(), state, ['ai_boxes']), 'https://tower.test');
+    expect(r.sent).toEqual([]);
+    expect(mails).toHaveLength(0);
+    expect(state.value.dark_boxes).toEqual(['Biometric']);
   });
 
   it('sends nothing and keeps no outage when no one is set to receive alerts', async () => {

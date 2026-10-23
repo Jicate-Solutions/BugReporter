@@ -321,9 +321,12 @@ export async function runEngineWatch(admin: SupabaseClient, origin: string): Pro
   }
 
   // 6. One box dark while the other keeps working.
-  const { data: boxRows } = await admin.from('ai_boxes').select('host, agent_seen_at');
-  const { data: hostRows } = await admin.from('ai_runners').select('host, last_seen_at');
-  const dark = darkHosts(
+  // A failed read must not look like "every box is back": skip this rule for the run.
+  const { data: boxRows, error: boxErr } = await admin.from('ai_boxes').select('host, agent_seen_at');
+  const { data: hostRows, error: hostErr } = await admin.from('ai_runners').select('host, last_seen_at');
+  const readFailed = Boolean(boxErr || hostErr);
+  if (readFailed) console.error('[ai-engine-watch] box check skipped:', (boxErr ?? hostErr)?.message);
+  const dark = readFailed ? (state.dark_boxes ?? []) : darkHosts(
     (hostRows ?? []) as { host: string | null; last_seen_at: string | null }[],
     (boxRows ?? []) as { host: string; agent_seen_at: string | null }[],
     now
