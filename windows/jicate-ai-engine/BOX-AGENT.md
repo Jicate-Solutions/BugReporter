@@ -285,7 +285,7 @@ dropped (e.g. the Tower already marked it "agent stopped").
 
 Status report (every 5 minutes, time kept in box-agent.commands.json, and on
 a status command): host, box, agent sha, node version, claude --version,
-Windows uptime, free GB on C:, each restartTasks task's state / last run /
+Windows uptime and boot time, whether Windows signs itself in after a restart (Winlogon AutoAdminLogon + user; never the password), free GB on C:, each restartTasks task's state / last run /
 last result / run-as user (schtasks /query /v, English Windows labels) and
 its full task XML (schtasks /query /xml, trimmed and scrubbed, up to 4 KB),
 the agent task's RunLevel, LogonType and task XML, the sha of every
