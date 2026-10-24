@@ -113,7 +113,8 @@ GRANT EXECUTE ON FUNCTION public.fn_ai_engine_complete(uuid, text, boolean, json
 
 -- fn_ai_engine_enqueue gains p_is_test (DEFAULT false), so a test run is marked
 -- in the same insert. Setting ai_jobs.is_test afterwards would race a worker
--- that claims within seconds (Box desk review, 24 Oct). Old seven-argument
+-- that claims within seconds (Box desk review, 24 Oct). A test run is also
+-- allowed on a task that is switched off. Old seven-argument
 -- version dropped in this transaction, as above.
 DROP FUNCTION IF EXISTS public.fn_ai_engine_enqueue(text, uuid, text, uuid, jsonb, text, integer);
 
@@ -134,7 +135,9 @@ BEGIN
   IF NOT FOUND THEN
     RETURN jsonb_build_object('ok', false, 'error', 'unknown_task');
   END IF;
-  IF NOT t.enabled THEN
+  -- A test run (the builder's Try-it) may run a task that is not switched on
+  -- yet; callers are service role only (see the GRANT below).
+  IF NOT t.enabled AND NOT COALESCE(p_is_test, false) THEN
     RETURN jsonb_build_object('ok', false, 'error', 'task_switched_off');
   END IF;
   IF octet_length(payload::text) > t.max_payload_bytes THEN
