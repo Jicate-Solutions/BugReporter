@@ -197,6 +197,25 @@ export function RecipeFields({
           </Select>
         </div>
         <div className="space-y-1">
+          <Label>Effort</Label>
+          <Select
+            value={value.effort ?? 'default'}
+            onValueChange={(v) => set({ effort: v === 'default' ? null : v })}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Default — the model decides</SelectItem>
+              <SelectItem value="low">Low — fastest, for simple tasks</SelectItem>
+              <SelectItem value="medium">Medium</SelectItem>
+              <SelectItem value="high">High — thinks harder, slower</SelectItem>
+              <SelectItem value="xhigh">Extra high</SelectItem>
+              <SelectItem value="max">Max — slowest, most careful</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
           <Label>Answer type</Label>
           <Select
             value={value.output_format}
