@@ -20,7 +20,7 @@
  *        signature }]` (this box's queued, unexpired ai_box_commands rows,
  *        oldest first, at most 5; the agent verifies each signed payload).
  *        Before listing, this box's queued rows past expires_at become
- *        'expired', and its running rows more than 10 minutes past
+ *        'expired', and its running rows more than 15 minutes past
  *        expires_at become 'failed' (result { reason: 'agent stopped' }).
  *        Every key handed out is logged in ai_account_key_fetches.
  *   GET  ?file=<name>            200 { name, sha256, signature, content } for an
@@ -89,7 +89,7 @@ async function listFiles(admin: ReturnType<typeof createAdminClient>) {
 
 /**
  * This box's queued commands. First, for this box only: queued rows past
- * expires_at become 'expired', and running rows more than 10 minutes past
+ * expires_at become 'expired', and running rows more than 15 minutes past
  * expires_at become 'failed' ({ reason: 'agent stopped' }), so a dead agent
  * cannot leave a row running forever. Table not there yet = no commands.
  */

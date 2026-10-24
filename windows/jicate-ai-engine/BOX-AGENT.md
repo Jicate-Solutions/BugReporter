@@ -150,7 +150,7 @@ Commands (public.ai_box_commands, one row per command for one box):
   Expiry: 30 minutes by default, at most 5h55m from box-command.mjs. The
   table refuses more than 6 hours after its own clock; the 5 minutes spare
   keep a Mac clock that differs from the database clock from tripping that.
-  A row still 'running' 10 minutes after its expiry is marked 'failed'
+  A row still 'running' 15 minutes after its expiry is marked 'failed'
   (result {"reason":"agent stopped"}) when its box next asks, so a dead
   agent cannot leave it running forever. States: queued -> running -> done | failed | refused, or
   queued -> expired when the box asks after expires_at. A finished row never

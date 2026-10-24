@@ -166,10 +166,10 @@ describe('GET commands', () => {
     expect(byId(runningStale.id).status).toBe('running');
   });
 
-  it('fails this box\'s running rows 10+ minutes past expiry (agent stopped), and nothing else', async () => {
-    const dead = cmd({ status: 'running', expires_at: iso(-11), started_at: iso(-40) });
-    const graceLeft = cmd({ status: 'running', expires_at: iso(-9), started_at: iso(-40) });
-    const otherDead = cmd({ box: 'box-2', status: 'running', expires_at: iso(-11) });
+  it('fails this box\'s running rows 15+ minutes past expiry (agent stopped), and nothing else', async () => {
+    const dead = cmd({ status: 'running', expires_at: iso(-16), started_at: iso(-40) });
+    const graceLeft = cmd({ status: 'running', expires_at: iso(-14), started_at: iso(-40) });
+    const otherDead = cmd({ box: 'box-2', status: 'running', expires_at: iso(-16) });
     const doneOld = cmd({ status: 'done', expires_at: iso(-60), result: { exit: 0 } });
     commands().push(dead, graceLeft, otherDead, doneOld);
     expect((await GET(get())).status).toBe(200);
