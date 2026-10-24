@@ -341,9 +341,11 @@ Self-update of the agent:
      new one as .rejected. (Chosen over an ExecutionTimeLimit on the task:
      the agent is meant to run for ever, so a time limit would also stop a
      healthy agent.) A network outage right after a swap therefore also rolls
-     back; the old agent keeps working and the new sha can be retried.
-  To retry a rejected sha: delete the .rejected file and its entry in
-  box-agent.files.json "failed", or publish a new sha.
+     back. The old agent keeps working, but that sha is now marked failed on
+     that box for good: nothing retries it by itself.
+  To retry a rejected sha (it will NOT happen on its own): either publish a
+  new sha (any trivial edit, re-signed), or send a run-script that deletes
+  the .rejected file and removes that sha from box-agent.files.json "failed".
 
 The launcher (run-jicate-box-agent.cmd) is install-by-hand only. A bad
 launcher would stop the agent from starting every minute, with nothing left
