@@ -1213,6 +1213,21 @@ function readTail(path, max) {
   }
 }
 
+// Whether Windows signs itself in after a restart: tasks that need a signed-in
+// user (InteractiveToken) only run once someone is signed in. Reads the two
+// Winlogon values only; never the stored password.
+const WINLOGON = 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon';
+async function readSignIn() {
+  if (process.platform !== 'win32') return null;
+  const value = async (v) => {
+    const r = await run('reg', ['query', WINLOGON, '/v', v], { timeoutMs: 10_000 });
+    if (r.code !== 0) return null;
+    return r.stdout.match(new RegExp(`${v}\\s+REG_\\w+\\s+(.*)`, 'i'))?.[1]?.trim() ?? null;
+  };
+  const [auto, user] = await Promise.all([value('AutoAdminLogon'), value('DefaultUserName')]);
+  return { auto_sign_in: auto === '1', user: user || null };
+}
+
 async function buildStatus() {
   const files = {};
   const stagedNow = {};
@@ -1227,7 +1242,7 @@ async function buildStatus() {
       if (s) stagedNow[`${name}.new`] = s;
     }
   }
-  const [tasks, agentTask, claude] = await Promise.all([
+  const [tasks, agentTask, claude, signIn] = await Promise.all([
     Promise.all(RESTART.map(async ({ task }) => {
       const [r, x] = await Promise.all([
         run('schtasks', ['/query', '/tn', task, '/fo', 'LIST', '/v'], { timeoutMs: 20_000 }),
@@ -1250,6 +1265,7 @@ async function buildStatus() {
     }),
     run('cmd.exe', ['/d', '/c', 'claude --version'], { timeoutMs: 20_000 })
       .then((r) => (r.code === 0 ? r.stdout.trim().split(/\r?\n/)[0].slice(0, 80) : null)),
+    readSignIn(),
   ]);
   let diskFree = null;
   try {
@@ -1280,6 +1296,8 @@ async function buildStatus() {
     node: process.version,
     claude_version: claude,
     uptime_s: Math.round(uptime()),
+    booted_at: new Date(Date.now() - uptime() * 1000).toISOString(),
+    sign_in: signIn,
     disk: diskFree,
     tasks,
     agent_task: agentTask,
