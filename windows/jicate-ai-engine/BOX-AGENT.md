@@ -147,9 +147,12 @@ Commands (public.ai_box_commands, one row per command for one box):
   The box trusts only that payload and refuses (status 'refused', with a
   reason) a bad signature, an id or box that does not match, an expired
   command, an unknown verb, or an id it has already run.
-  Expiry: 30 minutes by default, never more than 6 hours (the table refuses
-  longer, measured from its own clock: if the Mac clock runs ahead, a full
-  --expires 6h can be refused; use 5h50m). States: queued -> running -> done | failed | refused, or
+  Expiry: 30 minutes by default, at most 5h55m from box-command.mjs. The
+  table refuses more than 6 hours after its own clock; the 5 minutes spare
+  keep a Mac clock that differs from the database clock from tripping that.
+  A row still 'running' 10 minutes after its expiry is marked 'failed'
+  (result {"reason":"agent stopped"}) when its box next asks, so a dead
+  agent cannot leave it running forever. States: queued -> running -> done | failed | refused, or
   queued -> expired when the box asks after expires_at. A finished row never
   moves again. A command for a box that has never checked in simply waits
   (or expires).

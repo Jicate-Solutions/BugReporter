@@ -101,15 +101,21 @@ describe('box-command.mjs: args, expiry, signing, SQL', () => {
     expect(mac.validateArgs('status', [])).toMatch(/object/);
   });
 
-  it('expiry defaults to 30m and is capped at 6h', () => {
+  it('expiry defaults to 30m and is capped at 5h55m (5 minutes under the table\'s 6h)', () => {
     expect(mac.DEFAULT_EXPIRES).toBe('30m');
     expect(mac.parseExpires('30m')).toBe(30 * 60000);
-    expect(mac.parseExpires('6h')).toBe(6 * 3600000);
-    expect(() => mac.parseExpires('361m')).toThrow(/6h/);
-    expect(() => mac.parseExpires('7h')).toThrow(/6h/);
+    expect(mac.parseExpires('2h')).toBe(2 * 3600000);
+    expect(mac.parseExpires('5h55m')).toBe(355 * 60000);
+    expect(mac.parseExpires('355m')).toBe(355 * 60000);
+    expect(mac.parseExpires('1h30m15s')).toBe(5415000);
+    expect(() => mac.parseExpires('356m')).toThrow(/5h55m/);
+    expect(() => mac.parseExpires('5h55m1s')).toThrow(/5h55m/);
+    expect(() => mac.parseExpires('6h')).toThrow(/5h55m/);
+    expect(() => mac.parseExpires('')).toThrow();
+    expect(() => mac.parseExpires('30')).toThrow();
     expect(() => mac.parseExpires('0m')).toThrow();
     expect(() => mac.parseExpires('1d')).toThrow();
-    expect(() => mac.buildCommand({ box: 'B', verb: 'status', args: {}, expiresMs: 6 * 3600000 + 1 })).toThrow();
+    expect(() => mac.buildCommand({ box: 'B', verb: 'status', args: {}, expiresMs: 355 * 60000 + 1 })).toThrow(/5h55m/);
     expect(migration).toMatch(/expires_at - created_at <= interval '6 hours'/);
   });
 
@@ -158,7 +164,7 @@ describe('box-command.mjs: args, expiry, signing, SQL', () => {
     expect(sql).toMatch(/^insert into public\.ai_box_commands/);
     const late = spawnSync(process.execPath, [join(DIR, 'box-command.mjs'), 'WIN-AI', 'status', '--key', pem, '--dry-run', '--expires', '7h'], { encoding: 'utf8' });
     expect(late.status).toBe(1);
-    expect(late.stderr).toMatch(/6h/);
+    expect(late.stderr).toMatch(/5h55m/);
   });
 });
 

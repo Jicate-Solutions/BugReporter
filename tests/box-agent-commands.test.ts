@@ -62,6 +62,7 @@ vi.mock('@/lib/supabase/admin', () => ({
         is: (c: string, v: unknown) => (filters.push((r) => (r[c] ?? null) === v), b),
         in: (c: string, vs: unknown[]) => (filters.push((r) => vs.includes(r[c])), b),
         lte: (c: string, v: string) => (filters.push((r) => String(r[c]) <= v), b),
+        lt: (c: string, v: string) => (filters.push((r) => String(r[c]) < v), b),
         gt: (c: string, v: string) => (filters.push((r) => String(r[c]) > v), b),
         order: (col: string, o?: { ascending?: boolean }) => ((order = { col, asc: o?.ascending !== false }), b),
         limit: (n: number) => ((limit = n), b),
@@ -163,6 +164,24 @@ describe('GET commands', () => {
     expect(byId(stale.id).finished_at).toBeTruthy();
     expect(byId(otherStale.id).status).toBe('queued');
     expect(byId(runningStale.id).status).toBe('running');
+  });
+
+  it('fails this box\'s running rows 10+ minutes past expiry (agent stopped), and nothing else', async () => {
+    const dead = cmd({ status: 'running', expires_at: iso(-11), started_at: iso(-40) });
+    const graceLeft = cmd({ status: 'running', expires_at: iso(-9), started_at: iso(-40) });
+    const otherDead = cmd({ box: 'box-2', status: 'running', expires_at: iso(-11) });
+    const doneOld = cmd({ status: 'done', expires_at: iso(-60), result: { exit: 0 } });
+    commands().push(dead, graceLeft, otherDead, doneOld);
+    expect((await GET(get())).status).toBe(200);
+    expect(byId(dead.id)).toMatchObject({ status: 'failed', result: { reason: 'agent stopped' } });
+    expect(byId(dead.id).finished_at).toBeTruthy();
+    expect(byId(graceLeft.id).status).toBe('running');
+    expect(byId(otherDead.id).status).toBe('running');
+    expect(byId(doneOld.id)).toMatchObject({ status: 'done', result: { exit: 0 } });
+    // A late report from the agent cannot move it back.
+    const res = await POST(post({ command_update: { id: dead.id, status: 'done', result: { exit: 0 } } }));
+    expect((await res.json()).command.moved).toBe(false);
+    expect(byId(dead.id).status).toBe('failed');
   });
 
   it('answers with no commands when ai_box_commands is not there yet', async () => {

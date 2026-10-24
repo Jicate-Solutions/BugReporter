@@ -45,6 +45,7 @@ vi.mock('@/lib/supabase/admin', () => ({
         is: () => b,
         in: () => b,
         lte: () => b,
+        lt: () => b,
         gt: () => b,
         order: () => b,
         limit: () => b,

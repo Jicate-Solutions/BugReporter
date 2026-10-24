@@ -20,7 +20,8 @@
  *        signature }]` (this box's queued, unexpired ai_box_commands rows,
  *        oldest first, at most 5; the agent verifies each signed payload).
  *        Before listing, this box's queued rows past expires_at become
- *        'expired'.
+ *        'expired', and its running rows more than 10 minutes past
+ *        expires_at become 'failed' (result { reason: 'agent stopped' }).
  *        Every key handed out is logged in ai_account_key_fetches.
  *   GET  ?file=<name>            200 { name, sha256, signature, content } for an
  *        allow-listed file (404 otherwise). The agent checks the sha twice and
@@ -44,8 +45,10 @@ import { resolveBoxAccount } from '@/lib/ai-engine/accounts';
 import { openAccountKey } from '@/lib/ai-engine/account-keys';
 import { isBoxFile, SHA256_HEX } from '@/lib/ai-engine/box-files';
 import {
+  AGENT_STOPPED,
   commandUpdateSchema,
   MAX_COMMANDS_PER_POLL,
+  RUNNING_GRACE_MS,
   selectQueued,
   statusReportSchema,
   transition,
@@ -85,8 +88,10 @@ async function listFiles(admin: ReturnType<typeof createAdminClient>) {
 }
 
 /**
- * This box's queued commands. Rows past expires_at are marked 'expired' first
- * (this box only). Table not there yet = no commands.
+ * This box's queued commands. First, for this box only: queued rows past
+ * expires_at become 'expired', and running rows more than 10 minutes past
+ * expires_at become 'failed' ({ reason: 'agent stopped' }), so a dead agent
+ * cannot leave a row running forever. Table not there yet = no commands.
  */
 async function listCommands(admin: ReturnType<typeof createAdminClient>, host: string) {
   const now = new Date();
@@ -98,6 +103,12 @@ async function listCommands(admin: ReturnType<typeof createAdminClient>, host: s
       .eq('box', host)
       .eq('status', 'queued')
       .lte('expires_at', nowIso);
+    await admin
+      .from('ai_box_commands')
+      .update({ status: 'failed', finished_at: nowIso, result: AGENT_STOPPED })
+      .eq('box', host)
+      .eq('status', 'running')
+      .lt('expires_at', new Date(now.getTime() - RUNNING_GRACE_MS).toISOString());
     const { data, error } = await admin
       .from('ai_box_commands')
       .select('id, verb, payload, signature, status, expires_at, created_at')

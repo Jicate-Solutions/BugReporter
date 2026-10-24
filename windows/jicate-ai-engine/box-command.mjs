@@ -12,7 +12,8 @@
 //              run-script                  {"shell":"powershell"|"cmd","content_b64":"...","timeout_s":<1..600>}
 //                                          (--script <file> fills content_b64 from a file;
 //                                           timeout_s defaults to 120)
-//   --expires  how long the box may still start it: <n>s | <n>m | <n>h, default 30m, at most 6h
+//   --expires  how long the box may still start it, e.g. 90s, 30m, 2h, 5h55m; default 30m,
+//              at most 5h55m (the table allows 6h by ITS clock; 5 minutes spare for clock skew)
 //   --wait     poll until the box finishes, then print the result
 //   --dry-run  print the signed row and the SQL; touch nothing
 //
@@ -38,7 +39,9 @@ export const TASK_XMLS = [
 ];
 export const AGENT_TASK = 'ai.jicate.box-agent';
 export const DEFAULT_EXPIRES = '30m';
-export const MAX_EXPIRY_MS = 6 * 60 * 60 * 1000;
+// The table refuses more than 6h after its own now(); 5 minutes spare so a
+// Mac clock that differs from the database clock cannot trip that CHECK.
+export const MAX_EXPIRY_MS = (5 * 60 + 55) * 60 * 1000;
 export const MAX_SCRIPT_BYTES = 64 * 1024;
 const TERMINAL = ['done', 'failed', 'refused', 'expired'];
 const BOX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
@@ -46,13 +49,13 @@ const TASK = /^[\\A-Za-z0-9][\\A-Za-z0-9._ -]{0,199}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
-/** '30m' -> ms. Throws unless 0 < value <= 6h. */
+/** '30m' | '2h' | '5h55m' -> ms. Throws unless 0 < value <= 5h55m. */
 export function parseExpires(text) {
-  const m = /^(\d{1,6})(s|m|h)$/.exec(String(text));
-  if (!m) throw new Error(`--expires must look like 90s, 30m or 2h (got ${String(text).slice(0, 20)})`);
-  const ms = Number(m[1]) * { s: 1000, m: 60000, h: 3600000 }[m[2]];
+  const m = /^(?:(\d{1,4})h)?(?:(\d{1,6})m)?(?:(\d{1,6})s)?$/.exec(String(text));
+  if (!m || String(text) === '') throw new Error(`--expires must look like 90s, 30m, 2h or 5h55m (got ${String(text).slice(0, 20)})`);
+  const ms = Number(m[1] ?? 0) * 3600000 + Number(m[2] ?? 0) * 60000 + Number(m[3] ?? 0) * 1000;
   if (ms <= 0) throw new Error('--expires must be more than 0');
-  if (ms > MAX_EXPIRY_MS) throw new Error('--expires may be at most 6h (the Tower refuses longer)');
+  if (ms > MAX_EXPIRY_MS) throw new Error('--expires may be at most 5h55m (the Tower refuses more than 6h)');
   return ms;
 }
 
@@ -102,7 +105,7 @@ export function buildCommand({ box, verb, args, expiresMs, now = new Date(), id 
   if (!BOX.test(String(box))) throw new Error('box must be the host name as in ai_boxes.host');
   const problem = validateArgs(verb, args);
   if (problem) throw new Error(problem);
-  if (!(expiresMs > 0 && expiresMs <= MAX_EXPIRY_MS)) throw new Error('expiry must be more than 0 and at most 6h');
+  if (!(expiresMs > 0 && expiresMs <= MAX_EXPIRY_MS)) throw new Error('expiry must be more than 0 and at most 5h55m');
   if (!UUID.test(id)) throw new Error('id must be a lowercase uuid');
   const expires_at = new Date(now.getTime() + expiresMs).toISOString();
   const c = { id, box, verb, args, expires_at };

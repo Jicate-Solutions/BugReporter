@@ -27,6 +27,12 @@ export const TERMINAL_STATUSES: readonly CommandStatus[] = ['done', 'failed', 'r
 export const MAX_COMMANDS_PER_POLL = 5;
 /** Longest a command may stay valid (also a CHECK on the table). */
 export const MAX_EXPIRY_MS = 6 * 60 * 60 * 1000;
+/**
+ * A row still 'running' this long after its expiry is marked 'failed' with
+ * AGENT_STOPPED when its box next asks: a dead agent cannot leave it running.
+ */
+export const RUNNING_GRACE_MS = 10 * 60 * 1000;
+export const AGENT_STOPPED = { reason: 'agent stopped' } as const;
 /** Largest `result` or `status_report` accepted, as serialized JSON. */
 export const MAX_REPORT_BYTES = 128 * 1024;
 
