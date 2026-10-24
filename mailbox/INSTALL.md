@@ -35,12 +35,16 @@ Needs Node 18 or newer. No admin rights, no packages.
    background instead. It checks every 10 s, costs no Claude while waiting, and
    exits (without marking anything read) once mail is waiting; that exit wakes
    the tab, which runs "read" and then starts "wait" again.
+6. Optional, no Claude needed: a desktop popup for each new message.
+     node jicate-mail.mjs notify
+   Leave it running in its own window (it never exits). Mail stays unread, so
+   the Claude tab still gets it with "read" or "watch".
 
 If refused at any step: report the exact error and stop.
 
 SHA-256 of every file
 ---------------------
-  jicate-mail.mjs      06009842b68bb31d815817310c651c46d61a58b36bcc314890fc67ac4026d097
+  jicate-mail.mjs      d6d15bc46f007ece96cd3a5bd65e5e241973c6299d98b32ef219bff529527e81
   new-mail-token.mjs   da7774b158c06b6a9dc776d06c26196698d0b250c45e4b6f1a420f0de3c94e4f
   jicate-ai-drain.mjs  a8d2a3dcc50f288a6b6d47971edcc20e02f090775359bf5e769caf75440df417
                        (Windows AI box only: the updated worker, see below)
