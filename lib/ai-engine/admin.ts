@@ -35,6 +35,7 @@ export interface UsageRow {
   duration_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  api_cost_usd: number | string | null;
   invoked_at: string;
 }
 
@@ -112,14 +113,20 @@ export async function readUsage(
   days: number
 ): Promise<UsageRow[]> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
-  const { data } = await admin
-    .from('ai_usage')
-    .select('job_type, model_id, success, cost_inr, duration_ms, input_tokens, output_tokens, invoked_at')
-    .eq('organization_id', organizationId)
-    .gte('invoked_at', since)
-    .order('invoked_at', { ascending: false })
-    .limit(5000);
-  return (data ?? []) as UsageRow[];
+  const read = (cols: string) =>
+    admin
+      .from('ai_usage')
+      .select(cols)
+      .eq('organization_id', organizationId)
+      .gte('invoked_at', since)
+      .order('invoked_at', { ascending: false })
+      .limit(5000);
+  const base = 'job_type, model_id, success, cost_inr, duration_ms, input_tokens, output_tokens, invoked_at';
+  const { data, error } = await read(`${base}, api_cost_usd`);
+  if (!error) return (data ?? []) as unknown as UsageRow[];
+  // api_cost_usd not there yet (20261024_usage_api_cost.sql not applied): show the rest.
+  const { data: old } = await read(base);
+  return ((old ?? []) as unknown as Omit<UsageRow, 'api_cost_usd'>[]).map((r) => ({ ...r, api_cost_usd: null }));
 }
 
 export async function readRunners(admin: SupabaseClient): Promise<RunnerRow[]> {

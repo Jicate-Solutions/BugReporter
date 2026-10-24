@@ -1,7 +1,9 @@
 /**
  * AI Models — the JICATE AI engine's recipes, the model each one uses, and
  * what each has cost (always ₹0: the engine runs on the Max-plan Claude CLI on
- * the JICATE Windows box, and there is no paid path).
+ * the JICATE Windows box, and there is no paid path). "API price" is what the
+ * Claude API would have charged for the same runs (ai_usage.api_cost_usd), the
+ * base for per-app billing; it is blank for runs recorded before 24 Oct 2026.
  *
  * Modelled on MyJKKN's /admin/ai-models, cut down to what this engine has:
  * one row per task in `ai_tasks`, with its 30-day usage from `ai_usage`, and a
@@ -52,7 +54,9 @@ function summarise(rows: UsageRow[]) {
     ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length / 100) / 10
     : null;
   const tokensOut = rows.reduce((s, r) => s + (r.output_tokens ?? 0), 0);
-  return { runs, failed, cost, avgSecs, tokensOut };
+  const priced = rows.filter((r) => r.api_cost_usd != null);
+  const apiUsd = priced.length ? priced.reduce((s, r) => s + Number(r.api_cost_usd), 0) : null;
+  return { runs, failed, cost, avgSecs, tokensOut, apiUsd };
 }
 
 /** One clock read, outside render. */
@@ -63,6 +67,11 @@ function anyWorkerAlive(runners: RunnerRow[]) {
 
 function rupees(n: number) {
   return `₹${n.toFixed(n === 0 ? 0 : 2)}`;
+}
+
+/** API price: what the Claude API would have charged (we pay ₹0 per run on Max). */
+function usd(n: number | null) {
+  return n == null ? '—' : `$${n.toFixed(n < 1 ? 4 : 2)}`;
 }
 
 export default async function AiModelsPage({
@@ -130,7 +139,7 @@ export default async function AiModelsPage({
         {[
           { label: `Runs (${DAYS} days)`, value: String(total.runs) },
           { label: 'Failed runs', value: String(total.failed) },
-          { label: 'Cost', value: rupees(total.cost) },
+          { label: 'API price (we pay ₹0)', value: usd(total.apiUsd) },
           { label: 'Average answer time', value: total.avgSecs != null ? `${total.avgSecs}s` : '—' }
         ].map((c) => (
           <Card key={c.label}>
@@ -193,7 +202,7 @@ export default async function AiModelsPage({
                     {s.runs} runs, {s.failed} failed
                   </span>
                   <span>avg {s.avgSecs != null ? `${s.avgSecs}s` : '—'}</span>
-                  <span>{rupees(s.cost)}</span>
+                  <span>{rupees(s.cost)} · API price {usd(s.apiUsd)}</span>
                   <span>
                     up to {t.max_inflight} at once · {t.timeout_seconds}s limit ·{' '}
                     {Math.round(t.max_payload_bytes / 1024)} KB max input
@@ -249,6 +258,7 @@ export default async function AiModelsPage({
                   <TableHead className="text-right">Words out (tokens)</TableHead>
                   <TableHead className="text-right">Avg time</TableHead>
                   <TableHead className="text-right">Cost</TableHead>
+                  <TableHead className="text-right">API price</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -264,6 +274,7 @@ export default async function AiModelsPage({
                         {s.avgSecs != null ? `${s.avgSecs}s` : '—'}
                       </TableCell>
                       <TableCell className="text-right">{rupees(s.cost)}</TableCell>
+                      <TableCell className="text-right">{usd(s.apiUsd)}</TableCell>
                     </TableRow>
                   );
                 })}
