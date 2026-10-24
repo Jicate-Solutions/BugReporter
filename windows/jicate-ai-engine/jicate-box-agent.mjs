@@ -22,10 +22,14 @@
 //     database write alone cannot run code on this box.
 //   - a missing local file is never created (skipped, logged once).
 //   - staged as <name without .mjs>.new.mjs, then `node --check`; waits for idle
-//     workers like an account switch; keeps <name>.bak-<old sha8>; swaps; restarts.
+//     workers (own wait counter); keeps <name>.bak-<old sha8>; swaps; restarts
+//     ONLY the JICATE worker tasks (restartTasks entries whose "match" names the
+//     file, or task ai.jicate.engine-*), never MyJKKN helpers on the same list.
 //   - health check: every worker of this box seen in the 5 minutes before the
-//     swap must check in again within 3 minutes after it, else the backup is
-//     restored, the tasks restarted again and that sha is never tried again.
+//     swap must check in again within 3 minutes after it (if none was active,
+//     at least one must), else the backup is restored, the worker tasks
+//     restarted again and that sha is never tried again. The swap is recorded
+//     before the rename, so an agent that stops mid-swap finishes it next run.
 //   - only after the health check passes does it report the sha it runs.
 //   Any failure keeps the old file and is logged once.
 //
@@ -136,17 +140,19 @@ function stopMatching(match) {
   });
 }
 
-function restartTasks() {
+/** Restart the listed tasks; `only` (optional) narrows the list. */
+function restartTasks(only) {
+  const list = only ? RESTART.filter(only) : RESTART;
   const done = [];
   // Stop everything first, then start everything: two workers share one command
   // line, so stopping the second's match after starting the first killed the first.
-  for (const { task } of RESTART) {
+  for (const { task } of list) {
     try { execFileSync('schtasks', ['/end', '/tn', task], { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
   }
-  for (const match of new Set(RESTART.map((t) => t.match).filter(Boolean))) {
+  for (const match of new Set(list.map((t) => t.match).filter(Boolean))) {
     try { stopMatching(match); } catch (e) { log(`could not stop "${match}": ${String(e?.message || e).slice(0, 120)}`); }
   }
-  for (const { task } of RESTART) {
+  for (const { task } of list) {
     try {
       execFileSync('schtasks', ['/run', '/tn', task], { stdio: 'ignore', windowsHide: true });
       done.push(task);
@@ -228,25 +234,60 @@ function serverNow(d, gotAt) {
   return Number.isFinite(t) ? t + (Date.now() - gotAt) : Date.now();
 }
 
+/**
+ * A file update restarts only the JICATE worker tasks: entries whose "match"
+ * names the updated file, or whose task is ai.jicate.engine-*. Other tasks in
+ * restartTasks (e.g. MyJKKN helpers, whose jobs `busy` does not count) are left
+ * alone. Account switches still restart the whole list.
+ */
+const workerTasks = (name) => (t) => (t.match != null && t.match.includes(name)) || /^ai\.jicate\.engine-/i.test(t.task);
+
 async function healthCheck(d, gotAt) {
   const p = fstate.pending;
+  if (shaOfFile(resolve(HERE, p.name)) !== p.to) {
+    // The agent stopped before the rename: the old file still runs, nothing to check.
+    fstate.pending = null;
+    filesWrite();
+    log(`file ${p.name} ${short(p.to)}: swap did not complete; still on ${short(p.from)}`);
+    return;
+  }
+  if (p.restarting) {
+    // The agent stopped mid-restart: restart the workers again, then check them.
+    const restarted = restartTasks(workerTasks(p.name));
+    p.at = new Date(serverNow(d, gotAt)).toISOString();
+    p.restarting = false;
+    filesWrite();
+    log(`file ${p.name} ${short(p.to)}: restart was interrupted; restarted ${restarted.length} worker task(s) again`);
+    return;
+  }
   const now = serverNow(d, gotAt);
   const at = Date.parse(p.at);
-  const seen = new Map((d.workers || []).map((w) => [w.name, Date.parse(w.last_seen_at || '')]));
-  const missing = (p.workers || []).filter((n) => !(seen.get(n) > at));
-  if (missing.length === 0) {
+  const seenAfter = (w) => Date.parse(w.last_seen_at || '') > at;
+  let healthy;
+  let why;
+  if ((p.workers || []).length) {
+    const back = new Set((d.workers || []).filter(seenAfter).map((w) => w.name));
+    const missing = p.workers.filter((n) => !back.has(n));
+    healthy = missing.length === 0;
+    why = `not back: ${missing.join(', ')}`;
+  } else {
+    // No worker was active before the swap: at least one must check in after it.
+    healthy = (d.workers || []).some(seenAfter);
+    why = 'no worker of this box checked in';
+  }
+  if (healthy) {
     await call('POST', '', { applied: appliedLabel(), files: { [p.name]: p.to } });
     fstate.pending = null;
     filesWrite();
-    log(`file ${p.name} ${short(p.to)} healthy: ${(p.workers || []).length} worker(s) back after the swap`);
+    log(`file ${p.name} ${short(p.to)} healthy: ${(p.workers || []).length || 'any'} worker(s) back after the swap`);
     return;
   }
   if (now - at < HEALTH_MS) return; // still inside the window; check again next minute
   copyFileSync(resolve(HERE, p.backup), resolve(HERE, p.name));
-  const restarted = restartTasks();
+  const restarted = restartTasks(workerTasks(p.name));
   fstate.pending = null;
   markFailed(`${p.name}:${p.to}`);
-  log(`file ${p.name} ${short(p.to)} failed health check (not back: ${missing.join(', ')}); restored ${short(p.from)} and restarted ${restarted.length} task(s)`);
+  log(`file ${p.name} ${short(p.to)} failed health check (${why}); restored ${short(p.from)} and restarted ${restarted.length} task(s)`);
 }
 
 async function updateFile(d, gotAt, f, cur) {
@@ -285,37 +326,43 @@ async function updateFile(d, gotAt, f, cur) {
       return;
     }
   }
-  if ((d.busy ?? 0) > 0 && waited < MAX_WAIT_CHECKS) {
-    waited += 1;
-    log(`waiting: ${d.busy} job(s) running on this box (${waited}/${MAX_WAIT_CHECKS}) before file update`);
+  if ((d.busy ?? 0) > 0 && fileWaited < MAX_WAIT_CHECKS) {
+    fileWaited += 1;
+    log(`waiting: ${d.busy} job(s) running on this box (${fileWaited}/${MAX_WAIT_CHECKS}) before file update`);
     return;
   }
-  waited = 0;
+  fileWaited = 0;
   const backup = `${f.name}.bak-${short(cur)}`;
+  const only = workerTasks(f.name);
+  const before = serverNow(d, gotAt);
+  const live = (d.workers || [])
+    .filter((w) => before - Date.parse(w.last_seen_at || '') < LIVE_MS)
+    .map((w) => w.name);
   let swapped = false;
   try {
     copyFileSync(path, resolve(HERE, backup));
+    // Recorded BEFORE the swap: if the agent stops anywhere after this, the next
+    // run finishes the restart and the health check instead of trusting the file.
+    fstate.pending = { name: f.name, from: cur, to: f.sha256, backup, at: null, workers: live, restarting: true };
+    filesWrite();
     renameSync(stage, path);
     swapped = true;
     staged[f.name] = null;
-    const before = serverNow(d, gotAt);
-    const live = (d.workers || [])
-      .filter((w) => before - Date.parse(w.last_seen_at || '') < LIVE_MS)
-      .map((w) => w.name);
-    const restarted = restartTasks();
-    // Mark the swap AFTER the old processes are stopped, so only a new process can pass.
-    fstate.pending = { name: f.name, from: cur, to: f.sha256, backup, at: new Date(serverNow(d, gotAt)).toISOString(), workers: live };
+    const restarted = restartTasks(only);
+    // Mark the time AFTER the old processes are stopped, so only a new process can pass.
+    fstate.pending.at = new Date(serverNow(d, gotAt)).toISOString();
+    fstate.pending.restarting = false;
     filesWrite();
     log(`file updated ${f.name} ${short(cur)} -> ${short(f.sha256)}; restarted ${restarted.length} task(s)`);
   } catch (e) {
     if (swapped) {
       try { copyFileSync(resolve(HERE, backup), path); } catch { /* reported below */ }
-      restartTasks();
+      restartTasks(only);
     }
     try { unlinkSync(stage); } catch { /* none */ }
     staged[f.name] = null;
     fstate.pending = null;
-    filesWrite();
+    try { filesWrite(); } catch { /* reported below */ }
     // Before the swap (file busy, antivirus ...): try again later. After it: never again.
     if (swapped) markFailed(tag);
     else retryAfter[tag] = Date.now() + 30 * 60_000;
@@ -345,7 +392,8 @@ async function applyFiles(d, gotAt) {
 // ---- main loop ---------------------------------------------------------------
 
 const MAX_WAIT_CHECKS = 10; // minutes to wait for idle workers before restarting anyway
-let waited = 0;
+let waited = 0; // account switches
+let fileWaited = 0; // file updates (own counter)
 
 /** The account switch. True when nothing is owed (the file step may run). */
 async function applyAccount(d, have, owed) {

@@ -85,14 +85,40 @@ What each box agent then does (within a minute or two):
   1. downloads the file, checks sha256 twice (listed vs. received bytes) and
      the Ed25519 signature, writes jicate-ai-drain.new.mjs, runs node --check;
   2. waits until none of its JICATE workers is mid-job (up to 10 minutes);
-  3. keeps the old file as jicate-ai-drain.mjs.bak-<old sha8>, swaps, restarts
-     the tasks in box-agent.json; log: "file updated jicate-ai-drain.mjs
-     <old8> -> <new8>; restarted N task(s)";
+  3. keeps the old file as jicate-ai-drain.mjs.bak-<old sha8>, swaps, and
+     restarts ONLY the JICATE worker tasks in box-agent.json (entries whose
+     "match" contains jicate-ai-drain.mjs, or task ai.jicate.engine-*).
+     MyJKKN helpers on the same list are NOT restarted by a file update (their
+     jobs are invisible to "busy"); account switches still restart the whole
+     list. Log: "file updated jicate-ai-drain.mjs <old8> -> <new8>; restarted
+     N task(s)";
   4. health check: every worker of the box seen in the 5 minutes before the
-     swap must check in again within 3 minutes. If not, it restores the
-     backup, restarts again, never retries that sha, and logs it.
+     swap must check in again within 3 minutes (if none was active, at least
+     one must). If not, it restores the backup, restarts the workers again,
+     never retries that sha, and logs it. The swap is recorded before the
+     rename, so an agent stopped mid-swap finishes the restart and the check
+     on its next run.
   5. only then reports the sha it runs: ai_boxes.files_applied.
 A box missing the file is skipped (the agent never creates it). A rejected
 sha is remembered in box-agent.files.json; publish a new sha to try again.
 files_applied stays empty on a box until its first file update or account
 switch.
+
+Downgrade risk (accepted, low): the signature proves the Box desk signed the
+file, not that it is the newest. Someone with database write access could
+republish an OLDER validly signed jicate-ai-drain.mjs and the boxes would
+install it. That is still code the Box desk approved, and the health check
+still applies. Check source (commit sha) in ai_box_files if in doubt.
+
+If the signing key leaks (or the Mac is lost):
+  1. Move the old key aside on the Mac, then make a new one:
+       mv ~/.jicate-mail/box-update-signing.pem ~/.jicate-mail/box-update-signing.pem.revoked
+       node windows/jicate-ai-engine/sign-box-file.mjs --keygen
+  2. On EACH box, replace "updatePublicKey" in C:\jicate-ai\box-agent.json
+     with the new printed public key and restart the agent task
+     (schtasks.exe /end then /run /tn "ai.jicate.box-agent"). From then on
+     files signed with the old key are rejected on that box.
+  3. Re-sign and republish the current worker (new signature, same sha is
+     fine; a box already on that sha does nothing).
+  Until step 2 is done on a box, the leaked key plus database write access
+  can still install code there, so do step 2 on every box right away.
