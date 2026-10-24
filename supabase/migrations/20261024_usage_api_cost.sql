@@ -17,6 +17,7 @@
 --                                builder (billed to the app, per the Director)
 --   ai_jobs.is_test              set by whoever queues a test run; default false
 --
+-- fn_ai_engine_enqueue gains p_is_test (see below).
 -- fn_ai_engine_complete gains four optional params (all DEFAULT NULL), so a
 -- caller that sends only the old ten keeps working. The old ten-argument
 -- version is dropped in the same transaction, so PostgREST never sees two
@@ -109,5 +110,78 @@ $function$;
 
 REVOKE ALL ON FUNCTION public.fn_ai_engine_complete(uuid, text, boolean, jsonb, text, boolean, text, int, int, int, numeric, int, int, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.fn_ai_engine_complete(uuid, text, boolean, jsonb, text, boolean, text, int, int, int, numeric, int, int, text) TO service_role;
+
+-- fn_ai_engine_enqueue gains p_is_test (DEFAULT false), so a test run is marked
+-- in the same insert. Setting ai_jobs.is_test afterwards would race a worker
+-- that claims within seconds (Box desk review, 24 Oct). Old seven-argument
+-- version dropped in this transaction, as above.
+DROP FUNCTION IF EXISTS public.fn_ai_engine_enqueue(text, uuid, text, uuid, jsonb, text, integer);
+
+CREATE OR REPLACE FUNCTION public.fn_ai_engine_enqueue(p_job_type text, p_application_id uuid, p_app_slug text, p_organization_id uuid, p_payload jsonb, p_dedupe_key text DEFAULT NULL::text, p_priority integer DEFAULT 100, p_is_test boolean DEFAULT false)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+DECLARE
+  t  public.ai_tasks%ROWTYPE;
+  existing uuid;
+  new_id uuid;
+  missing text[];
+  payload jsonb := COALESCE(p_payload, '{}'::jsonb);
+BEGIN
+  SELECT * INTO t FROM public.ai_tasks WHERE job_type = p_job_type;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'unknown_task');
+  END IF;
+  IF NOT t.enabled THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'task_switched_off');
+  END IF;
+  IF octet_length(payload::text) > t.max_payload_bytes THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'payload_too_large',
+                              'max_bytes', t.max_payload_bytes);
+  END IF;
+
+  -- A required input counts as missing when absent, null, or an empty/blank string.
+  SELECT array_agg(k ORDER BY k) INTO missing
+    FROM unnest(t.required_inputs) AS k
+   WHERE NOT (payload ? k)
+      OR jsonb_typeof(payload -> k) = 'null'
+      OR (jsonb_typeof(payload -> k) = 'string' AND btrim(payload ->> k) = '');
+
+  IF missing IS NOT NULL THEN
+    -- Same contract as MyJKKN: accepted, then failed, with the reason on the poll.
+    INSERT INTO public.ai_jobs (job_type, application_id, app_slug, organization_id,
+                                payload, interactive, priority, status, error, completed_at, is_test)
+    VALUES (p_job_type, p_application_id, p_app_slug, p_organization_id,
+            payload, t.interactive, p_priority, 'error',
+            'missing required input(s): ' || array_to_string(missing, ', '), now(), COALESCE(p_is_test, false))
+    RETURNING id INTO new_id;
+    RETURN jsonb_build_object('ok', true, 'job_id', new_id, 'interactive', t.interactive);
+  END IF;
+
+  IF p_dedupe_key IS NOT NULL THEN
+    SELECT id INTO existing FROM public.ai_jobs
+     WHERE app_slug = p_app_slug AND job_type = p_job_type
+       AND dedupe_key = p_dedupe_key AND status IN ('queued', 'running')
+     LIMIT 1;
+    IF existing IS NOT NULL THEN
+      RETURN jsonb_build_object('ok', true, 'job_id', existing,
+                                'interactive', t.interactive, 'deduped', true);
+    END IF;
+  END IF;
+
+  INSERT INTO public.ai_jobs (job_type, application_id, app_slug, organization_id,
+                              payload, interactive, priority, dedupe_key, is_test)
+  VALUES (p_job_type, p_application_id, p_app_slug, p_organization_id,
+          payload, t.interactive, p_priority, p_dedupe_key, COALESCE(p_is_test, false))
+  RETURNING id INTO new_id;
+
+  RETURN jsonb_build_object('ok', true, 'job_id', new_id, 'interactive', t.interactive);
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.fn_ai_engine_enqueue(text, uuid, text, uuid, jsonb, text, integer, boolean) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.fn_ai_engine_enqueue(text, uuid, text, uuid, jsonb, text, integer, boolean) TO service_role;
 
 COMMIT;
