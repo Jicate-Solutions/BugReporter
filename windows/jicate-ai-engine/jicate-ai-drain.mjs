@@ -272,11 +272,16 @@ async function runClaude(job, label = 'default') {
         const answered = ids.find((id) => id.includes(job.model))
           || ids.sort((a, b) => (mu[b]?.outputTokens || 0) - (mu[a]?.outputTokens || 0))[0];
         const num = (v) => (Number.isFinite(v) ? v : null);
+        // What the API would have charged for this run (all models, cache included),
+        // as Claude reports it; we pay nothing extra on a subscription.
+        const cost = { api_cost_usd: num(d.total_cost_usd),
+          cache_read_tokens: num(answered ? mu[answered].cacheReadInputTokens : d.usage?.cache_read_input_tokens),
+          cache_write_tokens: num(answered ? mu[answered].cacheCreationInputTokens : d.usage?.cache_creation_input_tokens) };
         const usage = answered
           ? { model_id: answered, input_tokens: num(mu[answered].inputTokens),
-              output_tokens: num(mu[answered].outputTokens), limits }
+              output_tokens: num(mu[answered].outputTokens), ...cost, limits }
           : { model_id: job.model, input_tokens: num(d.usage?.input_tokens),
-              output_tokens: num(d.usage?.output_tokens), limits };
+              output_tokens: num(d.usage?.output_tokens), ...cost, limits };
         if (d.is_error) {
           const msg = String(d.result ?? d.subtype ?? 'error').slice(0, 300);
           const limited = RATE_LIMIT_RE.test(msg);
@@ -361,7 +366,7 @@ async function drainOnce() {
       job_id: job.job_id, answer,
       usage: { ...usage, account: label, duration_ms: Date.now() - started },
     });
-    log(`DONE ${job.job_id} status=${done?.status} in ${Date.now() - started}ms`);
+    log(`DONE ${job.job_id} status=${done?.status} in ${Date.now() - started}ms type=${job.job_type} model=${usage.model_id} api_cost_usd=${usage.api_cost_usd ?? 'n/a'}`);
     return { worked: true };
   } catch (e) {
     // Keys never reach the log or the server, even in a raw CLI error.
