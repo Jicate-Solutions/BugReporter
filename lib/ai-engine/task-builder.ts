@@ -120,7 +120,20 @@ export function canCreateFor(a: Actor, app: { id: string; organization_id: strin
   );
 }
 
-/** Who can see a task (and so may switch it off): any developer, or anyone on its app. */
+/**
+ * Who can see a task (and so may read its full instructions and versions, and
+ * switch it off): any developer in ANY organisation, or anyone on its app.
+ *
+ * WARNING (single-org assumption). This is safe today only because the
+ * platform has one organisation ("Jicate Solution"). When a second client
+ * organisation joins, "any developer anywhere" becomes a cross-client leak:
+ * that client's developers could read every other client's recipe text and
+ * switch their tasks off. Before onboarding a second org, scope this to the
+ * task's own organisation / owner app (shared tasks: decide explicitly), and
+ * scope the isBuilder-based edit rights the same way. The database read rule
+ * (fn_ai_task_visible in 20261024_ai_task_builder.sql) is already scoped to
+ * the owner app.
+ */
 export function canSeeTask(a: Actor, task: { owner_app: string | null }): boolean {
   return isBuilder(a) || (task.owner_app != null && a.appRoles.has(task.owner_app));
 }

@@ -13,8 +13,9 @@
 --   ai_task_versions             one row per saved version of a recipe
 --
 -- Writes to ai_task_versions go only through the server (service role); the
--- signed-in API can read versions of tasks whose app is in an organisation the
--- reader belongs to, and super admins can read all.
+-- signed-in API can read versions of tasks whose app the reader builds on
+-- (organisation owner/admin/developer, or app maintainer/developer), and super
+-- admins can read all.
 --
 -- Additive only. Safe to run twice.
 
@@ -57,34 +58,53 @@ CREATE INDEX IF NOT EXISTS idx_ai_task_versions_job ON public.ai_task_versions(j
 -- ── 3. RLS ───────────────────────────────────────────────────────────────────
 -- The policy cannot join ai_tasks directly: ai_tasks_read is super-admin only,
 -- so the subquery would see nothing for anyone else. This helper resolves
--- job_type → owner_app → organisation → membership with definer rights.
-CREATE OR REPLACE FUNCTION public.fn_ai_task_visible_to(p_job_type text, p_user uuid)
+-- job_type → owner_app → membership with definer rights, ALWAYS for the
+-- calling user (auth.uid()): it takes no user argument, so nobody can ask it
+-- about someone else. It grants what the server's builder rules grant, scoped
+-- to the task's own app:
+--   super admin, or
+--   owner / admin / developer of the owner app's organisation, or
+--   maintainer / developer of the owner app (app viewers are not builders).
+-- Shared tasks (owner_app NULL) are readable here by super admins only; the
+-- page reads them through the server.
+DROP POLICY IF EXISTS ai_task_versions_read ON public.ai_task_versions;
+DROP FUNCTION IF EXISTS public.fn_ai_task_visible_to(text, uuid);
+
+CREATE OR REPLACE FUNCTION public.fn_ai_task_visible(p_job_type text)
 RETURNS boolean
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
 STABLE
 AS $$
-  SELECT EXISTS (SELECT 1 FROM public.super_admins s WHERE s.user_id = p_user)
+  SELECT EXISTS (SELECT 1 FROM public.super_admins s WHERE s.user_id = auth.uid())
       OR EXISTS (
            SELECT 1
              FROM public.ai_tasks t
              JOIN public.applications a ON a.id = t.owner_app
              JOIN public.organization_members m ON m.organization_id = a.organization_id
             WHERE t.job_type = p_job_type
-              AND m.user_id = p_user
+              AND m.user_id = auth.uid()
+              AND m.role IN ('owner', 'admin', 'developer')
+         )
+      OR EXISTS (
+           SELECT 1
+             FROM public.ai_tasks t
+             JOIN public.application_members am ON am.application_id = t.owner_app
+            WHERE t.job_type = p_job_type
+              AND am.user_id = auth.uid()
+              AND am.role IN ('maintainer', 'developer')
          );
 $$;
 
-REVOKE ALL ON FUNCTION public.fn_ai_task_visible_to(text, uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.fn_ai_task_visible_to(text, uuid) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.fn_ai_task_visible(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.fn_ai_task_visible(text) TO authenticated, service_role;
 
 ALTER TABLE public.ai_task_versions ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS ai_task_versions_read ON public.ai_task_versions;
 CREATE POLICY ai_task_versions_read ON public.ai_task_versions
   FOR SELECT TO authenticated
-  USING (public.fn_ai_task_visible_to(job_type, auth.uid()));
+  USING (public.fn_ai_task_visible(job_type));
 
 REVOKE ALL ON public.ai_task_versions FROM anon;
 REVOKE INSERT, UPDATE, DELETE ON public.ai_task_versions FROM authenticated;
