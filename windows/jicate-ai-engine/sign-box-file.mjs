@@ -24,7 +24,7 @@ const FILES = ['jicate-ai-drain.mjs']; // same allow-list as the agent and ai_bo
 const args = process.argv.slice(2);
 const k = args.indexOf('--key');
 const keyPath = k >= 0 && args[k + 1] ? resolve(args[k + 1]) : resolve(homedir(), '.jicate-mail', 'box-update-signing.pem');
-const rest = args.filter((a, i) => !(i === k || i === k + 1));
+const rest = k >= 0 ? args.filter((a, i) => i !== k && i !== k + 1) : args;
 
 function die(msg) {
   console.error(`[sign-box-file] ${msg}`);
