@@ -43,7 +43,9 @@ Files into C:\jicate-ai\ (check every SHA-256 the Mac tab sends):
    match text must not match the agent itself. Report which user each MyJKKN
    task runs as: a task running as SYSTEM or another user will NOT see this
    user's environment variable.
-4. Register and start (no admin: no any-user logon trigger):
+4. Register and start (no any-user logon trigger; since 2026-10-24 the XML
+   asks for RunLevel HighestAvailable, so register it from an elevated
+   prompt - see "Commands, status reports and self-update" below):
      schtasks.exe /create /tn "ai.jicate.box-agent" /xml C:\jicate-ai\ai.jicate.box-agent.xml /f
      schtasks.exe /run /tn "ai.jicate.box-agent"
 5. Log C:\jicate-ai\logs\box-agent.log shows "start host-agent ... restartTasks=N".
@@ -189,3 +191,143 @@ Publishing a file (now any of the ten allow-listed names):
   must be UTF-16LE with a BOM, as Windows writes them: content, sha256 and
   signature are over the UTF-8 text, and the agent writes the file back as
   BOM + UTF-16LE (the XML declares encoding="UTF-16").
+
+Commands, status reports and self-update
+----------------------------------------
+(2026-10-24, box side: jicate-box-agent.mjs, run-jicate-box-agent.cmd,
+ai.jicate.box-agent.xml. The Tower side is the section above.)
+
+THE ONE REMAINING INSTALL PER BOX. After it, every change to the box goes
+through the Tower: no Claude tab, no paste, no UAC click. Do it only on the
+Director's yes typed in that box's own tab.
+  1. Copy into C:\jicate-ai\ (check each SHA-256 the Mac sends):
+       jicate-box-agent.mjs, run-jicate-box-agent.cmd, ai.jicate.box-agent.xml
+  2. In run-jicate-box-agent.cmd replace __NODE_EXE__ with the full path of
+     node.exe (as before). The agent copies this value into every launcher
+     it installs later, so this is the last time anyone edits it.
+  3. Optional, in box-agent.json:
+       "mailClientPath": "<full path>\\jicate-mail.mjs"   where the mail client lives
+       "costLog": "logs\\jicate-1.log" (or a list)       for the 7-day API cost sum
+       "box": "<name>"   only if ai_boxes.host is not this PC's hostname
+  4. From an ELEVATED prompt (Box 2: this is the last UAC click):
+       schtasks.exe /end /tn "ai.jicate.box-agent"
+       schtasks.exe /create /tn "ai.jicate.box-agent" /xml C:\jicate-ai\ai.jicate.box-agent.xml /f
+       schtasks.exe /run /tn "ai.jicate.box-agent"
+     The XML now says RunLevel HighestAvailable: the agent runs with the
+     highest rights this Windows user has, so register-task and admin
+     scripts need no UAC click. If the user is not an administrator,
+     HighestAvailable is just normal rights; register-task then fails with
+     "needs admin; register once by hand" and is never retried.
+  5. The log shows "start host-agent ... commands=on box=<name> sha=<8>", and
+     `box-command.mjs <box> status --wait` on the Mac prints the report.
+  Without the new launcher (step 1), self-update cannot finish: the agent
+  stages its update, logs "run-jicate-box-agent.cmd does not install staged
+  files; install the new launcher by hand" and keeps running the old file.
+
+Box 2 registers its worker tasks as S4U ("run whether the user is logged on
+or not", no stored password; the PC signs in automatically). Registering an
+S4U task needs admin, which is why the agent runs elevated. The repo's
+ai.jicate.engine-*.xml say InteractiveToken: do NOT register them on Box 2
+as they are. First read Box 2's own XML (run-script: schtasks /query /tn
+<task> /xml), commit it as the task XML, publish that, then register-task.
+
+What the agent does each minute, in this order:
+  1. account switch (unchanged);
+  2. file updates (one file per minute; see below);
+  3. commands, in the background: the minute loop never waits for them;
+  4. a status report every 5 minutes, also in the background.
+A failing command or report never stops steps 1 and 2.
+
+Commands. Checked as the section above says: signature over the exact
+payload text (before it is parsed), id = row id, box = this box (ai_boxes.host
+or box-agent.json "box", any letter case), expires_at against the Tower's
+clock, at most 6 hours ahead, known verb, id not in the ledger. The ledger is
+C:\jicate-ai\box-agent.commands.json (no secrets). A command is written to it
+BEFORE it runs, and runs only after the Tower accepted 'running' (moved:
+false = the row is already closed there, so it is not run). If the agent
+stops mid-command, the next start reports it 'failed' ("the box agent stopped
+while this command was running") and never runs it again. A result the Tower
+did not get is sent again each minute; moved: false on it is logged and
+dropped (e.g. the Tower already marked it "agent stopped").
+  status          the status report below; also stored as ai_boxes.status_report.
+  restart-task    only a task named in restartTasks, never the agent's own
+                  (ai.jicate.box-agent, or box-agent.json "agentTask"). Tasks
+                  that share its "match" restart with it, because stopping the
+                  match stops their processes too. It does NOT wait for idle
+                  workers: a job in progress is cut short.
+  register-task   xml = one of the five allow-listed task XMLs, installed by
+                  this agent from a signed row, unchanged on disk since, and
+                  the version the Tower lists now. Handed to schtasks as
+                  UTF-16. Access denied -> 'failed', "needs admin; register
+                  once by hand". Re-registering ai.jicate.box-agent itself is
+                  allowed; not yet checked on Windows whether that stops the
+                  running agent - if it does, the next minute's trigger starts
+                  it again.
+  run-script      powershell (-NoProfile -ExecutionPolicy Bypass -File) or cmd
+                  (/d /c), its own hidden child process, as this user at the
+                  agent's run level. timeout_s 1-600 (default 300); on timeout
+                  the whole process tree is killed. Result: exit_code,
+                  timed_out, seconds and the last 4 KB of stdout+stderr. The
+                  script text is never logged; its temp file in
+                  C:\jicate-ai\scripts is deleted afterwards.
+  Own time limits: status 120 s, restart-task 180 s, register-task 90 s.
+
+Status report (every 5 minutes, time kept in box-agent.commands.json, and on
+a status command): host, box, agent sha, node version, claude --version,
+Windows uptime, free GB on C:, each restartTasks task's state / last run /
+last result / run-as user (schtasks /query /v, English Windows labels), the
+agent task's RunLevel and LogonType, the sha of every allow-listed file on
+disk (plus the published sha when the file was adapted for this box), staged
+.new files, a file update awaiting its health check, failed shas, running
+commands, box-agent.json with every key that looks secret (token, key,
+secret, password, credential, auth) replaced by [redacted] and the public key
+shown only as a fingerprint, the last 20 lines of logs\box-agent.log (each
+scrubbed: key=value secrets, bearer tokens, sk-ant-..., and any run of 32+
+base64/hex characters become [redacted]), and the 7-day api_cost_usd sum from
+"costLog". Kept under 100 KB (the Tower takes up to 128 KB).
+
+File updates by name (signature + sha checks exactly as in "File updates"):
+  jicate-ai-drain.mjs       unchanged: swap when idle, restart the JICATE
+                            workers, health check, restore on failure.
+  run-jicate-ai-drain.cmd   the same path (no node --check). Its __CLAUDE_EXE__
+                            and __NODE_EXE__ take the values the live file has;
+                            if one is missing it is not installed. Installed only
+                            when the workers are idle, then they are restarted:
+                            a launcher swapped under a running cmd.exe would be
+                            read from the wrong byte offset when node exits.
+  jicate-box-agent.mjs      staged as jicate-box-agent.mjs.new (after
+                            node --check on a .mjs copy); never overwritten live.
+  run-jicate-box-agent.cmd  staged as run-jicate-box-agent.cmd.new, with this
+                            box's node path filled in.
+  jicate-mail.mjs           installed at "mailClientPath" after node --check
+                            (skipped, with one log line, if that is not set).
+  ai.jicate.*.xml           installed in C:\jicate-ai\ as BOM + UTF-16LE.
+  A replaced file is kept as <name>.bak-<old sha8>. A file adapted for this
+  box (XML as UTF-16, a launcher with this box's paths) differs from the
+  published bytes; files_applied reports the published sha as long as the file
+  on disk is exactly what the agent wrote (box-agent.files.json "known"),
+  otherwise the sha of what is on disk.
+
+Self-update of the agent and its launcher:
+  1. After staging, the agent exits as soon as nothing is in progress (no
+     account restart owed, no file swap, no command running). Task Scheduler
+     starts the launcher again within a minute.
+  2. At start, the launcher checks a staged agent with node --check (on a
+     .mjs copy: node will not parse a .new file as ESM), keeps the current one
+     as jicate-box-agent.mjs.bak-<yyyyMMdd-HHmmss>, moves the new one in and
+     writes jicate-box-agent.swapped. A failed check renames it to
+     jicate-box-agent.mjs.rejected; the agent then never tries that sha again.
+  3. The new agent deletes jicate-box-agent.swapped once it has reached the
+     Tower. If the marker is still there at the next launcher start, the new
+     agent stopped before it ever got through: the launcher restores the
+     backup and keeps the new one as .rejected.
+  4. The launcher replaces ITSELF only after node has exited, on its last
+     executed line: `if exist ...cmd.new (copy ... .bak-<stamp> & move /y
+     ...cmd.new "%~f0" & exit /b 0)`. cmd.exe reads a batch file one line at
+     a time from a byte offset, so a launcher that changed and then read on
+     would run garbage; cmd parses that whole line before running any of it,
+     and exit /b means it never reads the file again. The new launcher runs
+     from the next start. A broken launcher cannot be caught by node --check:
+     it is signed like everything else, but try a new one on one box first.
+  To retry a rejected sha: delete the .rejected file and its entry in
+  box-agent.files.json "failed", or publish a new sha.
