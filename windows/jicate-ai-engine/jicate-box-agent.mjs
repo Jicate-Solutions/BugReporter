@@ -113,11 +113,15 @@ function stopMatching(match) {
 
 function restartTasks() {
   const done = [];
-  for (const { task, match } of RESTART) {
+  // Stop everything first, then start everything: two workers share one command
+  // line, so stopping the second's match after starting the first killed the first.
+  for (const { task } of RESTART) {
     try { execFileSync('schtasks', ['/end', '/tn', task], { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
-    if (match) {
-      try { stopMatching(match); } catch (e) { log(`could not stop "${match}": ${String(e?.message || e).slice(0, 120)}`); }
-    }
+  }
+  for (const match of new Set(RESTART.map((t) => t.match).filter(Boolean))) {
+    try { stopMatching(match); } catch (e) { log(`could not stop "${match}": ${String(e?.message || e).slice(0, 120)}`); }
+  }
+  for (const { task } of RESTART) {
     try {
       execFileSync('schtasks', ['/run', '/tn', task], { stdio: 'ignore', windowsHide: true });
       done.push(task);
