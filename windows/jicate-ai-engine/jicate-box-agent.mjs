@@ -334,6 +334,15 @@ async function updateFile(d, gotAt, f, cur) {
   fileWaited = 0;
   const backup = `${f.name}.bak-${short(cur)}`;
   const only = workerTasks(f.name);
+  if (!RESTART.some(only)) {
+    // Nothing would restart: the old workers would keep running the old code and
+    // still pass the health check, so the box would report a version it does not run.
+    try { unlinkSync(stage); } catch { /* none */ }
+    staged[f.name] = null;
+    markFailed(tag);
+    log(`file ${f.name} ${short(f.sha256)} not installed: no worker task in restartTasks matches it; keeping ${short(cur)}`);
+    return;
+  }
   const before = serverNow(d, gotAt);
   const live = (d.workers || [])
     .filter((w) => before - Date.parse(w.last_seen_at || '') < LIVE_MS)
@@ -349,6 +358,7 @@ async function updateFile(d, gotAt, f, cur) {
     swapped = true;
     staged[f.name] = null;
     const restarted = restartTasks(only);
+    if (!restarted.length) throw new Error('no worker task could be restarted');
     // Mark the time AFTER the old processes are stopped, so only a new process can pass.
     fstate.pending.at = new Date(serverNow(d, gotAt)).toISOString();
     fstate.pending.restarting = false;
