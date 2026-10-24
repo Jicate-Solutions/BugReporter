@@ -44,6 +44,11 @@ vi.mock('@/lib/supabase/admin', () => ({
         select: () => b,
         is: () => b,
         in: () => b,
+        lte: () => b,
+        lt: () => b,
+        gt: () => b,
+        order: () => b,
+        limit: () => b,
         eq: (c: string, v: unknown) => {
           eqs.push([c, v]);
           if (updateRow) db.updates.push({ table, row: updateRow, eq: [...eqs] });
@@ -119,7 +124,7 @@ describe('box agent route, worker-file updates', () => {
   });
 
   it('GET ignores a row whose name is not allow-listed', async () => {
-    db.files.push({ name: 'jicate-box-agent.mjs', sha256: SHA, signature: SIG, content: 'x' });
+    db.files.push({ name: 'not-allowed.mjs', sha256: SHA, signature: SIG, content: 'x' });
     const body = await (await GET(get('?have=default'))).json();
     expect(body.files.map((f: { name: string }) => f.name)).toEqual(['jicate-ai-drain.mjs']);
   });
@@ -132,8 +137,8 @@ describe('box agent route, worker-file updates', () => {
   });
 
   it('?file= is 404 for a disallowed name, even if a row exists, and for an absent file', async () => {
-    db.files.push({ name: 'jicate-box-agent.mjs', sha256: SHA, signature: SIG, content: 'x' });
-    expect((await GET(get('?file=jicate-box-agent.mjs'))).status).toBe(404);
+    db.files.push({ name: 'not-allowed.mjs', sha256: SHA, signature: SIG, content: 'x' });
+    expect((await GET(get('?file=not-allowed.mjs'))).status).toBe(404);
     expect((await GET(get('?file=..%2Fjicate-ai-drain.mjs'))).status).toBe(404);
     db.files = [];
     expect((await GET(get('?file=jicate-ai-drain.mjs'))).status).toBe(404);
@@ -165,7 +170,7 @@ describe('box agent route, worker-file updates', () => {
   it('POST rejects a bad sha or a file name that is not allow-listed', async () => {
     expect((await POST(post({ applied: null, files: { 'jicate-ai-drain.mjs': 'xyz' } }))).status).toBe(400);
     expect((await POST(post({ applied: null, files: { 'jicate-ai-drain.mjs': SHA.toUpperCase() } }))).status).toBe(400);
-    expect((await POST(post({ applied: null, files: { 'jicate-box-agent.mjs': SHA } }))).status).toBe(400);
+    expect((await POST(post({ applied: null, files: { 'not-allowed.mjs': SHA } }))).status).toBe(400);
     expect(db.upserts).toHaveLength(0);
     expect(db.updates).toHaveLength(0);
   });

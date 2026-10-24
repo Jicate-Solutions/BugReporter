@@ -124,3 +124,68 @@ If the signing key leaks (or the Mac is lost):
   can still install code there, so do step 2 on every box right away.
 
 If an update is refused because no task in restartTasks matches the worker file, the agent remembers that sha as failed in `box-agent.files.json`. After fixing restartTasks, remove that entry (or the file) and restart the agent so the update is tried again.
+
+Remote control from the Tower
+-----------------------------
+(2026-10-24, Tower side: migration 20261024_box_remote_control.sql, the
+box-agent route, box-command.mjs, sign-box-file.mjs --publish.)
+
+After one last install per box, the Mac changes a box only through signed rows
+in the Control Tower. The box agent picks them up on its normal poll. No Claude
+tab, no paste, no UAC click.
+
+Commands (public.ai_box_commands, one row per command for one box):
+  status          {}                         the agent's full status report
+  restart-task    {"task"}                   only a task in box-agent.json
+                                             restartTasks; never the agent's own
+  register-task   {"task","xml"}             schtasks /create from an installed,
+                                             sha-checked task XML (agent elevated)
+  run-script      {"shell":"powershell"|"cmd","content_b64","timeout_s"<=600}
+                                             the script is inside the signed bytes
+  A row's payload is the exact signed text {id, box, verb, args, expires_at}
+  (keys in that order), signed with the same Ed25519 key as ai_box_files.
+  The box trusts only that payload and refuses (status 'refused', with a
+  reason) a bad signature, an id or box that does not match, an expired
+  command, an unknown verb, or an id it has already run.
+  Expiry: 30 minutes by default, at most 5h55m from box-command.mjs. The
+  table refuses more than 6 hours after its own clock; the 5 minutes spare
+  keep a Mac clock that differs from the database clock from tripping that.
+  A row still 'running' 15 minutes after its expiry is marked 'failed'
+  (result {"reason":"agent stopped"}) when its box next asks, so a dead
+  agent cannot leave it running forever. States: queued -> running -> done | failed | refused, or
+  queued -> expired when the box asks after expires_at. A finished row never
+  moves again. A command for a box that has never checked in simply waits
+  (or expires).
+
+What the box sees (GET /api/internal/ai-engine/box-agent, its own token):
+  commands: up to 5 of ITS OWN queued, unexpired rows, oldest first, as
+  [{ id, verb, payload, signature }]. Its own stale queued rows are marked
+  expired first.
+What the box sends back (POST, any combination):
+  command_update { id, status: running|done|failed|refused, result? } - only
+    its own rows; the answer says { command: { id, moved } }, moved false
+    when the row was already finished or is not this box's.
+  status_report { ... } - stored in ai_boxes.status_report with status_at
+    (every 5 minutes and on a `status` command; super admins can read it).
+  `applied` is now optional: a POST without it does not touch the box's
+  account. result and status_report are each limited to 128 KB of JSON.
+
+Sending a command from the Mac:
+  node windows/jicate-ai-engine/box-command.mjs <box> <verb> [json-args] [--expires 30m] [--wait]
+    e.g.  ... box-command.mjs WIN-AI status --wait
+          ... box-command.mjs WIN-AI restart-task '{"task":"ai.jicate.engine-1"}'
+          ... box-command.mjs WIN-AI register-task '{"task":"ai.jicate.engine-1","xml":"ai.jicate.engine-1.xml"}'
+          ... box-command.mjs WIN-AI run-script '{"shell":"powershell","timeout_s":60}' --script check.ps1 --wait
+  <box> is the host exactly as in ai_boxes.host. It signs with
+  ~/.jicate-mail/box-update-signing.pem, inserts one row through the Supabase
+  Management API (token from ~/.supabase/access-token, never printed) and,
+  with --wait, prints the result when the box finishes (exit 0 = done).
+  --dry-run prints the signed row and the SQL and touches nothing.
+
+Publishing a file (now any of the ten allow-listed names):
+  node windows/jicate-ai-engine/sign-box-file.mjs <file> --publish
+  signs it and upserts the ai_box_files row (content, sha256, signature,
+  source = the commit sha; the file must be committed). Task XMLs (*.xml)
+  must be UTF-16LE with a BOM, as Windows writes them: content, sha256 and
+  signature are over the UTF-8 text, and the agent writes the file back as
+  BOM + UTF-16LE (the XML declares encoding="UTF-16").
