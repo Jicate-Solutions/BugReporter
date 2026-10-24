@@ -380,6 +380,45 @@ function envValue(key) {
   return '';
 }
 
+/**
+ * box-agent.json, read so a bad edit can never switch remote control off.
+ * A UTF-8 byte-order mark (Windows PowerShell 5 adds one) is stripped. A file
+ * that parses is copied to box-agent.json.last-good; one that does not parse
+ * falls back to that copy, with a loud log line, instead of to empty settings
+ * (empty settings mean no updatePublicKey, so commands and updates turn off).
+ */
+export function loadConfig(dir, logFn = () => {}) {
+  const path = resolve(dir, 'box-agent.json');
+  const good = resolve(dir, 'box-agent.json.last-good');
+  const parse = (p) => JSON.parse(readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
+  try {
+    const cfg = parse(path);
+    // A rewrite that dropped the signing key must not turn commands off: carry
+    // the key over from the last-good copy, and never let a keyless copy
+    // replace one that has it.
+    if (!cfg.updatePublicKey) {
+      try {
+        const prev = parse(good);
+        if (prev && prev.updatePublicKey) {
+          logFn('box-agent.json has no updatePublicKey; carried it over from box-agent.json.last-good');
+          return { ...cfg, updatePublicKey: prev.updatePublicKey };
+        }
+      } catch { /* no copy yet */ }
+    }
+    try { writeFileSync(good, JSON.stringify(cfg, null, 2)); } catch { /* best effort */ }
+    return cfg;
+  } catch (e) {
+    try {
+      const cfg = parse(good);
+      logFn(`box-agent.json is unreadable (${String(e?.message || e).slice(0, 120)}); using box-agent.json.last-good`);
+      return cfg;
+    } catch {
+      logFn(`box-agent.json is unreadable (${String(e?.message || e).slice(0, 120)}) and there is no last-good copy; running with defaults`);
+      return { restartTasks: [] };
+    }
+  }
+}
+
 function init() {
   BASE = envValue('JICATE_AI_URL').replace(/\/+$/, '');
   TOKEN = envValue('JICATE_AI_RUNNER_TOKEN');
@@ -387,7 +426,7 @@ function init() {
     console.error('[box-agent] box-agent.env is missing JICATE_AI_URL or the agent token');
     process.exit(1);
   }
-  try { config = JSON.parse(readFileSync(resolve(HERE, 'box-agent.json'), 'utf8')); } catch { /* none */ }
+  config = loadConfig(HERE, log);
   RESTART = normalizeRestart(config);
   if (config.updatePublicKey) {
     try { UPDATE_KEY = parseUpdateKey(config.updatePublicKey); } catch (e) {
