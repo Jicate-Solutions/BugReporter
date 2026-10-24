@@ -326,13 +326,6 @@ async function updateFile(d, gotAt, f, cur) {
       return;
     }
   }
-  if ((d.busy ?? 0) > 0 && fileWaited < MAX_WAIT_CHECKS) {
-    fileWaited += 1;
-    log(`waiting: ${d.busy} job(s) running on this box (${fileWaited}/${MAX_WAIT_CHECKS}) before file update`);
-    return;
-  }
-  fileWaited = 0;
-  const backup = `${f.name}.bak-${short(cur)}`;
   const only = workerTasks(f.name);
   if (!RESTART.some(only)) {
     // Nothing would restart: the old workers would keep running the old code and
@@ -343,6 +336,13 @@ async function updateFile(d, gotAt, f, cur) {
     log(`file ${f.name} ${short(f.sha256)} not installed: no worker task in restartTasks matches it; keeping ${short(cur)}`);
     return;
   }
+  if ((d.busy ?? 0) > 0 && fileWaited < MAX_WAIT_CHECKS) {
+    fileWaited += 1;
+    log(`waiting: ${d.busy} job(s) running on this box (${fileWaited}/${MAX_WAIT_CHECKS}) before file update`);
+    return;
+  }
+  fileWaited = 0;
+  const backup = `${f.name}.bak-${short(cur)}`;
   const before = serverNow(d, gotAt);
   const live = (d.workers || [])
     .filter((w) => before - Date.parse(w.last_seen_at || '') < LIVE_MS)

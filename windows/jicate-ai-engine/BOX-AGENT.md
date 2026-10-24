@@ -122,3 +122,5 @@ If the signing key leaks (or the Mac is lost):
      fine; a box already on that sha does nothing).
   Until step 2 is done on a box, the leaked key plus database write access
   can still install code there, so do step 2 on every box right away.
+
+If an update is refused because no task in restartTasks matches the worker file, the agent remembers that sha as failed in `box-agent.files.json`. After fixing restartTasks, remove that entry (or the file) and restart the agent so the update is tried again.
