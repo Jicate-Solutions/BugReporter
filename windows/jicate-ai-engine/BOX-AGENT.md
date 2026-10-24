@@ -54,3 +54,45 @@ Rollback:
   schtasks.exe /end /tn "ai.jicate.box-agent" & schtasks.exe /delete /tn "ai.jicate.box-agent" /f
   reg delete HKCU\Environment /v CLAUDE_CODE_OAUTH_TOKEN /f
   (then restart the listed tasks so they return to the box's own sign-in)
+
+File updates (2026-10-24)
+-------------------------
+Why: on a box where the workers run as S4U tasks (session 0), a Claude tab
+cannot stop or restart them without Windows admin, so every worker update cost
+a UAC click. The agent runs as the same user and already restarts them, so it
+installs new worker files itself. Only jicate-ai-drain.mjs; never itself.
+
+One-time, on the Mac (Box desk):
+  node windows/jicate-ai-engine/sign-box-file.mjs --keygen
+  - writes ~/.jicate-mail/box-update-signing.pem (0600; never print, never
+    commit) and prints ONLY the public key.
+On each box, add that public key to C:\jicate-ai\box-agent.json:
+  { "restartTasks": [ ... ], "updatePublicKey": "<printed base64>" }
+copy the new jicate-box-agent.mjs in (check its SHA-256), and restart the
+agent task. Its log says "fileUpdates=on". Without the key the agent never
+applies a file update.
+
+To publish a worker update (Box desk, after the change is merged):
+  node windows/jicate-ai-engine/sign-box-file.mjs windows/jicate-ai-engine/jicate-ai-drain.mjs
+  -> {"name":"jicate-ai-drain.mjs","sha256":"...","signature":"..."}
+  Upsert ONE row into public.ai_box_files with the service role:
+    name, sha256, signature (from the line above), content = the file's exact
+    text, source = the commit sha, updated_at = now().
+  sha256 is of the exact file bytes (shasum -a 256), not a git blob sha.
+  Only the service role can write this table; the agent token can only read.
+
+What each box agent then does (within a minute or two):
+  1. downloads the file, checks sha256 twice (listed vs. received bytes) and
+     the Ed25519 signature, writes jicate-ai-drain.new.mjs, runs node --check;
+  2. waits until none of its JICATE workers is mid-job (up to 10 minutes);
+  3. keeps the old file as jicate-ai-drain.mjs.bak-<old sha8>, swaps, restarts
+     the tasks in box-agent.json; log: "file updated jicate-ai-drain.mjs
+     <old8> -> <new8>; restarted N task(s)";
+  4. health check: every worker of the box seen in the 5 minutes before the
+     swap must check in again within 3 minutes. If not, it restores the
+     backup, restarts again, never retries that sha, and logs it.
+  5. only then reports the sha it runs: ai_boxes.files_applied.
+A box missing the file is skipped (the agent never creates it). A rejected
+sha is remembered in box-agent.files.json; publish a new sha to try again.
+files_applied stays empty on a box until its first file update or account
+switch.
