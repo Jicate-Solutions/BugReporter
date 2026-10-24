@@ -11,6 +11,11 @@
  * its model, mark whether a person waits for it, and set its limits. The
  * recipe wording is shown but not editable here (it carries safety rules).
  *
+ * AI task builder (2026-10-24): developers of an app can also create tasks for
+ * their apps and draft recipe edits (live only after a passing test), see each
+ * task's version history, restore a version, and switch a task off. Hidden
+ * until the 20261024_ai_task_builder migration is applied.
+ *
  * Server component. Membership is checked session-side (RLS), then data is
  * read with the service client and filtered to this organisation.
  */
@@ -38,7 +43,17 @@ import {
   type UsageRow
 } from '@/lib/ai-engine/admin';
 import { AI_TASK_KEYS } from '@/lib/ai/tasks';
+import {
+  buildableApps,
+  canSeeTask,
+  isBuilder,
+  loadActor,
+  readTaskBuilderMeta,
+  type BuildableApp
+} from '@/lib/ai-engine/task-builder';
 import { EngineTaskEditor } from './_components/engine-task-editor';
+import { NewTaskDialog } from './_components/new-task-dialog';
+import { TaskBuilderPanel } from './_components/task-builder-panel';
 import { SafetyAlertBanner } from '../safety/_components/safety-alert-banner';
 
 export const dynamic = 'force-dynamic';
@@ -110,6 +125,40 @@ export default async function AiModelsPage({
   ]);
   const workerAlive = anyWorkerAlive(runners);
 
+  // ── AI task builder (null meta = migration not applied: builder hidden) ──
+  const meta = await readTaskBuilderMeta(admin);
+  const actor = meta && user ? await loadActor(admin, user.id) : null;
+  const myApps: BuildableApp[] = actor ? await buildableApps(admin, actor) : [];
+  const builder = actor ? isBuilder(actor) : false;
+  const metaRows = meta ? [...meta.values()] : [];
+  const ownerIds = [...new Set(metaRows.map((m) => m.created_by).filter(Boolean))] as string[];
+  const ownerAppIds = [...new Set(metaRows.map((m) => m.owner_app).filter(Boolean))] as string[];
+  const [ownerRows, ownerAppRows] = await Promise.all([
+    ownerIds.length
+      ? admin.from('profiles').select('id, email, full_name').in('id', ownerIds)
+      : Promise.resolve({ data: [] }),
+    ownerAppIds.length
+      ? admin.from('applications').select('id, name, organization_id').in('id', ownerAppIds)
+      : Promise.resolve({ data: [] })
+  ]);
+  const ownerName = new Map(
+    ((ownerRows.data ?? []) as { id: string; email: string | null; full_name: string | null }[]).map(
+      (p) => [p.id, p.full_name || p.email || 'a former member']
+    )
+  );
+  // Another organisation's app name is not shown to people outside it.
+  const appName = new Map(
+    ((ownerAppRows.data ?? []) as { id: string; name: string; organization_id: string }[]).map(
+      (a) => [
+        a.id,
+        actor &&
+        (actor.superAdmin || actor.orgRoles.has(a.organization_id) || actor.appRoles.has(a.id))
+          ? a.name
+          : 'an app in another organisation'
+      ]
+    )
+  );
+
   const usageByTask = new Map<string, UsageRow[]>();
   const usageByModel = new Map<string, UsageRow[]>();
   for (const u of usage) {
@@ -167,15 +216,30 @@ export default async function AiModelsPage({
       )}
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-4">
           <CardTitle className="text-base">Tasks</CardTitle>
+          {meta && myApps.length > 0 && (
+            <NewTaskDialog
+              apps={myApps.map((a) => ({ id: a.id, name: a.name, slug: a.slug }))}
+            />
+          )}
         </CardHeader>
         <CardContent className="space-y-6">
           {tasks.length === 0 && (
             <p className="text-muted-foreground text-sm">No tasks on the JICATE engine yet.</p>
           )}
+          {!meta && canEdit && (
+            <p className="text-muted-foreground text-xs">
+              The AI task builder (new tasks, drafts, version history) appears here once the
+              20261024_ai_task_builder migration is applied.
+            </p>
+          )}
           {tasks.map((t) => {
             const s = summarise(usageByTask.get(t.job_type) ?? []);
+            const m = meta?.get(t.job_type);
+            const showBuilder = Boolean(
+              m && actor && canSeeTask(actor, { owner_app: m.owner_app })
+            );
             return (
               <div key={t.job_type} className="space-y-3 border-b pb-6 last:border-b-0 last:pb-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -222,6 +286,32 @@ export default async function AiModelsPage({
                     }}
                   />
                 )}
+                {showBuilder && m && actor && (
+                  <TaskBuilderPanel
+                    jobType={t.job_type}
+                    enabled={t.enabled}
+                    ownerLabel={m.created_by ? ownerName.get(m.created_by) ?? 'a former member' : 'platform (no owner)'}
+                    appLabel={m.owner_app ? appName.get(m.owner_app) ?? 'a removed app' : 'shared by all apps'}
+                    canEdit={builder}
+                    canSwitchOff
+                    superAdmin={actor.superAdmin}
+                    recipe={{
+                      title: t.title,
+                      description: t.description ?? '',
+                      instructions: t.instructions,
+                      model: t.model,
+                      effort: t.effort ?? null,
+                      output_format: t.output_format,
+                      interactive: t.interactive,
+                      max_inflight: t.max_inflight,
+                      max_payload_bytes: t.max_payload_bytes,
+                      timeout_seconds: t.timeout_seconds,
+                      max_answer_words: t.max_answer_words,
+                      required_inputs: m.required_inputs,
+                      queue_wait_seconds: m.queue_wait_seconds
+                    }}
+                  />
+                )}
                 <details className="text-sm">
                   <summary className="text-muted-foreground cursor-pointer">
                     Recipe rules (read only)
@@ -235,7 +325,8 @@ export default async function AiModelsPage({
           })}
           {!canEdit && tasks.length > 0 && (
             <p className="text-muted-foreground text-xs">
-              Only platform admins can change these settings.
+              Only platform admins can change the settings above directly. Developers change a
+              task by saving a draft, which goes live after a test run passes.
             </p>
           )}
         </CardContent>
