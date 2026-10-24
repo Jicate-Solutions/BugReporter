@@ -393,10 +393,19 @@ export function loadConfig(dir, logFn = () => {}) {
   const parse = (p) => JSON.parse(readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
   try {
     const cfg = parse(path);
-    // Never let a copy that lost the signing key replace one that had it.
-    let keep = true;
-    try { keep = Boolean(cfg.updatePublicKey) || !parse(good).updatePublicKey; } catch { /* no copy yet */ }
-    if (keep) { try { writeFileSync(good, JSON.stringify(cfg, null, 2)); } catch { /* best effort */ } }
+    // A rewrite that dropped the signing key must not turn commands off: carry
+    // the key over from the last-good copy, and never let a keyless copy
+    // replace one that has it.
+    if (!cfg.updatePublicKey) {
+      try {
+        const prev = parse(good);
+        if (prev && prev.updatePublicKey) {
+          logFn('box-agent.json has no updatePublicKey; carried it over from box-agent.json.last-good');
+          return { ...cfg, updatePublicKey: prev.updatePublicKey };
+        }
+      } catch { /* no copy yet */ }
+    }
+    try { writeFileSync(good, JSON.stringify(cfg, null, 2)); } catch { /* best effort */ }
     return cfg;
   } catch (e) {
     try {

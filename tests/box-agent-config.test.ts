@@ -38,11 +38,15 @@ describe('loadConfig', () => {
     expect(existsSync(path.join(d, 'box-agent.json.last-good'))).toBe(false);
   });
 
-  it('does not let a copy without the signing key overwrite one that has it', () => {
+  it('carries the signing key over when a rewrite dropped it, and keeps the last-good copy', () => {
     const d = fresh();
     writeFileSync(path.join(d, 'box-agent.json.last-good'), JSON.stringify(cfg));
     writeFileSync(path.join(d, 'box-agent.json'), JSON.stringify({ restartTasks: [] }));
-    loadConfig(d);
+    const lines: string[] = [];
+    const got = loadConfig(d, (s) => lines.push(s));
+    expect(got.updatePublicKey).toBe('KEY');
+    expect(got.restartTasks).toEqual([]);
+    expect(lines.join(' ')).toMatch(/carried it over/);
     expect(JSON.parse(readFileSync(path.join(d, 'box-agent.json.last-good'), 'utf8')).updatePublicKey).toBe('KEY');
   });
 });
