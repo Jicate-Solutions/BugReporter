@@ -12,6 +12,10 @@
 //                                               (run it under the Monitor tool in a Claude tab)
 //   node jicate-mail.mjs notify                 never exits: a desktop popup per new message, no
 //                                               Claude needed; mail stays unread for the tab to read
+//   node jicate-mail.mjs wait                   exits as soon as unread mail is waiting, WITHOUT
+//                                               marking it read (for tabs with no Monitor tool:
+//                                               run it in the background; its exit wakes the tab,
+//                                               which then runs `read` and starts `wait` again)
 //
 // Config: ~/.jicate-mail/config.json  { "url": "https://...", "token": "..." }
 // written by new-mail-token.mjs. Node 18+ only, no packages. Pure ASCII on purpose.
@@ -165,8 +169,25 @@ try {
         await new Promise((r) => setTimeout(r, Math.min(30_000 * fails, 300_000)));
       }
     }
+  } else if (cmd === 'wait') {
+    let fails = 0;
+    for (;;) {
+      try {
+        const n = ((await call('GET', '')).messages || []).length;
+        if (n) {
+          console.log(`[jicate-mail] ${n} unread message(s) waiting; run: node jicate-mail.mjs read`);
+          break;
+        }
+        fails = 0;
+        await new Promise((r) => setTimeout(r, 10_000));
+      } catch (e) {
+        fails += 1;
+        if (fails === 1 || fails % 30 === 0) console.log(`[jicate-mail] cannot reach the mailbox: ${e.message}`);
+        await new Promise((r) => setTimeout(r, Math.min(10_000 * fails, 120_000)));
+      }
+    }
   } else {
-    console.log('usage: jicate-mail.mjs whoami | send <to> <text...> | read | watch | notify');
+    console.log('usage: jicate-mail.mjs whoami | send <to> <text...> | read | watch | notify | wait');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {

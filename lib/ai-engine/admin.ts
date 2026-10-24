@@ -15,6 +15,8 @@ export interface EngineTaskRow {
   description: string;
   instructions: string;
   model: string;
+  /** low | medium | high | xhigh | max; null = the CLI default. */
+  effort: string | null;
   output_format: 'text' | 'json';
   interactive: boolean;
   enabled: boolean;
@@ -40,6 +42,43 @@ export interface RunnerRow {
   name: string;
   last_seen_at: string;
   last_job_at: string | null;
+  /** Claude account label chosen for this worker; null = the box's own sign-in. */
+  account: string | null;
+  account_fallback: boolean;
+  /** Labels the worker reported holding (names only). */
+  accounts_available: string[];
+  /** Label the last job actually ran on. */
+  account_in_use: string | null;
+  /** The Windows computer this worker runs on. */
+  host: string | null;
+}
+
+export interface AccountRow {
+  label: string;
+  five_hour_util: number | null;
+  seven_day_util: number | null;
+  five_hour_resets_at: string | null;
+  seven_day_resets_at: string | null;
+  overage_enabled: boolean | null;
+  reported_by: string | null;
+  updated_at: string | null;
+  priority: number | null;
+}
+
+/** Latest allowance reading per Claude account label. Platform admins only. */
+export async function readAccounts(admin: SupabaseClient): Promise<AccountRow[]> {
+  const { data } = await admin
+    .from('ai_accounts')
+    .select(
+      'label, five_hour_util, seven_day_util, five_hour_resets_at, seven_day_resets_at, overage_enabled, reported_by, updated_at, priority'
+    )
+    .order('priority', { ascending: true, nullsFirst: false })
+    .order('label');
+  return ((data ?? []) as AccountRow[]).map((r) => ({
+    ...r,
+    five_hour_util: r.five_hour_util == null ? null : Number(r.five_hour_util),
+    seven_day_util: r.seven_day_util == null ? null : Number(r.seven_day_util)
+  }));
 }
 
 export interface JobRow {
@@ -60,7 +99,7 @@ export async function readEngineTasks(admin: SupabaseClient): Promise<EngineTask
   const { data } = await admin
     .from('ai_tasks')
     .select(
-      'job_type, title, description, instructions, model, output_format, interactive, enabled, max_inflight, max_payload_bytes, timeout_seconds, max_answer_words, updated_at'
+      'job_type, title, description, instructions, model, effort, output_format, interactive, enabled, max_inflight, max_payload_bytes, timeout_seconds, max_answer_words, updated_at'
     )
     .order('job_type');
   return (data ?? []) as EngineTaskRow[];
@@ -86,7 +125,7 @@ export async function readUsage(
 export async function readRunners(admin: SupabaseClient): Promise<RunnerRow[]> {
   const { data } = await admin
     .from('ai_runners')
-    .select('name, last_seen_at, last_job_at')
+    .select('name, last_seen_at, last_job_at, account, account_fallback, accounts_available, account_in_use, host')
     .order('name');
   return (data ?? []) as RunnerRow[];
 }

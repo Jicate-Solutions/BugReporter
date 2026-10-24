@@ -33,9 +33,17 @@ import {
   runnerAlive,
   secondsBetween,
   type JobRow,
-  type RunnerRow
+  type RunnerRow,
+  type AccountRow,
+  isSuperAdmin,
+  readAccounts
 } from '@/lib/ai-engine/admin';
 import { SafetyAlertBanner } from '../safety/_components/safety-alert-banner';
+import { RunnerAccountEditor } from './_components/runner-account-editor';
+import { BoxAccountEditor } from './_components/box-account-editor';
+import { AccountPriorityEditor } from './_components/account-priority-editor';
+import { AddAccountForm } from './_components/add-account-form';
+import { RemoveKeyButton } from './_components/remove-key-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +53,59 @@ function statusBadge(status: string) {
   if (status === 'error') return <Badge variant="destructive">error</Badge>;
   if (status === 'running') return <Badge variant="outline">running</Badge>;
   return <Badge variant="secondary">waiting</Badge>;
+}
+
+/** Workers grouped by Windows computer, with the account they share (or null). */
+function boxesOf(runners: RunnerRow[]) {
+  const map = new Map<string, RunnerRow[]>();
+  for (const r of runners) {
+    const host = r.host ?? 'unknown box';
+    map.set(host, [...(map.get(host) ?? []), r]);
+  }
+  return [...map.entries()].map(([host, rs]) => {
+    const accounts = new Set(rs.map((r) => r.account ?? 'default'));
+    const common = rs
+      .map((r) => r.accounts_available ?? [])
+      .reduce((a, b) => a.filter((x) => b.includes(x)));
+    return {
+      host,
+      workers: rs.map((r) => r.name),
+      current: accounts.size === 1 ? [...accounts][0] : null,
+      labels: common
+    };
+  });
+}
+
+function pct(v: number | null) {
+  return v == null ? null : Math.round(v * 100);
+}
+
+function istTime(iso: string | null) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function UsageBar({ label, value, resets }: { label: string; value: number | null; resets: string | null }) {
+  const p = pct(value);
+  const color = p == null ? 'bg-muted' : p >= 90 ? 'bg-red-500' : p >= 75 ? 'bg-amber-500' : 'bg-green-500';
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs">
+        <span>{label}</span>
+        <span className="text-muted-foreground">
+          {p == null ? 'no reading yet' : `${p}% used`} · resets {istTime(resets)}
+        </span>
+      </div>
+      <div className="bg-muted h-2 overflow-hidden rounded">
+        <div className={`h-2 ${color}`} style={{ width: `${Math.min(p ?? 0, 100)}%` }} />
+      </div>
+    </div>
+  );
 }
 
 /** One clock read per request, outside render, for every "ago" on the page. */
@@ -104,16 +165,45 @@ export default async function AiRoutinesPage({
     data: { user }
   } = await session.auth.getUser();
   const admin = createAdminClient();
-  const [runners, live, recent, scheduledRes] = await Promise.all([
+  const [runners, accounts, live, recent, scheduledRes, canEdit, secretsRes, fetchesRes, boxesRes] = await Promise.all([
     readRunners(admin),
+    readAccounts(admin),
     readLiveQueue(admin, org.id),
     readRecentJobs(admin, org.id, 50),
     admin
       .from('app_ai_routines')
       .select('id, routine_kind, enabled, last_run_at, last_status, applications(name)')
       .eq('organization_id', org.id)
-      .order('routine_kind')
+      .order('routine_kind'),
+    user ? isSuperAdmin(admin, user.id) : Promise.resolve(false),
+    admin.from('ai_account_secrets').select('label'),
+    admin
+      .from('ai_account_key_fetches')
+      .select('id, runner, label, host, granted, reason, fetched_at')
+      .order('fetched_at', { ascending: false })
+      .limit(15),
+    admin.from('ai_boxes').select('host, account, chosen_label, applied_label, applied_at, agent_seen_at')
   ]);
+  const boxRows = new Map(
+    ((boxesRes.data ?? []) as {
+      host: string;
+      account: string | null;
+      chosen_label: string | null;
+      applied_label: string | null;
+      applied_at: string | null;
+      agent_seen_at: string | null;
+    }[]).map((b) => [b.host.toLowerCase(), b])
+  );
+  const keyFetches = (fetchesRes.data ?? []) as {
+    id: number;
+    runner: string;
+    label: string;
+    host: string | null;
+    granted: boolean;
+    reason: string | null;
+    fetched_at: string;
+  }[];
+  const storedKeys = new Set(((secretsRes.data ?? []) as { label: string }[]).map((x) => x.label));
   const scheduled = (scheduledRes.data ?? []) as ScheduledRoutine[];
 
   const { now, aliveCount, waiting, running, oldestWait, errors24h } = queueStats(
@@ -168,6 +258,89 @@ export default async function AiRoutinesPage({
         ))}
       </div>
 
+      {canEdit && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Claude accounts</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <p className="text-muted-foreground text-sm">
+              How much of each account&apos;s allowance is used, from the latest job that ran on it.
+              &quot;default&quot; is each box&apos;s own sign-in. Switch a whole box below, or pick
+              &quot;auto&quot;: workers use the account with the lowest priority number that still
+              has allowance, move to the next when it runs out, and come back when it renews.
+            </p>
+            {accounts.length === 0 && (
+              <p className="text-muted-foreground text-sm">No readings yet. They appear after the next job.</p>
+            )}
+            {accounts.map((a: AccountRow) => (
+              <div key={a.label} className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{a.label}</span>
+                  <span className="text-muted-foreground text-xs">
+                    {a.updated_at ? `read ${ago(a.updated_at, now)}` : 'not used yet'}
+                    {a.reported_by ? ` by ${a.reported_by}` : ''}
+                  </span>
+                  {storedKeys.has(a.label) && (
+                    <span className="text-muted-foreground text-xs">· key in Control Tower</span>
+                  )}
+                  <div className="ml-auto flex items-center gap-1">
+                    <AccountPriorityEditor label={a.label} priority={a.priority} />
+                    {storedKeys.has(a.label) && <RemoveKeyButton label={a.label} />}
+                  </div>
+                </div>
+                <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} />
+                <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} />
+              </div>
+            ))}
+            <AddAccountForm />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Key handouts (latest 15)</p>
+              {keyFetches.length === 0 ? (
+                <p className="text-muted-foreground text-xs">No worker has fetched a stored key yet.</p>
+              ) : (
+                keyFetches.map((f) => (
+                  <p key={f.id} className="text-xs">
+                    {ago(f.fetched_at, now)} · {f.runner}
+                    {f.host ? ` on ${f.host}` : ''} · {f.label} ·{' '}
+                    {f.granted ? 'given' : <span className="text-red-600">refused ({f.reason})</span>}
+                  </p>
+                ))
+              )}
+            </div>
+            {boxesOf(runners).map((b) => {
+              const row = boxRows.get(b.host.toLowerCase());
+              const agentAlive = row?.agent_seen_at && now - new Date(row.agent_seen_at).getTime() < 180_000;
+              return (
+                <div key={b.host} className="space-y-1 border-t pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm">
+                      <span className="font-medium">{b.host}</span>
+                      <span className="text-muted-foreground"> · {b.workers.join(', ')}</span>
+                    </div>
+                    <BoxAccountEditor
+                      host={b.host}
+                      workers={b.workers}
+                      current={row?.account ?? b.current}
+                      labels={b.labels}
+                    />
+                  </div>
+                  <p className="text-muted-foreground text-xs">
+                    {!row?.agent_seen_at
+                      ? 'Whole-box switching: account agent not installed on this box yet (only the JICATE workers follow the choice).'
+                      : `Whole box ${agentAlive ? 'is on' : 'was last on'} ${row.applied_label ?? 'its own sign-in'}` +
+                        (row.account === 'auto' ? ` · auto picks ${row.chosen_label ?? 'its own sign-in'}` : '') +
+                        ` · agent seen ${ago(row.agent_seen_at, now)}` +
+                        (row.applied_at ? ` · switched ${ago(row.applied_at, now)}` : '') +
+                        '. Claude tabs pick up a switch when reopened.'}
+                  </p>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Workers</CardTitle>
@@ -185,6 +358,7 @@ export default async function AiRoutinesPage({
                   <TableHead>State</TableHead>
                   <TableHead>Last check-in</TableHead>
                   <TableHead>Last job</TableHead>
+                  <TableHead>Claude account</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -200,6 +374,21 @@ export default async function AiRoutinesPage({
                     </TableCell>
                     <TableCell>{ago(r.last_seen_at, now)}</TableCell>
                     <TableCell>{ago(r.last_job_at, now)}</TableCell>
+                    <TableCell>
+                      {canEdit ? (
+                        <RunnerAccountEditor
+                          runner={{
+                            name: r.name,
+                            account: r.account,
+                            account_fallback: r.account_fallback,
+                            accounts_available: r.accounts_available ?? [],
+                            account_in_use: r.account_in_use
+                          }}
+                        />
+                      ) : (
+                        <span className="text-sm">{r.account_in_use ?? r.account ?? 'default'}</span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

@@ -4,7 +4,7 @@
  * Used by the AI Models page. Super admins only: the engine is platform-wide,
  * so one org's admin must not change what every org's apps get.
  *
- * Body: { job_type, enabled?, model?, interactive?, max_inflight?,
+ * Body: { job_type, enabled?, model?, effort?, interactive?, max_inflight?,
  *         timeout_seconds?, max_answer_words? }
  *
  * Switching a task ON is refused while no worker has checked in within the last
@@ -29,6 +29,7 @@ const bodySchema = z.object({
   job_type: z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/),
   enabled: z.boolean().optional(),
   model: z.string().regex(/^[a-z0-9.-]{2,40}$/).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullable().optional(),
   interactive: z.boolean().optional(),
   max_inflight: z.number().int().min(1).max(20).optional(),
   timeout_seconds: z.number().int().min(10).max(600).optional(),
@@ -78,7 +79,7 @@ export async function PATCH(request: NextRequest) {
     .from('ai_tasks')
     .update({ ...changes, updated_at: new Date().toISOString() })
     .eq('job_type', job_type)
-    .select('job_type, enabled, model, interactive, max_inflight, timeout_seconds, max_answer_words')
+    .select('job_type, enabled, model, effort, interactive, max_inflight, timeout_seconds, max_answer_words')
     .maybeSingle();
 
   if (error) return fail('UPDATE_FAILED', 'Could not save the change.', 500);

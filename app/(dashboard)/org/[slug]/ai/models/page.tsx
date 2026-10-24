@@ -182,6 +182,7 @@ export default async function AiModelsPage({
                     <Badge variant="secondary">off</Badge>
                   )}
                   <Badge variant="outline">{t.model}</Badge>
+                  {t.effort && <Badge variant="outline">effort: {t.effort}</Badge>}
                   {t.interactive && <Badge variant="outline">person waiting</Badge>}
                 </div>
                 {t.description && (
@@ -205,6 +206,7 @@ export default async function AiModelsPage({
                       job_type: t.job_type,
                       enabled: t.enabled,
                       model: t.model,
+                      effort: t.effort ?? null,
                       interactive: t.interactive,
                       max_inflight: t.max_inflight,
                       timeout_seconds: t.timeout_seconds
