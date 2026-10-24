@@ -28,10 +28,14 @@
 //     one must), else the backup is restored, the worker tasks restarted again
 //     and that sha is never tried again. The swap is recorded before the
 //     rename, so an agent that stops mid-swap finishes it next run.
-//   - jicate-box-agent.mjs and run-jicate-box-agent.cmd: this agent NEVER
-//     overwrites a live file of its own. It writes <name>.new (the .mjs after
-//     `node --check` on a staged copy) and then exits when idle;
-//     run-jicate-box-agent.cmd installs the .new on its next start.
+//     run-jicate-ai-drain.cmd must have CRLF line endings throughout.
+//   - jicate-box-agent.mjs: this agent NEVER overwrites its own live file. It
+//     writes jicate-box-agent.mjs.new (after `node --check` on a staged copy)
+//     and then exits when idle; run-jicate-box-agent.cmd installs it on its
+//     next start (and rolls it back if it never reaches the Tower).
+//   - run-jicate-box-agent.cmd (the launcher): install-by-hand only. A bad
+//     launcher would stop the agent every minute with no way back, so the
+//     agent skips it with a log line even though the Tower may list it.
 //   - jicate-mail.mjs: installed at box-agent.json "mailClientPath" (skipped
 //     with a log line if that is not set), after `node --check`.
 //   - ai.jicate.*.xml: installed into this folder (used by register-task).
@@ -48,7 +52,9 @@
 // in the local ledger (replay). Verbs: status, restart-task (restartTasks
 // names only, never this agent's task), register-task (an allow-listed xml
 // this agent installed, sha still matching), run-script (powershell or cmd,
-// hidden, <= 600 s, last 4 KB of output). Commands run in the background
+// hidden, <= 600 s, last 4 KB of output). restart-task waits for idle JICATE
+// workers like the account switch (up to 10 polls) unless args.force is true;
+// register-task never touches the agent's own task. Commands run in the background
 // after the account and file steps, each with its own timeout, so a slow one
 // never holds up the minute loop. Every 5 minutes it also posts a status
 // report (secrets scrubbed).
@@ -221,18 +227,20 @@ const baseOf = (p) => String(p).split(/[\\/]/).pop();
  * Where an allow-listed file goes and how it is installed.
  *   worker  swap when idle + restart JICATE workers + health check (never created)
  *   stage   written as <target>.new; run-jicate-box-agent.cmd installs it
+ *   (skip)  run-jicate-box-agent.cmd: install-by-hand only; target kept for reports
  *   install written straight to target (backup kept)
  * check: `node --check` first. fill: carry this box's paths into placeholders.
- * utf16: written to disk as UTF-16LE with a BOM (task XML).
+ * utf16: written to disk as UTF-16LE with a BOM (task XML). crlf: refused
+ * unless every line ends in CRLF (cmd.exe misreads a batch file without).
  */
 export function installPlan(name, { here, mailClientPath } = {}) {
   if (!BOX_FILES.includes(name)) return { skip: `${name} is not a file this agent installs` };
   const at = (n) => resolve(here, n);
   switch (name) {
     case 'jicate-ai-drain.mjs': return { kind: 'worker', target: at(name), check: true, fill: false };
-    case 'run-jicate-ai-drain.cmd': return { kind: 'worker', target: at(name), check: false, fill: true };
+    case 'run-jicate-ai-drain.cmd': return { kind: 'worker', target: at(name), check: false, fill: true, crlf: true };
     case 'jicate-box-agent.mjs': return { kind: 'stage', target: at(name), check: true, fill: false };
-    case 'run-jicate-box-agent.cmd': return { kind: 'stage', target: at(name), check: false, fill: true };
+    case 'run-jicate-box-agent.cmd': return { target: at(name), skip: 'launcher is install-by-hand only: run-jicate-box-agent.cmd not installed' };
     case 'jicate-mail.mjs': {
       if (!mailClientPath) return { skip: 'box-agent.json has no mailClientPath; jicate-mail.mjs not installed' };
       const p = String(mailClientPath);
@@ -264,6 +272,28 @@ export function fillPlaceholders(text, liveText, execPath) {
   });
   if (!error && /__[A-Z][A-Z0-9_]*__/.test(out.replace(/^\s*(REM|::).*$/gim, ''))) error = 'a placeholder is left that this agent cannot fill';
   return error ? { error } : { text: out };
+}
+
+/** True when every line break is CRLF (no bare LF, no bare CR). */
+export function isCrlf(text) {
+  const t = String(text);
+  return !/(^|[^\r])\n/.test(t) && !/\r(?!\n)/.test(t);
+}
+
+export const OWN_TASK_REASON = "agent's own task: register by hand once with the Director watching";
+
+/** Why a register-task command is refused, or null. Never the agent's own task or its XML. */
+export function registerTaskRefusal(task, xml, agentTask = 'ai.jicate.box-agent') {
+  if (typeof task !== 'string' || !/^[\w.-]{1,100}$/.test(task)) return 'task name missing or not allowed';
+  if (/box-agent/i.test(task) || task.toLowerCase() === String(agentTask).toLowerCase() || xml === 'ai.jicate.box-agent.xml') return OWN_TASK_REASON;
+  if (!XML_FILES.includes(xml)) return `xml must be one of ${XML_FILES.filter((n) => n !== 'ai.jicate.box-agent.xml').join(', ')}`;
+  return null;
+}
+
+/** `schtasks /query /xml` output for a report: no declaration, no indentation, scrubbed, capped. */
+export function trimTaskXml(text, max = 4000) {
+  const t = scrubText(String(text || '').replace(/^\uFEFF/, '').replace(/<\?xml[^>]*\?>/i, '').replace(/>\s+</g, '><').trim());
+  return t.length > max ? `${t.slice(0, max)}...[cut]` : t;
 }
 
 /** Task XML as schtasks wants it: UTF-16LE with a BOM and a matching declaration. */
@@ -522,7 +552,7 @@ function filesReport() {
   const out = {};
   for (const name of BOX_FILES) {
     const plan = planFor(name);
-    if (plan.skip) continue;
+    if (!plan.target) continue;
     const sha = shaOfFile(plan.target);
     const k = fstate.known[name];
     if (sha) out[name] = k && k.disk === sha ? k.source : sha;
@@ -678,6 +708,7 @@ async function updateFile(d, gotAt, f, cur, plan) {
     }
     try {
       let out = bytes;
+      if (plan.crlf && !isCrlf(bytes.toString('utf8'))) throw new Error('not CRLF line endings throughout');
       if (plan.fill) {
         const r = fillPlaceholders(bytes.toString('utf8'), readText(path), process.execPath);
         if (r.error) throw new Error(r.error);
@@ -771,6 +802,7 @@ async function installOther(f, plan) {
   let bytes;
   try {
     bytes = await downloadVerified(f);
+    if (plan.crlf && !isCrlf(bytes.toString('utf8'))) throw new Error('not CRLF line endings throughout');
     if (plan.fill) {
       const r = fillPlaceholders(bytes.toString('utf8'), readText(target), process.execPath);
       if (r.error) throw new Error(r.error);
@@ -886,7 +918,8 @@ let commandsTicking = false;
 let statusInflight = null;
 const MAX_INFLIGHT = 4;
 const STATUS_EVERY_MS = 5 * 60_000;
-const VERB_TIMEOUT_MS = { status: 120_000, 'restart-task': 180_000, 'register-task': 90_000 };
+// restart-task may first wait up to MAX_WAIT_CHECKS polls for idle workers.
+const VERB_TIMEOUT_MS = { status: 120_000, 'restart-task': 15 * 60_000, 'register-task': 90_000 };
 
 /** An earlier agent run stopped while these ran: they are failed, never run again. */
 function failInterrupted() {
@@ -909,13 +942,25 @@ function pruneLedger(now) {
 
 const MAX_REPORT_CHARS = 100_000; // the Tower refuses more than 128 KB of JSON
 
-/** Keeps a result or report well under the Tower's size cap. */
+/**
+ * Keeps a result or report well under the Tower's size cap: drops the oldest
+ * log lines first, then the task XML, then shortens what is left.
+ */
 export function capReport(r) {
-  if (JSON.stringify(r ?? null).length <= MAX_REPORT_CHARS) return r;
+  const size = (x) => JSON.stringify(x ?? null).length;
+  if (size(r) <= MAX_REPORT_CHARS) return r;
   const out = { ...r, truncated: true };
-  for (const k of ['log_tail', 'config', 'tasks', 'files_failed', 'output']) {
+  if (Array.isArray(out.log_tail)) {
+    out.log_tail = [...out.log_tail];
+    while (out.log_tail.length && size(out) > MAX_REPORT_CHARS) out.log_tail.shift();
+    if (size(out) <= MAX_REPORT_CHARS) return out;
+  }
+  if (Array.isArray(out.tasks)) out.tasks = out.tasks.map((t) => (t && typeof t === 'object' ? { ...t, xml: undefined } : t));
+  if (out.agent_task && typeof out.agent_task === 'object') out.agent_task = { ...out.agent_task, xml: undefined };
+  if (size(out) <= MAX_REPORT_CHARS) return out;
+  for (const k of ['config', 'tasks', 'files_failed', 'output']) {
     if (k in out) out[k] = Array.isArray(out[k]) ? out[k].slice(-3) : typeof out[k] === 'string' ? out[k].slice(-1000) : '[too large]';
-    if (JSON.stringify(out).length <= MAX_REPORT_CHARS) return out;
+    if (size(out) <= MAX_REPORT_CHARS) return out;
   }
   return { truncated: true, reason: 'result too large to send' };
 }
@@ -965,9 +1010,32 @@ async function flushUnsent() {
   }
 }
 
+/**
+ * Waits in the background until the Tower says no JICATE job runs on this box,
+ * for at most MAX_WAIT_CHECKS polls - the account switch's rule. `busy` is
+ * box-wide (the Tower does not map tasks to workers).
+ */
+async function waitForIdleWorkers() {
+  const fromTick = towerTicks;
+  const startedAt = Date.now();
+  const wallCap = (MAX_WAIT_CHECKS + 2) * EVERY_MS; // polls may fail; never wait forever
+  while (towerBusy > 0 && towerTicks - fromTick < MAX_WAIT_CHECKS && Date.now() - startedAt < wallCap) {
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+  return { waited_s: Math.round((Date.now() - startedAt) / 1000), busy_at_restart: towerBusy };
+}
+
 async function restartTaskCommand(args) {
   const sel = restartSelection(RESTART, args.task, AGENT_TASK);
   if (sel.error) return { status: 'refused', result: { reason: sel.error } };
+  const force = args.force === true;
+  const jicate = sel.list.some(workerTasks('jicate-ai-drain.mjs'));
+  let wait = null;
+  if (jicate && !force) {
+    if (towerBusy > 0) log(`restart-task ${args.task}: waiting for ${towerBusy} job(s) on this box (up to ${MAX_WAIT_CHECKS} min)`);
+    wait = await waitForIdleWorkers();
+  }
+  const waitInfo = { forced: force, ...(wait || {}), ...(jicate ? {} : { idle_check: 'jobs of non-JICATE tasks are not visible to the Tower; not waited' }) };
   for (const { task } of sel.list) await run('schtasks', ['/end', '/tn', task], { timeoutMs: 30_000 });
   for (const match of new Set(sel.list.map((t) => t.match).filter(Boolean))) {
     const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', STOP_PS], {
@@ -982,13 +1050,13 @@ async function restartTaskCommand(args) {
     if (r.code === 0) restarted.push(task);
     else failed.push({ task, error: scrubText((r.stderr || r.stdout || r.error || '').trim()).slice(0, 200) });
   }
-  return { status: restarted.includes(args.task) ? 'done' : 'failed', result: { restarted, failed } };
+  return { status: restarted.includes(args.task) ? 'done' : 'failed', result: { restarted, failed, ...waitInfo } };
 }
 
 async function registerTaskCommand(args, files) {
   const { task, xml } = args;
-  if (typeof task !== 'string' || !/^[\w.-]{1,100}$/.test(task)) return { status: 'refused', result: { reason: 'task name missing or not allowed' } };
-  if (!XML_FILES.includes(xml)) return { status: 'refused', result: { reason: `xml must be one of ${XML_FILES.join(', ')}` } };
+  const refusal = registerTaskRefusal(task, xml, AGENT_TASK);
+  if (refusal) return { status: 'refused', result: { reason: refusal } };
   const path = resolve(HERE, xml);
   const disk = shaOfFile(path);
   const k = fstate.known[xml];
@@ -1150,7 +1218,7 @@ async function buildStatus() {
   const stagedNow = {};
   for (const name of BOX_FILES) {
     const plan = planFor(name);
-    if (plan.skip) continue;
+    if (!plan.target) continue;
     const sha = shaOfFile(plan.target);
     const k = fstate.known[name];
     if (sha) files[name] = { sha256: sha, ...(k && k.disk === sha && k.source !== sha ? { published_sha256: k.source } : {}) };
@@ -1161,8 +1229,15 @@ async function buildStatus() {
   }
   const [tasks, agentTask, claude] = await Promise.all([
     Promise.all(RESTART.map(async ({ task }) => {
-      const r = await run('schtasks', ['/query', '/tn', task, '/fo', 'LIST', '/v'], { timeoutMs: 20_000 });
-      return { task, ...(r.code === 0 ? parseTaskList(r.stdout) : { error: scrubText((r.stderr || r.error || `exit ${r.code}`).trim()).slice(0, 160) }) };
+      const [r, x] = await Promise.all([
+        run('schtasks', ['/query', '/tn', task, '/fo', 'LIST', '/v'], { timeoutMs: 20_000 }),
+        run('schtasks', ['/query', '/tn', task, '/xml'], { timeoutMs: 20_000 }),
+      ]);
+      return {
+        task,
+        ...(r.code === 0 ? parseTaskList(r.stdout) : { error: scrubText((r.stderr || r.error || `exit ${r.code}`).trim()).slice(0, 160) }),
+        xml: x.code === 0 ? trimTaskXml(x.stdout) : null,
+      };
     })),
     run('schtasks', ['/query', '/tn', AGENT_TASK, '/xml'], { timeoutMs: 20_000 }).then((r) => {
       if (r.code !== 0) return { task: AGENT_TASK, readable: false };
@@ -1170,6 +1245,7 @@ async function buildStatus() {
         task: AGENT_TASK,
         run_level: r.stdout.match(/<RunLevel>([^<]*)</i)?.[1] ?? null,
         logon_type: r.stdout.match(/<LogonType>([^<]*)</i)?.[1] ?? null,
+        xml: trimTaskXml(r.stdout),
       };
     }),
     run('cmd.exe', ['/d', '/c', 'claude --version'], { timeoutMs: 20_000 })
@@ -1231,8 +1307,12 @@ function startStatusReport() {
 // ---- main loop ---------------------------------------------------------------
 
 const MAX_WAIT_CHECKS = 10; // minutes to wait for idle workers before restarting anyway
+const SWAP_PROVE_MS = 3 * 60_000; // a freshly swapped agent must reach the Tower within this
 let waited = 0; // account switches
 let fileWaited = 0; // file updates (own counter)
+let towerBusy = 0; // `busy` from the last GET (restart-task waits on it)
+let towerTicks = 0; // successful GETs so far (restart-task counts its wait in these)
+let reachedTower = false;
 
 /** The account switch. True when nothing is owed (the file step may run). */
 async function applyAccount(d, have, owed) {
@@ -1272,6 +1352,9 @@ async function checkOnce() {
   const have = owed ? raw.slice(0, -'+restart'.length) : raw;
   const d = await call('GET', `?have=${encodeURIComponent(have)}`);
   const gotAt = Date.now();
+  towerBusy = d?.busy ?? 0;
+  towerTicks += 1;
+  reachedTower = true;
   clearSwapMarker();
   let ready = false;
   let accountError = null;
@@ -1299,6 +1382,11 @@ async function main() {
   init();
   log(`start host-agent url=${BASE} restartTasks=${RESTART.length} fileUpdates=${UPDATE_KEY ? 'on' : 'off'} commands=${UPDATE_KEY ? 'on' : 'off'} box=${BOX} sha=${short(shaOfFile(SELF))}`);
   failInterrupted();
+  // Just installed by the launcher (marker present): if this agent cannot reach
+  // the Tower within 3 minutes, exit non-zero so the next launcher run (within a
+  // minute) restores the previous agent.
+  const justSwapped = existsSync(resolve(HERE, 'jicate-box-agent.swapped'));
+  const startedAt = Date.now();
   let fails = 0;
   for (;;) {
     try {
@@ -1309,6 +1397,10 @@ async function main() {
       if (fails === 1 || fails % 30 === 0) log(`check failed (${fails}): ${errText(e, 200)}`);
     }
     if (ONESHOT) break;
+    if (justSwapped && !reachedTower && Date.now() - startedAt >= SWAP_PROVE_MS) {
+      log('new agent has not reached the Tower within 3 minutes of starting; exiting so the launcher restores the previous one');
+      process.exit(1);
+    }
     if (exitWhenIdle && idle()) {
       log('staged update waiting; exiting so run-jicate-box-agent.cmd installs it (the task starts again within a minute)');
       break;

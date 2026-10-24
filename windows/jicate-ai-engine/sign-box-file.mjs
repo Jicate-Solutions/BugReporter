@@ -19,6 +19,7 @@
 // XMLs (*.xml), which Windows writes as UTF-16LE with a BOM: those must be
 // UTF-16LE with a BOM, are decoded to text here, and the agent writes them
 // back to disk as BOM + UTF-16LE (their declaration says encoding="UTF-16").
+// Launchers (*.cmd) must use CRLF on every line; the agent refuses others.
 //
 // Default private key: ~/.jicate-mail/box-update-signing.pem. The private key
 // is never printed and must never be committed.
@@ -59,7 +60,18 @@ export function readBoxFileText(file) {
   }
   const text = raw.toString('utf8');
   if (!Buffer.from(text, 'utf8').equals(raw)) throw new Error(`${name} is not valid UTF-8 text`);
+  if (name.endsWith('.cmd') && !isCrlf(text)) {
+    throw new Error(
+      `${name} must use Windows line endings (CRLF) on every line; the box agent refuses anything else. ` +
+        'Re-checkout it (.gitattributes sets eol=crlf for *.cmd) or convert it, then sign again.'
+    );
+  }
   return text;
+}
+
+/** True when every line break is CRLF (no bare LF, no bare CR). Same rule as the agent. */
+export function isCrlf(text) {
+  return !/(^|[^\r])\n/.test(text) && !/\r(?!\n)/.test(text);
 }
 
 /** { name, sha256, signature, content } for an allow-listed file. */

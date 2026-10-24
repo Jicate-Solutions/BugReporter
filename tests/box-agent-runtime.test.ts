@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { generateKeyPairSync, sign, createHash, type KeyObject } from 'crypto';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
+import * as signer from '@/windows/jicate-ai-engine/sign-box-file.mjs';
 
 /**
  * The box side of remote control: the pure parts of jicate-box-agent.mjs
@@ -187,9 +189,19 @@ describe('where each published file goes', () => {
     expect(plan('run-jicate-ai-drain.cmd')).toMatchObject({ kind: 'worker', check: false, fill: true });
   });
 
-  it('only stages the agent and its launcher, never overwrites them', () => {
+  it('only stages the agent, never overwrites it', () => {
     expect(plan('jicate-box-agent.mjs')).toMatchObject({ kind: 'stage', check: true });
-    expect(plan('run-jicate-box-agent.cmd')).toMatchObject({ kind: 'stage', check: false, fill: true });
+  });
+
+  it('never installs the launcher: install-by-hand only, still reported', () => {
+    const p = plan('run-jicate-box-agent.cmd');
+    expect(p.skip).toMatch(/^launcher is install-by-hand only/);
+    expect(p.kind).toBeUndefined();
+    expect(p.target).toBe(path.resolve(here, 'run-jicate-box-agent.cmd'));
+  });
+
+  it('requires CRLF for the worker launcher', () => {
+    expect(plan('run-jicate-ai-drain.cmd').crlf).toBe(true);
   });
 
   it('installs the mail client only at an absolute mailClientPath ending in jicate-mail.mjs', () => {
@@ -255,11 +267,12 @@ describe('the launcher and the agent task', () => {
     expect(cmd).toContain('set "NODE_BIN=__NODE_EXE__"');
   });
 
-  it('names the staged files the agent looks for', () => {
+  it('names the staged files the agent looks for, and never replaces itself', () => {
     expect(cmd).toContain('jicate-box-agent.mjs.new');
-    expect(cmd).toContain('run-jicate-box-agent.cmd.new');
     expect(cmd).toContain('jicate-box-agent.mjs.rejected');
     expect(cmd).toContain('jicate-box-agent.swapped');
+    expect(cmd).not.toContain('run-jicate-box-agent.cmd.new');
+    expect(cmd).not.toContain('%~f0');
   });
 
   it('checks a staged agent on a .mjs copy before swapping it', () => {
@@ -267,13 +280,15 @@ describe('the launcher and the agent task', () => {
     expect(cmd).toMatch(/--check "%HERE%jicate-box-agent\.check\.mjs"/);
   });
 
-  it('replaces itself only on one line that also exits, after node has run', () => {
-    const nodeLine = lines.findIndex((l) => l.startsWith('"%NODE_BIN%" "%AGENT%"'));
-    const swap = lines.findIndex((l) => l.includes('move /y "%HERE%run-jicate-box-agent.cmd.new" "%~f0"'));
-    expect(nodeLine).toBeGreaterThan(0);
-    expect(swap).toBeGreaterThan(nodeLine);
-    expect(lines[swap]).toMatch(/^if exist .*\(copy .*& move \/y .*& exit \/b 0\)$/);
-    expect(lines[swap + 1]).toBe('exit /b 0');
+  it('rolls back, then installs a staged agent, before node starts', () => {
+    const at = (prefix: string) => lines.findIndex((l) => l.startsWith(prefix));
+    const rollback = at('if exist "%HERE%jicate-box-agent.swapped" call :rollback');
+    const swap = at('if exist "%HERE%jicate-box-agent.mjs.new" call :swapagent');
+    const node = at('"%NODE_BIN%" "%AGENT%"');
+    expect(rollback).toBeGreaterThan(0);
+    expect(swap).toBeGreaterThan(rollback);
+    expect(node).toBeGreaterThan(swap);
+    expect(lines[node + 1]).toBe('exit /b');
   });
 
   it('runs the agent task at the highest available level, everything else unchanged', () => {
@@ -281,6 +296,82 @@ describe('the launcher and the agent task', () => {
     expect(xml).toContain('<RunLevel>HighestAvailable</RunLevel>');
     expect(xml).toContain('<LogonType>InteractiveToken</LogonType>');
     expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
+  });
+});
+
+describe('CRLF guard', () => {
+  it('accepts CRLF only', () => {
+    expect(agent.isCrlf('a\r\nb\r\n')).toBe(true);
+    expect(agent.isCrlf('no newline')).toBe(true);
+    expect(agent.isCrlf('a\nb')).toBe(false);
+    expect(agent.isCrlf('a\r\nb\n')).toBe(false);
+    expect(agent.isCrlf('a\rb\r\n')).toBe(false);
+    expect(agent.isCrlf('\n')).toBe(false);
+  });
+
+  it('the repo launchers are CRLF', () => {
+    for (const n of ['run-jicate-ai-drain.cmd', 'run-jicate-box-agent.cmd']) {
+      expect(agent.isCrlf(readFileSync(path.join(DIR, n), 'utf8'))).toBe(true);
+    }
+  });
+
+  it('sign-box-file refuses a .cmd without CRLF, with a plain message, and signs a CRLF one', () => {
+    const { privateKey: key } = generateKeyPairSync('ed25519');
+    const dir = mkdtempSync(path.join(tmpdir(), 'crlf-'));
+    const lf = path.join(dir, 'run-jicate-ai-drain.cmd');
+    writeFileSync(lf, '@echo off\nset "NODE_BIN=__NODE_EXE__"\n');
+    expect(() => signer.signBoxFile(lf, key)).toThrow(/must use Windows line endings \(CRLF\) on every line/);
+    const mixed = path.join(mkdtempSync(path.join(tmpdir(), 'crlf-')), 'run-jicate-ai-drain.cmd');
+    writeFileSync(mixed, '@echo off\r\nrem x\n');
+    expect(() => signer.signBoxFile(mixed, key)).toThrow(/CRLF/);
+    const ok = path.join(mkdtempSync(path.join(tmpdir(), 'crlf-')), 'run-jicate-ai-drain.cmd');
+    writeFileSync(ok, '@echo off\r\nrem x\r\n');
+    expect(signer.signBoxFile(ok, key).name).toBe('run-jicate-ai-drain.cmd');
+    expect(signer.isCrlf).toBeDefined();
+  });
+});
+
+describe('register-task refusals', () => {
+  it('never registers the agent\'s own task or its XML', () => {
+    const own = "agent's own task: register by hand once with the Director watching";
+    expect(agent.OWN_TASK_REASON).toBe(own);
+    expect(agent.registerTaskRefusal('ai.jicate.box-agent', 'ai.jicate.engine-1.xml')).toBe(own);
+    expect(agent.registerTaskRefusal('AI.JICATE.BOX-AGENT', 'ai.jicate.engine-1.xml')).toBe(own);
+    expect(agent.registerTaskRefusal('my-box-agent-2', 'ai.jicate.engine-1.xml')).toBe(own);
+    expect(agent.registerTaskRefusal('custom-agent', 'ai.jicate.engine-1.xml', 'custom-agent')).toBe(own);
+    expect(agent.registerTaskRefusal('ai.jicate.engine-9', 'ai.jicate.box-agent.xml')).toBe(own);
+  });
+
+  it('allows an engine task with an allow-listed XML and refuses bad names', () => {
+    expect(agent.registerTaskRefusal('ai.jicate.engine-1', 'ai.jicate.engine-1.xml')).toBeNull();
+    expect(agent.registerTaskRefusal('a b', 'ai.jicate.engine-1.xml')).toMatch(/not allowed/);
+    expect(agent.registerTaskRefusal('ai.jicate.engine-1', 'evil.xml')).toMatch(/xml must be one of/);
+    expect(agent.registerTaskRefusal('ai.jicate.engine-1', '..\\ai.jicate.engine-1.xml')).toMatch(/xml must be one of/);
+  });
+});
+
+describe('task XML in the status report', () => {
+  it('is trimmed, scrubbed and capped', () => {
+    const raw = '\uFEFF<?xml version="1.0" encoding="UTF-16"?>\r\n<Task>\r\n  <Principals>\r\n    <Principal><UserId>S-1-5-21-1111111111-2222222222-3333333333-1001</UserId><RunLevel>HighestAvailable</RunLevel></Principal>\r\n  </Principals>\r\n</Task>\r\n';
+    const t = agent.trimTaskXml(raw);
+    expect(t.startsWith('<Task><Principals>')).toBe(true);
+    expect(t).toContain('<RunLevel>HighestAvailable</RunLevel>');
+    expect(t).not.toContain('S-1-5-21-1111111111');
+    expect(agent.trimTaskXml('<A>' + 'x '.repeat(5000) + '</A>', 100)).toMatch(/\.\.\.\[cut\]$/);
+  });
+
+  it('report cap drops the oldest log lines first, then task XML', () => {
+    const lines = Array.from({ length: 40 }, (_, i) => `line-${i} ` + 'y'.repeat(4000));
+    const tasks = [{ task: 'ai.jicate.engine-1', state: 'Ready', xml: '<Task/>' }];
+    const out = agent.capReport({ host: 'B', log_tail: lines, tasks, agent_task: { task: 'ai.jicate.box-agent', xml: '<Task/>' } });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(100_000);
+    expect(out.log_tail.length).toBeGreaterThan(0);
+    expect(out.log_tail[out.log_tail.length - 1]).toBe(lines[39]);
+    expect(out.log_tail[0]).not.toBe(lines[0]);
+    expect(out.tasks[0].xml).toBe('<Task/>');
+    const xmlHeavy = agent.capReport({ log_tail: [], tasks: [{ task: 't', xml: 'z'.repeat(120_000) }] });
+    expect(JSON.stringify(xmlHeavy).length).toBeLessThanOrEqual(100_000);
+    expect(xmlHeavy.tasks[0].task).toBe('t');
   });
 });
 
