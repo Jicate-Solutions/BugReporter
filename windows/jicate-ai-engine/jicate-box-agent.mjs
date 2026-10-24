@@ -2,6 +2,8 @@
 // JICATE box account agent - applies the Control Tower's account choice to the
 // WHOLE Windows box, installs files published there, runs signed commands and
 // reports the box's status. Pure ASCII on purpose.
+// A published update of this file installs itself: the agent stages it, exits
+// when idle, and run-jicate-box-agent.cmd swaps it in at the next start.
 //
 // Once a minute it asks the Control Tower which Claude account this box should
 // use. When that changes it:
