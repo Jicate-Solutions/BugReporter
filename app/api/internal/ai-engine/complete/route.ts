@@ -7,9 +7,11 @@
  *   { job_id, error, retry?, usage? }          failure (retry → back in the queue, max 3 tries)
  *   { ..., rate_limited: true }                the Max plan's limit was hit: re-queued without
  *                                              using up one of the job's 3 tries
- *   usage = { model_id?, input_tokens?, output_tokens?, duration_ms? }
+ *   usage = { model_id?, account?, limits?, input_tokens?, output_tokens?, duration_ms?,
+ *             api_cost_usd?, cache_read_tokens?, cache_write_tokens? }
  *
- * Every call writes one ledger row (ai_usage), success or failure, at ₹0.
+ * Every call writes one ledger row (ai_usage), success or failure, at ₹0, with
+ * the run's API price (api_cost_usd: what the Claude API would have charged).
  * An answer the recipe cannot use (empty, or not JSON for a JSON task) is
  * recorded as a failure and retried.
  *
@@ -23,10 +25,9 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { readSpecForJob, shapeResult } from '@/lib/ai-engine/engine';
 import { PROBE_JOB_TYPE } from '@/lib/ai-engine/accounts';
+import { legacyUsageParams, usageParams, usageSchema } from '@/lib/ai-engine/usage';
 
 export const dynamic = 'force-dynamic';
-
-const intOrNull = z.number().int().nonnegative().max(2_000_000_000).nullable().optional();
 
 const bodySchema = z.object({
   job_id: z.uuid(),
@@ -35,25 +36,7 @@ const bodySchema = z.object({
   error: z.string().max(5_000).optional(),
   retry: z.boolean().optional(),
   rate_limited: z.boolean().optional(),
-  usage: z
-    .object({
-      model_id: z.string().max(100).nullable().optional(),
-      account: z.string().regex(/^[a-z0-9][a-z0-9-]{0,30}$/).nullable().optional(),
-      limits: z
-        .object({
-          five_hour: z.number().min(0).max(10).nullable().optional(),
-          seven_day: z.number().min(0).max(10).nullable().optional(),
-          five_hour_resets_at: z.number().int().positive().nullable().optional(),
-          seven_day_resets_at: z.number().int().positive().nullable().optional(),
-          overage_enabled: z.boolean().nullable().optional()
-        })
-        .nullable()
-        .optional(),
-      input_tokens: intOrNull,
-      output_tokens: intOrNull,
-      duration_ms: intOrNull
-    })
-    .optional()
+  usage: usageSchema.optional()
 });
 
 export async function POST(request: NextRequest) {
@@ -104,18 +87,13 @@ export async function POST(request: NextRequest) {
   // Before completing, so a limit-reached try can never be the one that fails the job.
   if (!ok && retry && body.rate_limited) await refundAttempt(admin, body.job_id, runner);
 
-  const { data, error: rpcError } = await admin.rpc('fn_ai_engine_complete', {
-    p_job_id: body.job_id,
-    p_runner: runner,
-    p_ok: ok,
-    p_result: result,
-    p_error: error,
-    p_retry: retry,
-    p_model_id: body.usage?.model_id ?? null,
-    p_input_tokens: body.usage?.input_tokens ?? null,
-    p_output_tokens: body.usage?.output_tokens ?? null,
-    p_duration_ms: body.usage?.duration_ms ?? null
-  });
+  const base = { p_job_id: body.job_id, p_runner: runner, p_ok: ok, p_result: result, p_error: error, p_retry: retry };
+  let { data, error: rpcError } = await admin.rpc('fn_ai_engine_complete', { ...base, ...usageParams(body.usage) });
+  if (rpcError?.code === 'PGRST202') {
+    // The database does not have the API-price params yet (20261024_usage_api_cost.sql
+    // not applied): record the run the old way rather than lose it.
+    ({ data, error: rpcError } = await admin.rpc('fn_ai_engine_complete', { ...base, ...legacyUsageParams(body.usage) }));
+  }
 
   if (rpcError) {
     console.error('[ai-engine/complete] failed:', rpcError.message);
