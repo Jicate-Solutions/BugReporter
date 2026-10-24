@@ -915,6 +915,7 @@ function cmdWrite() {
 
 const inflight = new Map(); // command id -> promise
 let commandsTicking = false;
+let commandsPass = null; // the latest background command pass (short: reads and posts only)
 let statusInflight = null;
 const MAX_INFLIGHT = 4;
 const STATUS_EVERY_MS = 5 * 60_000;
@@ -1192,7 +1193,7 @@ async function commandsTick(d, gotAt) {
 function startCommands(d, gotAt) {
   if (commandsTicking) return;
   commandsTicking = true;
-  commandsTick(d, gotAt)
+  commandsPass = commandsTick(d, gotAt)
     .catch((e) => once(`cmds:${errText(e, 60)}`, `command step failed: ${errText(e, 200)}`))
     .finally(() => { commandsTicking = false; });
 }
@@ -1419,6 +1420,10 @@ async function main() {
       log('new agent has not reached the Tower within 3 minutes of starting; exiting so the launcher restores the previous one');
       process.exit(1);
     }
+    // The command pass checkOnce just started is still settling at this point,
+    // so idle() would always be false and a staged update would never install.
+    // Let that short pass finish first; long scripts still keep idle() false.
+    if (exitWhenIdle && commandsPass) await commandsPass;
     if (exitWhenIdle && idle()) {
       log('staged update waiting; exiting so run-jicate-box-agent.cmd installs it (the task starts again within a minute)');
       break;
