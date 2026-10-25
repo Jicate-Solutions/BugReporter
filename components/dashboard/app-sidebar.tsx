@@ -19,6 +19,7 @@ import {
   Cpu,
   ListChecks,
   Receipt,
+  BarChart3,
   Repeat,
   Mail
 } from 'lucide-react';
@@ -101,6 +102,12 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       title: 'AI Bills',
       url: `/org/${orgSlug}/ai/bills`,
       icon: Receipt,
+      badge: null
+    },
+    {
+      title: 'AI Usage',
+      url: `/org/${orgSlug}/ai/usage`,
+      icon: BarChart3,
       badge: null
     },
     {
