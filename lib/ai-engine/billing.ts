@@ -254,7 +254,8 @@ export function formatUsd(n: number): string {
 
 /** INR to the paisa, with Indian digit grouping. */
 export function formatInr(n: number): string {
-  return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const abs = Math.abs(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 && abs !== '0.00' ? `−₹${abs}` : `₹${abs}`;
 }
 
 /** 'YYYY-MM' → 'October 2026'. */

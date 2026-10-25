@@ -172,3 +172,12 @@ describe('buildUsageSlices', () => {
     }
   });
 });
+
+describe('formatInr', () => {
+  it('puts the minus sign before the rupee sign and groups the Indian way', async () => {
+    const { formatInr } = await import('@/lib/ai-engine/billing');
+    expect(formatInr(-23987.46)).toBe('−₹23,987.46');
+    expect(formatInr(124000)).toBe('₹1,24,000.00');
+    expect(formatInr(-0.001)).toBe('₹0.00');
+  });
+});
