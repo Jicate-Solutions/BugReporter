@@ -266,3 +266,11 @@ export function monthLabel(month: string): string {
     timeZone: 'UTC'
   });
 }
+
+/**
+ * API price for display. When every successful run is unpriced, the price is
+ * unknown, not $0: say "not priced" rather than show a zero.
+ */
+export function apiPriceLabel(l: { billable_runs: number; unpriced_runs: number; api_usd: number }): string {
+  return l.billable_runs === 0 && l.unpriced_runs > 0 ? 'not priced' : formatUsd(l.api_usd);
+}

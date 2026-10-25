@@ -61,15 +61,16 @@ async function gate(organizationId: string) {
   const {
     data: { user }
   } = await supabase.auth.getUser();
-  if (!user) return { error: fail('UNAUTHENTICATED', 'Sign in first.', 401) };
+  if (!user) return { ok: false as const, res: fail('UNAUTHENTICATED', 'Sign in first.', 401) };
   const admin = createAdminClient();
   const actor = await loadActor(admin, user.id);
   if (!isOrgBillAdmin(actor, organizationId)) {
     return {
-      error: fail('FORBIDDEN', 'Only organisation owners and admins can change AI billing.', 403)
+      ok: false as const,
+      res: fail('FORBIDDEN', 'Only organisation owners and admins can change AI billing.', 403)
     };
   }
-  return { admin };
+  return { ok: true as const, admin };
 }
 
 export async function POST(request: NextRequest) {
@@ -78,7 +79,7 @@ export async function POST(request: NextRequest) {
     return fail('BAD_REQUEST', 'Give the MyJKKN client id (a uuid) and the client name.', 400);
   }
   const g = await gate(parsed.data.organization_id);
-  if ('error' in g) return g.error;
+  if (!g.ok) return g.res;
 
   const { data: existing, error: e0 } = await g.admin
     .from('ai_billing_clients')
@@ -125,7 +126,7 @@ export async function PATCH(request: NextRequest) {
     if (e0) return fail('UPDATE_FAILED', 'Could not save the change.', 500);
     if (!client) return fail('NOT_FOUND', 'No such billing client.', 404);
     const g = await gate(client.organization_id);
-    if ('error' in g) return g.error;
+    if (!g.ok) return g.res;
     const { data, error } = await g.admin
       .from('ai_billing_clients')
       .update({ discount_pct: discount.data.discount_pct, updated_at: new Date().toISOString() })
@@ -148,7 +149,7 @@ export async function PATCH(request: NextRequest) {
     .maybeSingle();
   if (!app) return fail('NOT_FOUND', 'No such app.', 404);
   const g = await gate(app.organization_id);
-  if ('error' in g) return g.error;
+  if (!g.ok) return g.res;
 
   if (link.data.myjkkn_client_id) {
     const { data: client, error: e1 } = await g.admin

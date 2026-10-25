@@ -11,7 +11,7 @@ import { Receipt } from 'lucide-react';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { USD_TO_INR_ASSUMED, formatInr, formatUsd, monthLabel } from '@/lib/ai-engine/billing';
+import { USD_TO_INR_ASSUMED, apiPriceLabel, formatInr, formatUsd, monthLabel } from '@/lib/ai-engine/billing';
 import { loadAppMonthToDate } from '@/lib/ai-engine/bills-data';
 
 /** One clock read, outside render. */
@@ -65,7 +65,7 @@ export async function AppBillCard({
                   <span className="text-muted-foreground">{formatInr(l?.billed_inr ?? 0)}</span>
                 </div>
                 <div className="text-muted-foreground flex flex-wrap gap-x-6 gap-y-1 text-sm">
-                  <span>API price {formatUsd(l?.api_usd ?? 0)}</span>
+                  <span>API price {l ? apiPriceLabel(l) : formatUsd(0)}</span>
                   <span>
                     {l?.client_name ? `${l.client_name} · ${l.discount_pct}% discount` : 'No client linked · 0% discount'}
                   </span>

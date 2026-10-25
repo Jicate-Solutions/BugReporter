@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   USD_TO_INR_ASSUMED,
+  apiPriceLabel,
   billTotals,
   buildBillLines,
   currentIstMonth,
@@ -241,5 +242,13 @@ describe('billScope (who sees which bills)', () => {
     const s = billScope(actor({ orgRoles: new Map([['other-org', 'owner']]) }), ORG, apps);
     expect(s.orgAdmin).toBe(false);
     expect(s.apps).toEqual([]);
+  });
+});
+
+describe('apiPriceLabel', () => {
+  it('says "not priced" when every successful run lacks a price, never $0', () => {
+    expect(apiPriceLabel({ billable_runs: 0, unpriced_runs: 8, api_usd: 0 })).toBe('not priced');
+    expect(apiPriceLabel({ billable_runs: 0, unpriced_runs: 0, api_usd: 0 })).toBe('$0.00');
+    expect(apiPriceLabel({ billable_runs: 58, unpriced_runs: 54, api_usd: 0.142071 })).toBe('$0.1421');
   });
 });

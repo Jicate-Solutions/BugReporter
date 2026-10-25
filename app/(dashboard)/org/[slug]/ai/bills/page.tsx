@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/table';
 import {
   USD_TO_INR_ASSUMED,
+  apiPriceLabel,
   currentIstMonth,
   formatInr,
   formatUsd,
@@ -120,7 +121,7 @@ export default async function AiBillsPage({
       <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         {[
           { label: isCurrent ? `${monthLabel(month)} so far` : monthLabel(month), value: formatUsd(t.billed_usd), sub: formatInr(t.billed_inr) },
-          { label: 'API price', value: formatUsd(t.api_usd), sub: formatInr(usdToInr(t.api_usd)) },
+          { label: 'API price', value: apiPriceLabel(t), sub: t.unpriced_runs ? `${formatInr(usdToInr(t.api_usd))} · plus ${t.unpriced_runs} unpriced runs` : formatInr(usdToInr(t.api_usd)) },
           { label: 'Billed runs', value: String(t.billable_runs), sub: `${t.test_runs} test runs among all runs` },
           { label: 'Not billed', value: String(t.failed_runs + t.unpriced_runs), sub: `${t.failed_runs} failed · ${t.unpriced_runs} unpriced` }
         ].map((c) => (
@@ -184,7 +185,7 @@ export default async function AiBillsPage({
                   <TableCell className="text-right">{l.test_runs}</TableCell>
                   <TableCell className="text-right">{l.failed_runs}</TableCell>
                   <TableCell className="text-right">{l.unpriced_runs}</TableCell>
-                  <TableCell className="text-right">{formatUsd(l.api_usd)}</TableCell>
+                  <TableCell className="text-right">{apiPriceLabel(l)}</TableCell>
                   <TableCell className="text-right">{l.discount_pct}%</TableCell>
                   <TableCell className="text-right font-medium">{formatUsd(l.billed_usd)}</TableCell>
                   <TableCell className="text-right">{formatInr(l.billed_inr)}</TableCell>
@@ -199,7 +200,7 @@ export default async function AiBillsPage({
                 <TableCell className="text-right">{t.test_runs}</TableCell>
                 <TableCell className="text-right">{t.failed_runs}</TableCell>
                 <TableCell className="text-right">{t.unpriced_runs}</TableCell>
-                <TableCell className="text-right">{formatUsd(t.api_usd)}</TableCell>
+                <TableCell className="text-right">{apiPriceLabel(t)}</TableCell>
                 <TableCell />
                 <TableCell className="text-right">{formatUsd(t.billed_usd)}</TableCell>
                 <TableCell className="text-right">{formatInr(t.billed_inr)}</TableCell>
@@ -246,7 +247,7 @@ export default async function AiBillsPage({
                     <TableCell className="text-right">{l.billable_runs}</TableCell>
                     <TableCell className="text-right">{l.failed_runs}</TableCell>
                     <TableCell className="text-right">{l.unpriced_runs}</TableCell>
-                    <TableCell className="text-right">{formatUsd(l.api_usd)}</TableCell>
+                    <TableCell className="text-right">{apiPriceLabel(l)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
