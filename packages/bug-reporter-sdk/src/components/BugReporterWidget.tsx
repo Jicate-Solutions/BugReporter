@@ -609,7 +609,7 @@ export function BugReporterWidget() {
             <div style={styles.header} className="bug-reporter-header">
               <h2 style={styles.title} className="bug-reporter-title">
                 <Bug size={22} strokeWidth={2.5} />
-                JKKN Bug Bounty
+                {config.title || 'JKKN Bug Bounty'}
               </h2>
               <button
                 onClick={resetForm}

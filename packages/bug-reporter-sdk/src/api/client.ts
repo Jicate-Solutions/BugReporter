@@ -11,6 +11,11 @@ export interface ApiClientConfig {
   apiUrl: string;
   apiKey: string;
   debug?: boolean;
+  /**
+   * The signed-in reporter's email, from the provider's `userContext`. The
+   * "My bugs" reads require it: the server returns only that reporter's bugs.
+   */
+  reporterEmail?: string;
 }
 
 /**
@@ -129,6 +134,9 @@ export class BugReporterApiClient {
     if (options?.status) params.append('status', options.status);
     if (options?.category) params.append('category', options.category);
     if (options?.search) params.append('search', options.search);
+    if (this.config.reporterEmail) {
+      params.append('reporter_email', this.config.reporterEmail);
+    }
 
     const queryString = params.toString();
     const endpoint = queryString
@@ -147,6 +155,9 @@ export class BugReporterApiClient {
   ): Promise<GetBugReportDetailsResponse> {
     const params = new URLSearchParams();
     if (!includeMessages) params.append('include_messages', 'false');
+    if (this.config.reporterEmail) {
+      params.append('reporter_email', this.config.reporterEmail);
+    }
 
     const queryString = params.toString();
     const endpoint = queryString
@@ -168,6 +179,7 @@ export class BugReporterApiClient {
       bug_report_id: bugReportId,
       message: messageText,
       attachments,
+      reporter_email: this.config.reporterEmail,
     };
 
     return this.request<SendBugReportMessageResponse>(
