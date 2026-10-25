@@ -18,6 +18,7 @@ import {
   CalendarClock,
   Cpu,
   ListChecks,
+  Receipt,
   Repeat,
   Mail
 } from 'lucide-react';
@@ -94,6 +95,12 @@ export function AppSidebar({ orgSlug, orgName, ...props }: AppSidebarProps) {
       title: 'AI Routines',
       url: `/org/${orgSlug}/ai/routines`,
       icon: ListChecks,
+      badge: null
+    },
+    {
+      title: 'AI Bills',
+      url: `/org/${orgSlug}/ai/bills`,
+      icon: Receipt,
       badge: null
     },
     {
