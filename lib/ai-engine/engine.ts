@@ -13,6 +13,10 @@
  *
  * The prompt is built HERE, not on the box, so changing a recipe never needs a
  * change on Windows. The runner receives a finished prompt and a model name.
+ * One exception (2026-10-25, intent interviews): a task marked app_prompt, run
+ * for its own trusted app, passes the app's finished prompt through instead of
+ * fencing it as untrusted data (see appPromptAllowed). Every other task keeps
+ * the fence.
  *
  * Every function takes the service-role client as an argument.
  */
@@ -78,8 +82,84 @@ export async function getEngineTask(
 }
 
 export type EnqueueOutcome =
-  | { ok: true; job_id: string; interactive: boolean }
+  | { ok: true; job_id: string; interactive: boolean; deduped?: boolean; reused?: boolean }
   | { ok: false; error: string; max_bytes?: number };
+
+/** Longest reuse window a task may ask for: ai_jobs rows are pruned at 90 days. */
+export const MAX_REUSE_HOURS = 2160;
+
+/** JSON equality that ignores object key order (jsonb does not keep it). */
+export function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const bb = b as unknown[];
+    return a.length === bb.length && a.every((v, i) => sameJson(v, bb[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao).filter((k) => ao[k] !== undefined);
+  const bk = Object.keys(bo).filter((k) => bo[k] !== undefined);
+  return ak.length === bk.length && ak.every((k) => k in bo && sameJson(ao[k], bo[k]));
+}
+
+/**
+ * Re-use of a finished answer (opt-in per task: ai_tasks.reuse_done_hours,
+ * NULL = off). A request with a dedupe key gets the job id of an earlier DONE
+ * job when it is the same app (app_slug), the same task, the same dedupe key
+ * AND the very same payload, finished within the task's window and after the
+ * task's recipe last changed. Failed jobs and test runs are never re-used.
+ * Returns null on any miss or any read error: the caller then enqueues as
+ * usual, so a missing column (migration not applied) changes nothing.
+ * Jobs still waiting or running are matched by fn_ai_engine_enqueue, as before.
+ */
+export async function findReusableAnswer(
+  admin: SupabaseClient,
+  args: { jobType: string; appSlug: string; payload: Record<string, unknown>; dedupeKey?: string },
+  now: Date = new Date()
+): Promise<{ job_id: string; interactive: boolean } | null> {
+  if (!args.dedupeKey) return null;
+  try {
+    const { data: task, error } = await admin
+      .from('ai_tasks')
+      .select('reuse_done_hours, updated_at, interactive')
+      .eq('job_type', args.jobType)
+      .maybeSingle();
+    if (error || !task) return null;
+    const t = task as { reuse_done_hours: number | null; updated_at: string | null; interactive: boolean };
+    const hours = Number(t.reuse_done_hours);
+    if (!Number.isInteger(hours) || hours < 1 || hours > MAX_REUSE_HOURS) return null;
+    let since = now.getTime() - hours * 3600_000;
+    const changed = t.updated_at ? Date.parse(t.updated_at) : NaN;
+    if (Number.isFinite(changed) && changed > since) since = changed;
+
+    const { data: rows, error: e2 } = await admin
+      .from('ai_jobs')
+      .select('id, payload, status, is_test, completed_at')
+      .eq('app_slug', args.appSlug)
+      .eq('job_type', args.jobType)
+      .eq('dedupe_key', args.dedupeKey)
+      .eq('status', 'done')
+      .eq('is_test', false)
+      .gt('completed_at', new Date(since).toISOString())
+      .order('completed_at', { ascending: false })
+      .limit(3);
+    if (e2 || !Array.isArray(rows)) return null;
+    // The filters above are repeated here so the rule never depends on them alone.
+    const hit = (rows as { id: string; payload: unknown; status: string; is_test: boolean; completed_at: string | null }[])
+      .find((r) =>
+        r.status === 'done' &&
+        r.is_test === false &&
+        r.completed_at !== null &&
+        Date.parse(r.completed_at) > since &&
+        sameJson(r.payload, args.payload)
+      );
+    return hit ? { job_id: hit.id, interactive: Boolean(t.interactive) } : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function enqueueEngineJob(
   admin: SupabaseClient,
@@ -92,6 +172,8 @@ export async function enqueueEngineJob(
     dedupeKey?: string;
   }
 ): Promise<EnqueueOutcome> {
+  const reused = await findReusableAnswer(admin, args);
+  if (reused) return { ok: true, ...reused, deduped: true, reused: true };
   const { data, error } = await admin.rpc('fn_ai_engine_enqueue', {
     p_job_type: args.jobType,
     p_application_id: args.applicationId,
@@ -153,6 +235,75 @@ export function buildPrompt(spec: EngineSpec, payload: unknown): string {
   ].join('\n');
 }
 
+/**
+ * The app's own finished prompt, for a task that passes it through
+ * (ai_tasks.app_prompt). Same folding as the intent app's own drain, byte for
+ * byte, so a replayed job gets the prompt it got there:
+ *   system ? `${system}\n\n---\n\n${prompt}` : prompt
+ * Null when the payload has no usable prompt string; the caller then fences.
+ */
+export function buildAppPrompt(payload: unknown): string | null {
+  const p = (payload && typeof payload === 'object' ? payload : {}) as { prompt?: unknown; system?: unknown };
+  if (typeof p.prompt !== 'string' || !p.prompt.trim()) return null;
+  const system = typeof p.system === 'string' && p.system ? p.system : null;
+  return system ? `${system}\n\n---\n\n${p.prompt}` : p.prompt;
+}
+
+/** The parts of a task row claim reads beyond the spec. */
+interface ClaimTaskExtras {
+  effort: string | null;
+  app_prompt: boolean;
+  owner_app: string | null;
+}
+
+/**
+ * Effort plus the pass-through setting. If the new columns are not there yet
+ * (code deployed before the migration), read effort alone, so effort is never
+ * lost and every job keeps the fence.
+ */
+async function readClaimExtras(admin: SupabaseClient, jobType: string): Promise<ClaimTaskExtras> {
+  const full = await admin
+    .from('ai_tasks')
+    .select('effort, app_prompt, owner_app')
+    .eq('job_type', jobType)
+    .maybeSingle();
+  if (!full.error) {
+    const t = (full.data ?? {}) as Partial<ClaimTaskExtras>;
+    return { effort: t.effort ?? null, app_prompt: t.app_prompt === true, owner_app: t.owner_app ?? null };
+  }
+  const { data } = await admin.from('ai_tasks').select('effort').eq('job_type', jobType).maybeSingle();
+  return { effort: (data as { effort: string | null } | null)?.effort ?? null, app_prompt: false, owner_app: null };
+}
+
+/**
+ * May this job's prompt go to the model as the app wrote it? Only when ALL hold:
+ *   - the task is marked app_prompt (set by a platform admin in SQL; the task
+ *     builder cannot set it — it is not a recipe field),
+ *   - the task belongs to an app (owner_app) and the job came from that app,
+ *   - that app is listed in ai_app_prompt_trust (service role only).
+ * Any read error → false (the fence stays).
+ */
+export async function appPromptAllowed(
+  admin: SupabaseClient,
+  jobId: string,
+  task: Pick<ClaimTaskExtras, 'app_prompt' | 'owner_app'>
+): Promise<boolean> {
+  if (!task.app_prompt || !task.owner_app) return false;
+  try {
+    const { data: j, error } = await admin.from('ai_jobs').select('application_id').eq('id', jobId).maybeSingle();
+    const appId = (j as { application_id: string | null } | null)?.application_id ?? null;
+    if (error || !appId || appId !== task.owner_app) return false;
+    const { data: trust, error: e2 } = await admin
+      .from('ai_app_prompt_trust')
+      .select('application_id')
+      .eq('application_id', appId)
+      .maybeSingle();
+    return !e2 && (trust as { application_id?: string } | null)?.application_id === appId;
+  } catch {
+    return false;
+  }
+}
+
 export async function claimEngineJob(
   admin: SupabaseClient,
   runner: string
@@ -168,9 +319,10 @@ export async function claimEngineJob(
   // that the hard way.
   if (!envelope?.job || !envelope.spec) return null;
   const { job, spec } = envelope;
-  // Effort is read fresh here rather than in the claim SQL, so the column can
-  // be added without replacing that function.
-  const { data: t } = await admin.from('ai_tasks').select('effort').eq('job_type', job.job_type).maybeSingle();
+  // Effort (and the pass-through setting) are read fresh here rather than in
+  // the claim SQL, so the columns can be added without replacing that function.
+  const extras = await readClaimExtras(admin, job.job_type);
+  const appPrompt = (await appPromptAllowed(admin, job.id, extras)) ? buildAppPrompt(job.payload) : null;
   // Only a check job the Control Tower itself queued may choose its account.
   const pinLabel = (job.payload as { label?: unknown } | null)?.label;
   const account_pin =
@@ -179,14 +331,14 @@ export async function claimEngineJob(
       : null;
   return {
     account_pin,
-    effort: (t as { effort: string | null } | null)?.effort ?? null,
+    effort: extras.effort,
     job_id: job.id,
     job_type: job.job_type,
     attempts: job.attempts,
     model: spec.model,
     output_format: spec.output_format,
     timeout_ms: spec.timeout_seconds * 1000,
-    prompt: buildPrompt(spec, job.payload)
+    prompt: appPrompt ?? buildPrompt(spec, job.payload)
   };
 }
 
