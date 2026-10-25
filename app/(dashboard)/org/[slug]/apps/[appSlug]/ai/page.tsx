@@ -5,6 +5,7 @@ import { Sparkles } from 'lucide-react';
 import { AiFleetBriefingCard } from '../../../bugs/_components/rollups/ai-fleet-briefing-card';
 import { AiTriageHelperCard } from '../../../bugs/_components/rollups/ai-triage-helper-card';
 import { AiDuplicateFinderCard } from '../../../bugs/_components/rollups/ai-duplicate-finder-card';
+import { AppBillCard } from '../../../ai/bills/_components/app-bill-card';
 
 export default async function AppAiPage({
   params
@@ -30,6 +31,8 @@ export default async function AppAiPage({
           AI tools scoped to just this app, on the ₹0 Max lane. Jobs queue behind MyJKKN&apos;s own work; there is no paid fallback.
         </p>
       </div>
+
+      <AppBillCard slug={slug} organizationId={organization.id} applicationId={application.id} />
 
       <AiFleetBriefingCard organizationId={organization.id} applicationId={application.id} />
 
