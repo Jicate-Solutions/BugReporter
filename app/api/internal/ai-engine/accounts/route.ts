@@ -51,7 +51,9 @@ const addSchema = z.object({
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{0,30}$/)
     .refine((l) => l !== 'default' && l !== 'auto', 'reserved'),
-  key: z.string().trim().min(20).max(500),
+  // A key never contains whitespace; strip all of it (not just the ends) so a key
+  // copied across a wrapped terminal line is stored whole (2026-11-04).
+  key: z.string().transform((k) => k.replace(/\s+/g, '')).pipe(z.string().min(20).max(500)),
   priority: z.number().int().min(1).max(99).nullable().optional()
 });
 
