@@ -22,4 +22,9 @@ describe('buildAddAccountBody', () => {
   it('sends the number when the Priority box has one', () => {
     expect(buildAddAccountBody('aimech', 'key', ' 3 ')).toEqual({ label: 'aimech', key: 'key', priority: 3 });
   });
+
+  it('removes spaces and line breaks inside a pasted key', () => {
+    const body = buildAddAccountBody('ainursing', 'sk-ant-oat01-abc\n  def\r\nghi ', '');
+    expect(body.key).toBe('sk-ant-oat01-abcdefghi');
+  });
 });

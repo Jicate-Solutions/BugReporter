@@ -65,4 +65,11 @@ describe('POST /api/internal/ai-engine/accounts priority handling', () => {
     expect(res?.status).toBe(201);
     expect(accountsUpsert()).toEqual({ label: 'aimech', priority: 3 });
   });
+
+  it('seals the key with every space and line break removed (wrapped-terminal paste, 2026-11-04)', async () => {
+    const { sealAccountKey } = await import('@/lib/ai-engine/account-keys');
+    const res = await POST(post({ label: 'ainursing', key: `${'a'.repeat(30)}\n  ${'b'.repeat(30)} ` }));
+    expect(res?.status).toBe(201);
+    expect(sealAccountKey).toHaveBeenLastCalledWith('a'.repeat(30) + 'b'.repeat(30));
+  });
 });
