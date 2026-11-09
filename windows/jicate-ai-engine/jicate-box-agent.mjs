@@ -61,6 +61,19 @@
 // never holds up the minute loop. Every 5 minutes it also posts a status
 // report (secrets scrubbed).
 //
+// BOX KEYS (2026-10-26). The GET reply lists `box_keys` saved in the Tower for
+// this box (id, file, name, set_at; no value). For each one that is on this
+// agent's own BOX_KEY_TARGETS list (box, id, file and variable must all match)
+// and whose env file exists, the agent fetches the value (GET ?box_key=<id>),
+// keeps a copy of the file as <file>.bak-<yyyyMMdd-HHmmss>, replaces the line
+// NAME=... in place (or appends it), and writes the file back as UTF-8 without
+// a byte-order mark, every other line byte-identical. Then it reports
+// delivered (or failed, with a fixed reason) through box_key_update. A missing
+// file is never created. The value is never logged, never put in a status
+// report, never in a command result. A failed delivery is not retried until
+// the Director saves the key again in the Tower. The backup keeps the OLD
+// value, in the same folder, readable by the same user.
+//
 // Files next to this script (made at install, readable by this user only):
 //   box-agent.env   JICATE_AI_URL=... and JICATE_AI_RUNNER_TOKEN=<agent token>
 //   box-agent.json  { "restartTasks": [ "ai.jicate.engine-1",
@@ -350,6 +363,122 @@ export function parseTaskList(text) {
     state: pick('Status'), last_run: pick('Last Run Time'), last_result: pick('Last Result'),
     next_run: pick('Next Run Time'), run_as: pick('Run As User'), logon_mode: pick('Logon Mode'),
   };
+}
+
+// ---- box keys (pure, exported for tests) ----------------------------------
+
+/**
+ * Where a box key may be written. Keep in step with lib/ai-engine/box-keys.ts
+ * BOX_KEY_TARGETS in the Tower: a key whose box, id, file AND variable do not
+ * all match an entry here is refused, whatever the Tower says.
+ */
+export const BOX_KEY_TARGETS = [
+  {
+    box: 'DESKTOP-1LB1FCS',
+    id: 'build-worker-github-token',
+    file: 'C:\\jicate-ai\\build-worker\\build-worker.env',
+    name: 'BUILD_GITHUB_TOKEN',
+  },
+];
+/** Same rule as the Tower: one env line, no quoting needed. */
+export const BOX_KEY_VALUE = /^[!%&()*+,\-./0-9:;<=>?@A-Z[\]^_a-z{|}~]{8,1000}$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
+
+/** The allowed target for this listed key on this box, or null. */
+export function boxKeyTarget(box, entry, targets = BOX_KEY_TARGETS) {
+  if (!entry || typeof entry !== 'object') return null;
+  return targets.find((t) =>
+    t.box.toLowerCase() === String(box).toLowerCase() &&
+    t.id === entry.id && t.file === entry.file && t.name === entry.name) || null;
+}
+
+/**
+ * NAME=value into env-file text. Every line that sets NAME is replaced in place
+ * (its own line ending kept); without one, NAME=value is appended with the
+ * file's line ending (CRLF for an empty file), after closing an unterminated
+ * last line. A leading UTF-8 byte-order mark is dropped. All other bytes stay
+ * as they were. Returns { text, changed, replaced }.
+ */
+export function rewriteEnv(text, name, value) {
+  if (!ENV_NAME.test(name)) throw new Error('bad variable name');
+  if (!BOX_KEY_VALUE.test(value)) throw new Error('value not usable');
+  const original = String(text);
+  const body = original.replace(/^\uFEFF/, '');
+  const setsName = new RegExp(`^[ \\t]*${name}[ \\t]*=`);
+  let replaced = 0;
+  const parts = body.length ? body.split(/(?<=\n)/) : [];
+  const out = parts.map((line) => {
+    const m = /\r?\n$/.exec(line);
+    const end = m ? m[0] : '';
+    const content = line.slice(0, line.length - end.length);
+    if (!setsName.test(content)) return line;
+    replaced += 1;
+    return `${name}=${value}${end}`;
+  });
+  let next = out.join('');
+  if (replaced === 0) {
+    const eol = body.includes('\r\n') ? '\r\n' : body.includes('\n') ? '\n' : '\r\n';
+    if (next.length && !next.endsWith('\n')) next += eol;
+    next += `${name}=${value}${eol}`;
+  }
+  return { text: next, changed: next !== original, replaced };
+}
+
+const stamp = (d = new Date()) => {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+
+/**
+ * Deliver one listed box key. Never logs, returns or reports the value.
+ *   fetchValue(id) -> { value, set_at }   (GET ?box_key=<id>)
+ *   report({ id, set_at, status, reason? }) (POST box_key_update)
+ * Returns the report it sent.
+ */
+export async function deliverBoxKey(entry, { box, fetchValue, report, log = () => {}, targets = BOX_KEY_TARGETS, now = () => new Date() }) {
+  const id = String(entry?.id || '').slice(0, 64);
+  const listedAt = String(entry?.set_at || '');
+  const send = async (update) => { await report(update); return update; };
+  const t = boxKeyTarget(box, entry, targets);
+  if (!t) {
+    log(`box key ${id} refused: not on this agent's list for ${box}`);
+    return send({ id, set_at: listedAt, status: 'failed', reason: 'not on the box agent list' });
+  }
+  if (!existsSync(t.file)) {
+    log(`box key ${t.name}: ${t.file} does not exist; not created`);
+    return send({ id, set_at: listedAt, status: 'failed', reason: 'file missing' });
+  }
+  const got = await fetchValue(t.id);
+  const setAt = String(got?.set_at || listedAt);
+  const value = got?.value;
+  if (typeof value !== 'string' || !BOX_KEY_VALUE.test(value)) {
+    log(`box key ${t.name}: value from the Tower is not usable; nothing written`);
+    return send({ id, set_at: setAt, status: 'failed', reason: 'value not usable' });
+  }
+  let backup = null;
+  try {
+    const before = readFileSync(t.file);
+    const r = rewriteEnv(before.toString('utf8'), t.name, value);
+    if (r.changed) {
+      backup = `${t.file}.bak-${stamp(now())}`;
+      copyFileSync(t.file, backup);
+      writeFileSync(t.file, r.text, 'utf8'); // Node writes no byte-order mark
+      const check = rewriteEnv(readFileSync(t.file, 'utf8'), t.name, value);
+      if (check.changed) {
+        copyFileSync(backup, t.file);
+        log(`box key ${t.name}: ${t.file} did not read back as written; restored ${baseOf(backup)}`);
+        return send({ id, set_at: setAt, status: 'failed', reason: 'read back did not match' });
+      }
+      log(`box key ${t.name} written to ${t.file} (${r.replaced ? 'replaced' : 'appended'}; backup ${baseOf(backup)})`);
+    } else {
+      log(`box key ${t.name} already set in ${t.file}; nothing written`);
+    }
+  } catch (e) {
+    const code = /^[A-Z0-9_]{2,20}$/.test(String(e?.code || '')) ? e.code : 'error';
+    log(`box key ${t.name}: could not write ${t.file} (${code})`);
+    return send({ id, set_at: setAt, status: 'failed', reason: `write failed: ${code}` });
+  }
+  return send({ id, set_at: setAt, status: 'delivered' });
 }
 
 // ---- runtime state (set by init) -------------------------------------------
@@ -1398,6 +1527,39 @@ async function applyAccount(d, have, owed) {
   return false;
 }
 
+// Box key reports the Tower has not taken yet (id -> update); sent again each
+// minute, and that key is not fetched again meanwhile. No value in here.
+const keyReports = new Map();
+
+async function postKeyReport(update) {
+  keyReports.set(update.id, update);
+  const r = await call('POST', '', { box_key_update: update });
+  keyReports.delete(update.id);
+  if (r?.box_key && r.box_key.moved === false) log(`box key ${update.id}: the Tower had already moved on; report dropped`);
+}
+
+async function applyBoxKeys(d) {
+  for (const update of [...keyReports.values()]) {
+    try { await postKeyReport(update); } catch (e) { once(`keyrep:${errText(e, 60)}`, `box key report failed: ${errText(e)}`); }
+  }
+  const list = Array.isArray(d?.box_keys) ? d.box_keys.slice(0, 10) : [];
+  for (const entry of list) {
+    if (keyReports.has(entry?.id)) continue;
+    try {
+      await deliverBoxKey(entry, {
+        box: BOX,
+        log,
+        fetchValue: (id) => call('GET', `?box_key=${encodeURIComponent(id)}`),
+        report: async (u) => {
+          try { await postKeyReport(u); } catch (e) { once(`keyrep:${errText(e, 60)}`, `box key report failed: ${errText(e)}`); }
+        },
+      });
+    } catch (e) {
+      once(`key:${errText(e, 60)}`, `box key step failed: ${errText(e)}`);
+    }
+  }
+}
+
 /** The launcher leaves this marker after installing a staged agent; reaching the Tower clears it. */
 function clearSwapMarker() {
   const marker = resolve(HERE, 'jicate-box-agent.swapped');
@@ -1427,6 +1589,8 @@ async function checkOnce() {
     }
     try { await reportFilesIfChanged(); } catch (e) { once(`report:${errText(e, 60)}`, `file report failed: ${errText(e)}`); }
   }
+  // Box keys: small file writes, independent of the account and file steps.
+  try { await applyBoxKeys(d); } catch (e) { once(`keys:${errText(e, 60)}`, `box key step failed: ${errText(e)}`); }
   // After the account and file steps, in the background: never holds up this loop.
   try { startCommands(d, gotAt); } catch (e) { once(`cmds:${errText(e, 60)}`, `command step failed: ${errText(e)}`); }
   try { startStatusReport(); } catch (e) { once(`status:${errText(e, 60)}`, `status report failed: ${errText(e)}`); }

@@ -294,6 +294,14 @@ export default async function AiRoutinesPage({
               </div>
             ))}
             <AddAccountForm />
+            <p className="text-muted-foreground text-xs">
+              Other keys a box needs in its own files (for example the build worker&apos;s GitHub
+              token):{' '}
+              <Link href={`/org/${slug}/ai/box-keys`} className="underline">
+                Box keys
+              </Link>
+              .
+            </p>
             <div className="space-y-1">
               <p className="text-sm font-medium">Key handouts (latest 15)</p>
               {keyFetches.length === 0 ? (
