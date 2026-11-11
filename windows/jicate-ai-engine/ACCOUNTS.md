@@ -63,15 +63,21 @@ Install (after the PR is merged and live; only on the Director's yes):
      hardcode C:\Users\Admin\.local\bin\claude.exe; those need a one-line
      MyJKKN change first, or they will simply keep running as today.
    - THE TOOL FENCE (W12 review, PR #93). A Tower key is handed ONLY to a run
-     whose arguments carry --allowedTools / --allowed-tools / --tools with
-     read/edit file tools only (Read, Glob, Grep, LS, NotebookRead, TodoWrite,
-     Edit, MultiEdit, Write, NotebookEdit; "" = no tools is fine), and no
-     --dangerously-skip-permissions, no bypass/auto --permission-mode, no
-     --mcp-config / --plugin-dir / --plugin-url / --settings. Any other run
-     (Bash, PowerShell, WebFetch, WebSearch, Task, mcp__*, no list at all) runs
-     on the box's own sign-in, logged "fence: no Tower key (<reason>)". So a
-     prompt-injected job that can shell out or reach the web never holds an
-     account key. List every drain BEFORE install and fill this table (the
+     whose arguments carry ALL of:
+       --setting-sources without "user" (e.g. project): Box 1's
+         C:\Users\Admin\.claude\settings.json defaults to bypassPermissions,
+         so an allow list alone is NOT a fence there;
+       --permission-mode dontAsk (or default / plan);
+       --allowedTools / --allowed-tools / --tools with read-only tools only
+         (Read, Glob, Grep, LS, NotebookRead, TodoWrite; "" = no tools is
+         fine; Read(./**) is the Box 1 form);
+     and no --dangerously-skip-permissions, no --mcp-config / --plugin-dir /
+     --plugin-url / --settings. Any other run (Bash, PowerShell, WebFetch,
+     WebSearch, Edit, Write, Task, mcp__*, a missing piece) runs on the box's
+     own sign-in, logged "fence: no Tower key (<reason>)". So a prompt-injected
+     job that can shell out, reach the web or plant settings never holds an
+     account key. A drain logging "fence: ..." needs its fence fixed in
+     MyJKKN before it can use the Tower's accounts. List every drain BEFORE install and fill this table (the
      drains are not in any repo, so this has NOT been checked yet):
 
        | drain (task name) | claude arguments (tool list, permission mode) | box/project settings permissions.allow, hooks, MCP servers | gets a Tower key? |
@@ -79,12 +85,12 @@ Install (after the PR is merged and live; only on the Director's yes):
        | (fill on the box) |                                               |                                                             |                   |
 
      To fill it: Get-CimInstance Win32_Process -Filter "name='claude.exe'" |
-     Select CommandLine  (while the drains run), and read
-     C:\Users\Admin\.claude\settings.json plus each drain folder's
-     .claude\settings*.json. The shim cannot see settings FILES: a drain whose
-     settings allow Bash / PowerShell / WebFetch / WebSearch, or start MCP
-     servers or hooks, must not be pointed at the shim (leave its CLAUDE_BIN
-     as the real claude.exe) until that is removed.
+     Select CommandLine  (while the drains run), and read each drain
+     folder's .claude\settings*.json and .mcp.json. The shim cannot see
+     settings FILES: a drain whose project settings allow Bash / PowerShell /
+     WebFetch / WebSearch, or start MCP servers or hooks, must not be pointed
+     at the shim (leave its CLAUDE_BIN as the real claude.exe) until that is
+     removed.
    - maxlane-biometric.env stays in C:\jicate-ai\, OUTSIDE every drain's
      working folder (a run allowed Read must not be able to reach it).
 2. Lane token, made ON the box (prints only a hash; secret stays in the file):
@@ -106,9 +112,10 @@ Install (after the PR is merged and live; only on the Director's yes):
    Node 18.20.2+, 20.12.2+ and 22 refuse a .cmd without a shell (FAIL EINVAL);
    if it says OK, SHIM = C:\jicate-ai\claude-acct.cmd, and check no drain
    starts it with shell:true and job text in an argument.
-5. Dry run, as the drains' Windows user (Admin), with CLAUDE_REAL_BIN set
-   (the --allowedTools is needed: an unfenced run never gets a Tower key):
-     echo say OK | <SHIM> -p --model haiku --allowedTools Read
+5. Dry run, as the drains' Windows user (Admin), with CLAUDE_REAL_BIN set,
+   from an empty folder outside C:\Users (the fence flags are needed: an
+   unfenced run never gets a Tower key):
+     echo say OK | <SHIM> -p --model haiku --setting-sources project --permission-mode dontAsk --allowedTools "Read(./**)"
    GATE: C:\jicate-ai\logs\claude-acct.log must show
      attempt=1 account=<a label, NOT own-sign-in> exit=0
    and AI Routines a "lane: ok" key fetch for maxlane-biometric. "own-sign-in"

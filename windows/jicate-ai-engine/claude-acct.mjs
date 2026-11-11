@@ -58,15 +58,15 @@ export const LIMIT_RE = /rate.?limit|usage limit|hit your limit|limit reached|to
 export const AUTH_RE = /failed to authenticate|oauth access token|invalid api key|not logged in|\b401\b/i;
 
 /**
- * Tools a run may be allowed and still get a Tower key. Read / search / edit
- * files only: none of them runs a command or reaches the network. Anything
- * else — Bash, PowerShell, WebFetch, WebSearch, Task/Agent, mcp__*, "default",
+ * Tools a run may be allowed and still get a Tower key. Read / search only:
+ * none of them runs a command, reaches the network, or writes a file (a run
+ * that can write could plant .claude/settings.json hooks or .mcp.json in its
+ * folder for the next run to start, key in hand). Anything else — Bash,
+ * PowerShell, WebFetch, WebSearch, Edit, Write, Task/Agent, mcp__*, "default",
  * a name we do not know — means no key.
  */
-export const SAFE_TOOLS = new Set([
-  'Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit'
-]);
-const SAFE_PERMISSION_MODES = new Set(['default', 'dontAsk', 'plan', 'manual', 'acceptEdits']);
+export const SAFE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite']);
+const SAFE_PERMISSION_MODES = new Set(['dontAsk', 'default', 'plan']);
 
 /** "Read,Grep Bash(git *)" -> ['Read', 'Grep', 'Bash(git *)'] (commas/spaces outside brackets split). */
 function toolNames(value) {
@@ -87,13 +87,15 @@ function toolNames(value) {
 
 /**
  * May this claude run be handed a Tower key? Reads the drain's arguments the
- * way claude.exe does. A key is handed ONLY when:
+ * way claude.exe does. A key is handed ONLY when ALL of:
  *   - the run carries a tool list (--allowedTools / --allowed-tools / --tools,
  *     "" = no tools counts), and every tool in every such list is in
  *     SAFE_TOOLS (a "Read(path)" rule counts as Read);
- *   - no permission bypass (--dangerously-skip-permissions,
- *     --allow-dangerously-skip-permissions, a --permission-mode other than
- *     default / dontAsk / plan / manual / acceptEdits);
+ *   - --setting-sources is given and leaves out "user": on Box 1
+ *     C:\Users\Admin\.claude\settings.json defaults to bypassPermissions, so
+ *     an allow list alone is NOT a fence there (found 8 Nov 2026);
+ *   - --permission-mode is given and is dontAsk, default or plan, and no
+ *     --dangerously-skip-permissions / --allow-dangerously-skip-permissions;
  *   - no MCP servers, plugins or settings brought in by argument
  *     (--mcp-config, --plugin-dir, --plugin-url, --settings): they can add
  *     tools or start programs that inherit the key.
@@ -107,6 +109,8 @@ function toolNames(value) {
  */
 export function fenceOf(args) {
   let lists = 0;
+  let mode_ = false;
+  let sources_ = false;
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
     const eq = a.indexOf('=');
@@ -139,6 +143,13 @@ export function fenceOf(args) {
       case '--permission-mode': {
         const mode = inline ?? String(args[++i] ?? '');
         if (!SAFE_PERMISSION_MODES.has(mode)) return { ok: false, reason: 'permission bypass' };
+        mode_ = true;
+        break;
+      }
+      case '--setting-sources': {
+        const sources = (inline ?? String(args[++i] ?? '')).split(',').map((x) => x.trim());
+        if (sources.includes('user')) return { ok: false, reason: 'user settings loaded' };
+        sources_ = true;
         break;
       }
       case '--mcp-config':
@@ -150,7 +161,10 @@ export function fenceOf(args) {
         break;
     }
   }
-  return lists ? { ok: true } : { ok: false, reason: 'no tool list' };
+  if (!lists) return { ok: false, reason: 'no tool list' };
+  if (!sources_) return { ok: false, reason: 'no --setting-sources without user' };
+  if (!mode_) return { ok: false, reason: 'no --permission-mode' };
+  return { ok: true };
 }
 
 /** The Tower URL, only if https (plain http allowed for localhost tests). */

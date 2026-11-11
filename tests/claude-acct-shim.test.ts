@@ -121,8 +121,9 @@ beforeEach(() => {
   asks.length = 0;
 });
 
-// Like the MyJKKN max-lane drains: prompt on stdin, tool list last.
-const ARGS = ['-p', '--model', 'sonnet', '--append-system-prompt', 'a "quoted" arg', '--output-format', 'json', '--allowedTools', 'Read'];
+// The Box 1 fence (user settings off, dontAsk, read-only list); prompt on stdin.
+const FENCE = ['--setting-sources', 'project', '--permission-mode', 'dontAsk'];
+const ARGS = ['-p', '--model', 'sonnet', '--append-system-prompt', 'a "quoted" arg', '--output-format', 'json', ...FENCE, '--allowedTools', 'Read'];
 
 function lastResult(stdout: string) {
   const lines = stdout.trim().split('\n');
@@ -195,7 +196,7 @@ describe('claude-acct.mjs', () => {
     const pidFile = join(dir, 'hang.pid');
     // sh is the "drain-side" parent (like cmd.exe or claude-acct.exe on Windows);
     // "; true" stops sh from exec-ing node in its place.
-    const sh = spawn('sh', ['-c', `"${process.execPath}" "${SHIM}" -p --allowedTools Read; true`], {
+    const sh = spawn('sh', ['-c', `"${process.execPath}" "${SHIM}" -p ${FENCE.join(' ')} --allowedTools Read; true`], {
       env: {
         PATH: process.env.PATH ?? '',
         CLAUDE_REAL_BIN: join(dir, 'fake-claude.mjs'),
@@ -230,7 +231,7 @@ describe('claude-acct.mjs', () => {
   }, 30_000);
 
   it('hands no Tower key to a run with no tool list: Tower not asked, own sign-in', async () => {
-    const r = await runShim(['-p', '--output-format', 'json'], 'p');
+    const r = await runShim(['-p', '--output-format', 'json', ...FENCE], 'p');
     expect(r.code).toBe(0);
     expect(lastResult(r.stdout).who).toBe('own');
     expect(asks).toHaveLength(0);
@@ -238,12 +239,16 @@ describe('claude-acct.mjs', () => {
   }, 20_000);
 
   for (const [name, args, reason] of [
-    ['Bash allowed', ['-p', '--allowedTools', 'Read,Bash(git *)'], 'shell, web or unknown tool allowed'],
-    ['PowerShell allowed', ['-p', '--allowedTools', 'Read', 'PowerShell'], 'shell, web or unknown tool allowed'],
-    ['WebFetch allowed', ['-p', '--allowed-tools=WebFetch'], 'shell, web or unknown tool allowed'],
-    ['WebSearch in --tools', ['-p', '--tools', 'Read,WebSearch', '--allowedTools', 'Read'], 'shell, web or unknown tool allowed'],
-    ['permissions bypassed', ['-p', '--allowedTools', 'Read', '--dangerously-skip-permissions'], 'permission bypass'],
-    ['MCP config', ['-p', '--allowedTools', 'Read', '--mcp-config', 'm.json'], 'MCP, plugin or settings by argument']
+    ['Bash allowed', ['-p', ...FENCE, '--allowedTools', 'Read,Bash(git *)'], 'shell, web or unknown tool allowed'],
+    ['PowerShell allowed', ['-p', ...FENCE, '--allowedTools', 'Read', 'PowerShell'], 'shell, web or unknown tool allowed'],
+    ['WebFetch allowed', ['-p', ...FENCE, '--allowed-tools=WebFetch'], 'shell, web or unknown tool allowed'],
+    ['WebSearch in --tools', ['-p', ...FENCE, '--tools', 'Read,WebSearch', '--allowedTools', 'Read'], 'shell, web or unknown tool allowed'],
+    ['Write allowed', ['-p', ...FENCE, '--allowedTools', 'Read,Write'], 'shell, web or unknown tool allowed'],
+    ['permissions bypassed', ['-p', ...FENCE, '--allowedTools', 'Read', '--dangerously-skip-permissions'], 'permission bypass'],
+    ['MCP config', ['-p', ...FENCE, '--allowedTools', 'Read', '--mcp-config', 'm.json'], 'MCP, plugin or settings by argument'],
+    ['allow list alone (Box 1 user settings bypass)', ['-p', '--allowedTools', 'Read'], 'no --setting-sources without user'],
+    ['user settings loaded', ['-p', '--setting-sources', 'user,project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read'], 'user settings loaded'],
+    ['no permission mode', ['-p', '--setting-sources', 'project', '--allowedTools', 'Read'], 'no --permission-mode']
   ] as [string, string[], string][]) {
     it(`hands no Tower key when ${name}`, async () => {
       const r = await runShim(args, 'p');
@@ -254,7 +259,7 @@ describe('claude-acct.mjs', () => {
   }
 
   it('an empty tool list (no tools at all, like the JICATE drain) still gets a Tower key', async () => {
-    const r = await runShim(['-p', '--output-format', 'json', '--allowedTools', ''], 'p');
+    const r = await runShim(['-p', '--output-format', 'json', ...FENCE, '--allowedTools', ''], 'p');
     expect(lastResult(r.stdout).who).toBe('aimech');
     expect(asks).toHaveLength(1);
   }, 20_000);
@@ -278,30 +283,37 @@ describe('claude-acct.mjs', () => {
 
 describe('fenceOf (which runs may get a Tower key)', async () => {
   const { fenceOf, towerUrlOk } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
-  const ok = (a: string[]) => fenceOf(a).ok;
-  it('allows read/edit-only tool lists, including path rules and "="', () => {
+  const ok = (a: string[]) => fenceOf([...FENCE, ...a]).ok;
+  it('allows the Box 1 fence with read-only tool lists, including path rules and "="', () => {
     expect(ok(['-p', '--model', 'sonnet', '--output-format', 'json', '--allowedTools', 'Read'])).toBe(true);
-    expect(ok(['--allowedTools', 'Read(./a b/**)', 'Grep,Glob'])).toBe(true);
-    expect(ok(['--tools=Read,Edit', '-p'])).toBe(true);
+    expect(ok(['--allowedTools', 'Read(./**)', 'Grep,Glob'])).toBe(true);
+    expect(ok(['--tools=Read,Grep', '-p'])).toBe(true);
     expect(ok(['--allowedTools', ''])).toBe(true);
-    expect(ok(['--allowedTools', 'Read', '--permission-mode', 'dontAsk'])).toBe(true);
+    expect(fenceOf(['--setting-sources=project,local', '--permission-mode=plan', '--allowedTools', 'Read']).ok).toBe(true);
+    expect(fenceOf(['--setting-sources', '', '--permission-mode', 'default', '--allowedTools', 'Read']).ok).toBe(true);
   });
-  it('refuses shell, web, MCP, agent, "default" and unknown tools', () => {
-    for (const t of ['Bash', 'Bash(git *)', 'PowerShell', 'WebFetch', 'WebSearch', 'mcp__x__y', 'Task', 'Agent', 'default', '*', 'BashOutput'])
+  it('refuses shell, web, write, MCP, agent, "default" and unknown tools', () => {
+    for (const t of ['Bash', 'Bash(git *)', 'PowerShell', 'WebFetch', 'WebSearch', 'Write', 'Edit', 'NotebookEdit', 'mcp__x__y', 'Task', 'Agent', 'default', '*', 'BashOutput'])
       expect(ok(['--allowedTools', 'Read', t]), t).toBe(false);
   });
   it('a prompt after the tool list reads as a tool (as claude does) and fails safe', () => {
     expect(ok(['-p', '--allowedTools', 'Read', 'summarise this'])).toBe(false);
   });
-  it('refuses no list, bypass modes, settings / plugins by argument', () => {
+  it('an allow list alone is not a fence (Box 1 user settings default to bypassPermissions)', () => {
     expect(fenceOf(['-p']).reason).toBe('no tool list');
-    expect(ok(['--allowedTools', 'Read', '--permission-mode', 'bypassPermissions'])).toBe(false);
-    expect(ok(['--allowedTools', 'Read', '--permission-mode=auto'])).toBe(false);
+    expect(fenceOf(['-p', '--allowedTools', 'Read']).reason).toBe('no --setting-sources without user');
+    expect(fenceOf(['--setting-sources', 'project', '--allowedTools', 'Read']).reason).toBe('no --permission-mode');
+    expect(fenceOf(['--setting-sources', 'project,user', '--permission-mode', 'dontAsk', '--allowedTools', 'Read']).reason).toBe('user settings loaded');
+  });
+  it('refuses bypass modes, settings / plugins / MCP by argument', () => {
+    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'bypassPermissions', '--allowedTools', 'Read']).ok).toBe(false);
+    expect(fenceOf(['--setting-sources', 'project', '--permission-mode=auto', '--allowedTools', 'Read']).ok).toBe(false);
+    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'acceptEdits', '--allowedTools', 'Read']).ok).toBe(false);
     expect(ok(['--allowedTools', 'Read', '--allow-dangerously-skip-permissions'])).toBe(false);
     for (const f of ['--settings', '--plugin-dir', '--plugin-url', '--mcp-config']) expect(ok(['--allowedTools', 'Read', f, 'x']), f).toBe(false);
   });
   it('the reason never carries argument text', () => {
-    expect(JSON.stringify(fenceOf(['--allowedTools', 'SECRET_TOOL_NAME']))).not.toContain('SECRET');
+    expect(JSON.stringify(fenceOf([...FENCE, '--allowedTools', 'SECRET_TOOL_NAME']))).not.toContain('SECRET');
   });
   it('accepts https, and plain http only for localhost', () => {
     expect(towerUrlOk('https://tower.example.com')).toBe(true);
