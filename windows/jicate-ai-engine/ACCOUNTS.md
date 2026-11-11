@@ -50,8 +50,10 @@ and moves to the next account by itself when Claude refuses one.
 
 Files (in C:\jicate-ai\):
   claude-acct.mjs            the stand-in for claude.exe (Node, no packages)
-  claude-acct.cmd            wrapper, IF the drains can start a .cmd (step 0)
-  claude-acct-launcher.cs    source of claude-acct.exe, for when they cannot
+  claude-acct-launcher.cs    source of claude-acct.exe: THE launcher (default)
+  claude-acct.cmd            fallback only, if the .exe cannot be built (step 4);
+                             cmd.exe re-reads %* so job text in an argument could
+                             inject commands
 Tower side: GET /api/internal/ai-engine/lane-key (merged PR; see its header).
 
 Install (after the PR is merged and live; only on the Director's yes):
@@ -60,6 +62,31 @@ Install (after the PR is merged and live; only on the Director's yes):
    - EVERY drain reads CLAUDE_BIN from its environment. Some older drains
      hardcode C:\Users\Admin\.local\bin\claude.exe; those need a one-line
      MyJKKN change first, or they will simply keep running as today.
+   - THE TOOL FENCE (W12 review, PR #93). A Tower key is handed ONLY to a run
+     whose arguments carry --allowedTools / --allowed-tools / --tools with
+     read/edit file tools only (Read, Glob, Grep, LS, NotebookRead, TodoWrite,
+     Edit, MultiEdit, Write, NotebookEdit; "" = no tools is fine), and no
+     --dangerously-skip-permissions, no bypass/auto --permission-mode, no
+     --mcp-config / --plugin-dir / --plugin-url / --settings. Any other run
+     (Bash, PowerShell, WebFetch, WebSearch, Task, mcp__*, no list at all) runs
+     on the box's own sign-in, logged "fence: no Tower key (<reason>)". So a
+     prompt-injected job that can shell out or reach the web never holds an
+     account key. List every drain BEFORE install and fill this table (the
+     drains are not in any repo, so this has NOT been checked yet):
+
+       | drain (task name) | claude arguments (tool list, permission mode) | box/project settings permissions.allow, hooks, MCP servers | gets a Tower key? |
+       |-------------------|-----------------------------------------------|-------------------------------------------------------------|-------------------|
+       | (fill on the box) |                                               |                                                             |                   |
+
+     To fill it: Get-CimInstance Win32_Process -Filter "name='claude.exe'" |
+     Select CommandLine  (while the drains run), and read
+     C:\Users\Admin\.claude\settings.json plus each drain folder's
+     .claude\settings*.json. The shim cannot see settings FILES: a drain whose
+     settings allow Bash / PowerShell / WebFetch / WebSearch, or start MCP
+     servers or hooks, must not be pointed at the shim (leave its CLAUDE_BIN
+     as the real claude.exe) until that is removed.
+   - maxlane-biometric.env stays in C:\jicate-ai\, OUTSIDE every drain's
+     working folder (a run allowed Read must not be able to reach it).
 2. Lane token, made ON the box (prints only a hash; secret stays in the file):
      powershell -NoProfile -ExecutionPolicy Bypass -File .\new-runner-token.ps1 -Runner maxlane-biometric
    Send the printed "runner=maxlane-biometric sha256=..." line to the Box desk.
@@ -69,19 +96,25 @@ Install (after the PR is merged and live; only on the Director's yes):
 3. Copy claude-acct.mjs, claude-acct.cmd and claude-acct-launcher.cs into
    C:\jicate-ai\ and check their SHA-256s. In claude-acct.cmd replace
    __NODE_EXE__ with the full path of node.exe.
-4. PROBE: can the drains start a .cmd? They call execFile(CLAUDE_BIN, ...) with
-   no shell; Node 18.20.2+, 20.12.2+ and 22 refuse a .cmd that way (EINVAL):
-     node -e "require('child_process').execFile('C:\\jicate-ai\\claude-acct.cmd',['--version'],(e,o)=>console.log(e?'FAIL '+e.code:'OK '+o))"
-   OK -> SHIM = C:\jicate-ai\claude-acct.cmd. FAIL EINVAL -> build the .exe:
+4. Build the launcher (default) and PROBE it the way the drains start it
+   (execFile with no shell):
      C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /out:C:\jicate-ai\claude-acct.exe C:\jicate-ai\claude-acct-launcher.cs
-   repeat the probe with claude-acct.exe; SHIM = C:\jicate-ai\claude-acct.exe.
+     node -e "require('child_process').execFile('C:\\jicate-ai\\claude-acct.exe',['--version'],(e,o)=>console.log(e?'FAIL '+e.code:'OK '+o))"
+   OK -> SHIM = C:\jicate-ai\claude-acct.exe.
    (If node.exe is not in C:\Program Files\nodejs\, set CLAUDE_ACCT_NODE.)
-5. Dry run, as the drains' Windows user (Admin), with CLAUDE_REAL_BIN set:
-     echo say OK | <SHIM> -p --model haiku
+   Fallback ONLY if csc.exe is missing: probe claude-acct.cmd the same way.
+   Node 18.20.2+, 20.12.2+ and 22 refuse a .cmd without a shell (FAIL EINVAL);
+   if it says OK, SHIM = C:\jicate-ai\claude-acct.cmd, and check no drain
+   starts it with shell:true and job text in an argument.
+5. Dry run, as the drains' Windows user (Admin), with CLAUDE_REAL_BIN set
+   (the --allowedTools is needed: an unfenced run never gets a Tower key):
+     echo say OK | <SHIM> -p --model haiku --allowedTools Read
    GATE: C:\jicate-ai\logs\claude-acct.log must show
      attempt=1 account=<a label, NOT own-sign-in> exit=0
    and AI Routines a "lane: ok" key fetch for maxlane-biometric. "own-sign-in"
-   or a "tower: ..." line means the Tower was not used: stop and report.
+   or a "tower: ..." / "fence: ..." line means the Tower was not used: stop and
+   report. JICATE_AI_URL in the env file must be https:// (the shim refuses
+   plain http except localhost, logged "tower: refused a non-https ...").
 6. For each drain task, set (where the task gets its environment):
      CLAUDE_REAL_BIN = C:\Users\Admin\.local\bin\claude.exe   (the old CLAUDE_BIN)
      CLAUDE_BIN      = <SHIM>
@@ -95,6 +128,8 @@ Undo (fastest first):
 - Put CLAUDE_BIN back to C:\Users\Admin\.local\bin\claude.exe and restart.
 - Revoke the token: UPDATE ai_runner_tokens SET revoked_at = now()
   WHERE runner = 'maxlane-biometric';  (the shim then falls back to own sign-in)
+  Revoking does NOT rotate keys already handed out: if the token may have
+  leaked, also sign each account out at claude.ai and store fresh keys.
 
 How it behaves:
 - The prompt (stdin) is read whole first, so a refused run can be replayed.
@@ -108,13 +143,23 @@ How it behaves:
   95% (fresh readings first), then accounts above 95% (used to the real limit).
 - The key is put only in the child claude's environment: never on disk, never
   on a command line, never in the log.
+- Only fenced runs get a key (install step 1). Unfenced runs, and every run
+  when the Tower URL is not https, go on the box's own sign-in as before.
 
 Risks to know:
-- A lane token can fetch the key of EVERY stored account (refused= walks the
-  list), with no running job needed; only the rate limit (120/min, 60 rolls per
-  10 min), the log on AI Routines and revoking the token limit that. Keep
-  maxlane-biometric.env readable by the box user only (new-runner-token.ps1
-  does this).
+- A lane token can still fetch the key of EVERY stored account, one at a time:
+  get a key, report it refused, get the next. The Tower accepts refused= only
+  for an account it handed THAT lane in the last 30 minutes (else 400
+  REFUSED_NOT_HANDED, logged "lane: refused label not handed to this lane"),
+  so a holder cannot jump to a chosen account or bench accounts it never got;
+  but each step it does take benches that account for every lane for 30 min.
+  Only the rate limit (120/min, 60 rolls per 10 min), the log on AI Routines
+  and revoking the token limit that. Keep maxlane-biometric.env readable by the
+  box user only (new-runner-token.ps1 does this).
+  Follow-up (not in this PR): a cap on distinct accounts handed per token per
+  hour, with an alert; the number needs the Box desk / W12 to agree it.
+- The token is not tied to one machine: ai_runner_tokens has no host column
+  and ?host= is self-reported, log only. Follow-up: add a host binding.
 - A drain's timeout kills what it started (cmd.exe or claude-acct.exe), not the
   shim's node or the claude.exe under it. The shim checks every 2 s whether
   that parent is gone and then stops claude (taskkill /T /F). Proven on a Mac
@@ -122,6 +167,10 @@ Risks to know:
 - 14 drains share one token's 120 asks a minute; past that a run gets 429 and
   falls back to the box's own sign-in (logged as "tower: tower 429").
 - Every Claude run adds one row to ai_account_key_fetches; nothing prunes it.
+  Follow-up (needs a migration and the Director's yes, so not in this PR):
+  add "DELETE FROM ai_account_key_fetches WHERE fetched_at < now() - 90 days"
+  to fn_ai_engine_prune, which the dispatcher already runs. The ownership
+  check only reads the last 30 minutes, so pruning older rows is safe.
 - The box agent may also set CLAUDE_CODE_OAUTH_TOKEN for the whole box. For a
   run through the shim, the Tower's lane key wins (set in the child last); when
   the Tower is unreachable, the box agent's key (or the own sign-in) applies.

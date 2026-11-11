@@ -3,7 +3,7 @@
  * claude-acct.mjs — stands in for claude.exe for the MyJKKN max lanes on a box.
  *
  * Director, 11 Nov 2026 13:2x: "Let the Tower hand keys to Box 1". Each drain's
- * CLAUDE_BIN points here (through claude-acct.cmd or claude-acct.exe). For every
+ * CLAUDE_BIN points here (through claude-acct.exe; claude-acct.cmd is a fallback). For every
  * Claude run this:
  *   1. reads the drain's stdin to the end (the prompt), so it can be replayed;
  *   2. asks the Control Tower which account to use
@@ -11,13 +11,18 @@
  *   3. runs the REAL claude.exe with the SAME arguments, unchanged (so the
  *      drain's fences — allowed tools, settings, model — stay exactly as they
  *      were), with CLAUDE_CODE_OAUTH_TOKEN set ONLY in that child's environment;
+ *      — but ONLY when the arguments fence the run off from the shell and the
+ *      web (fenceOf below; W12 review, PR #93). An unfenced run never gets a
+ *      Tower key: the Tower is not even asked, and the run goes on the box's
+ *      own sign-in exactly as before this shim;
  *   4. if Claude refuses the account (usage limit or bad key), asks again with
  *      refused=<label> and runs on the next account — at most once per account;
  *   5. hands the drain the output of the LAST run only, and its exit code.
  *
- * Floor: if the Tower cannot be reached, refuses, rate-limits, or has no
- * account left, the run goes ahead exactly as before this shim (the box's own
- * sign-in / whatever environment the drain already had).
+ * Floor: if the run is not fenced, or the Tower URL is not https, or the Tower
+ * cannot be reached, refuses, rate-limits, or has no account left, the run goes
+ * ahead exactly as before this shim (the box's own sign-in / whatever
+ * environment the drain already had).
  *
  * The key is held in memory only: never written to disk, never logged, never
  * put on a command line. The log line per run (logs\claude-acct.log next to
@@ -25,7 +30,8 @@
  *
  * Settings (environment of the drain, or defaults):
  *   CLAUDE_REAL_BIN   the real claude.exe   (default C:\Users\Admin\.local\bin\claude.exe)
- *   TOWER_LANE_ENV    file with JICATE_AI_URL= and JICATE_AI_RUNNER_TOKEN=
+ *   TOWER_LANE_ENV    file with JICATE_AI_URL= (https only; plain http only for
+ *                     localhost) and JICATE_AI_RUNNER_TOKEN=
  *                     (default C:\jicate-ai\maxlane-biometric.env, made by
  *                     new-runner-token.ps1 -Runner maxlane-biometric)
  *   CLAUDE_ACCT_LOG   log file             (default <this folder>\logs\claude-acct.log)
@@ -50,6 +56,113 @@ const MAX_ATTEMPTS = 6;
 // state; another account would not help).
 export const LIMIT_RE = /rate.?limit|usage limit|hit your limit|limit reached|too many requests|\b429\b/i;
 export const AUTH_RE = /failed to authenticate|oauth access token|invalid api key|not logged in|\b401\b/i;
+
+/**
+ * Tools a run may be allowed and still get a Tower key. Read / search / edit
+ * files only: none of them runs a command or reaches the network. Anything
+ * else — Bash, PowerShell, WebFetch, WebSearch, Task/Agent, mcp__*, "default",
+ * a name we do not know — means no key.
+ */
+export const SAFE_TOOLS = new Set([
+  'Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit'
+]);
+const SAFE_PERMISSION_MODES = new Set(['default', 'dontAsk', 'plan', 'manual', 'acceptEdits']);
+
+/** "Read,Grep Bash(git *)" -> ['Read', 'Grep', 'Bash(git *)'] (commas/spaces outside brackets split). */
+function toolNames(value) {
+  const out = [];
+  let cur = '';
+  let depth = 0;
+  for (const ch of value) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth = Math.max(0, depth - 1);
+    if (depth === 0 && (ch === ',' || /\s/.test(ch))) {
+      if (cur) out.push(cur);
+      cur = '';
+    } else cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * May this claude run be handed a Tower key? Reads the drain's arguments the
+ * way claude.exe does. A key is handed ONLY when:
+ *   - the run carries a tool list (--allowedTools / --allowed-tools / --tools,
+ *     "" = no tools counts), and every tool in every such list is in
+ *     SAFE_TOOLS (a "Read(path)" rule counts as Read);
+ *   - no permission bypass (--dangerously-skip-permissions,
+ *     --allow-dangerously-skip-permissions, a --permission-mode other than
+ *     default / dontAsk / plan / manual / acceptEdits);
+ *   - no MCP servers, plugins or settings brought in by argument
+ *     (--mcp-config, --plugin-dir, --plugin-url, --settings): they can add
+ *     tools or start programs that inherit the key.
+ * Like claude.exe, a tool list takes every following argument up to the next
+ * one starting with "-", so a prompt passed after the list reads as an unknown
+ * tool and the run gets no key (fails safe; the drains pass the prompt on stdin).
+ * Settings FILES on the box (permissions.allow, hooks, MCP servers) are not
+ * visible here: ACCOUNTS.md install step 1 checks them.
+ * Returns { ok: true } or { ok: false, reason } — reason is a fixed phrase,
+ * never argument text.
+ */
+export function fenceOf(args) {
+  let lists = 0;
+  for (let i = 0; i < args.length; i++) {
+    const a = String(args[i]);
+    const eq = a.indexOf('=');
+    const flag = a.startsWith('--') && eq > 0 ? a.slice(0, eq) : a;
+    const inline = a.startsWith('--') && eq > 0 ? a.slice(eq + 1) : null;
+    const takeList = () => {
+      const vals = inline !== null ? [inline] : [];
+      if (inline === null) while (i + 1 < args.length && !String(args[i + 1]).startsWith('-')) vals.push(String(args[++i]));
+      return vals;
+    };
+    switch (flag) {
+      case '--allowedTools':
+      case '--allowed-tools':
+      case '--tools': {
+        lists++;
+        for (const v of takeList()) {
+          for (const t of toolNames(v)) {
+            if (!SAFE_TOOLS.has(t.replace(/\(.*$/s, ''))) return { ok: false, reason: 'shell, web or unknown tool allowed' };
+          }
+        }
+        break;
+      }
+      case '--disallowedTools':
+      case '--disallowed-tools':
+        takeList(); // only narrows; not a fence by itself
+        break;
+      case '--dangerously-skip-permissions':
+      case '--allow-dangerously-skip-permissions':
+        return { ok: false, reason: 'permission bypass' };
+      case '--permission-mode': {
+        const mode = inline ?? String(args[++i] ?? '');
+        if (!SAFE_PERMISSION_MODES.has(mode)) return { ok: false, reason: 'permission bypass' };
+        break;
+      }
+      case '--mcp-config':
+      case '--plugin-dir':
+      case '--plugin-url':
+      case '--settings':
+        return { ok: false, reason: 'MCP, plugin or settings by argument' };
+      default:
+        break;
+    }
+  }
+  return lists ? { ok: true } : { ok: false, reason: 'no tool list' };
+}
+
+/** The Tower URL, only if https (plain http allowed for localhost tests). */
+export function towerUrlOk(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.protocol === 'https:') return true;
+    return u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
 
 function log(line) {
   try {
@@ -213,16 +326,19 @@ function watchParent() {
   }, Number(process.env.CLAUDE_ACCT_PARENT_POLL_MS) || 2_000).unref();
 }
 
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
-  try {
-    process.on(sig, () => {
-      killCurrent();
-      process.exit(130);
-    });
-  } catch { /* signal not supported on this platform */ }
+function onSignals() {
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
+    try {
+      process.on(sig, () => {
+        killCurrent();
+        process.exit(130);
+      });
+    } catch { /* signal not supported on this platform */ }
+  }
 }
 
 async function main() {
+  onSignals(); // here, not at import, so tests can import fenceOf safely
   watchParent();
   const args = process.argv.slice(2);
   const self = (() => { try { return realpathSync(fileURLToPath(import.meta.url)); } catch { return ''; } })();
@@ -237,11 +353,20 @@ async function main() {
   const input = await readStdin();
 
   let cfg = null;
+  const fence = fenceOf(args);
   if (process.env.CLAUDE_ACCT_OFF !== '1' && process.env.CLAUDE_ACCT_ACTIVE !== '1') {
-    try {
-      const f = readEnvFile(ENV_FILE);
-      if (f.JICATE_AI_URL && f.JICATE_AI_RUNNER_TOKEN) cfg = { url: f.JICATE_AI_URL, token: f.JICATE_AI_RUNNER_TOKEN };
-    } catch { /* no env file: run as before */ }
+    if (!fence.ok) {
+      // Not fenced off from the shell / web: never ask for a key.
+      log(`fence: no Tower key (${fence.reason})`);
+    } else {
+      try {
+        const f = readEnvFile(ENV_FILE);
+        if (f.JICATE_AI_URL && f.JICATE_AI_RUNNER_TOKEN) {
+          if (towerUrlOk(f.JICATE_AI_URL)) cfg = { url: f.JICATE_AI_URL, token: f.JICATE_AI_RUNNER_TOKEN };
+          else log('tower: refused a non-https JICATE_AI_URL');
+        }
+      } catch { /* no env file: run as before */ }
+    }
   }
 
   const refused = [];

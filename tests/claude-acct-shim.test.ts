@@ -121,7 +121,8 @@ beforeEach(() => {
   asks.length = 0;
 });
 
-const ARGS = ['-p', '--model', 'sonnet', '--output-format', 'json', '--allowedTools', 'Read', 'a "quoted" arg'];
+// Like the MyJKKN max-lane drains: prompt on stdin, tool list last.
+const ARGS = ['-p', '--model', 'sonnet', '--append-system-prompt', 'a "quoted" arg', '--output-format', 'json', '--allowedTools', 'Read'];
 
 function lastResult(stdout: string) {
   const lines = stdout.trim().split('\n');
@@ -194,7 +195,7 @@ describe('claude-acct.mjs', () => {
     const pidFile = join(dir, 'hang.pid');
     // sh is the "drain-side" parent (like cmd.exe or claude-acct.exe on Windows);
     // "; true" stops sh from exec-ing node in its place.
-    const sh = spawn('sh', ['-c', `"${process.execPath}" "${SHIM}" -p; true`], {
+    const sh = spawn('sh', ['-c', `"${process.execPath}" "${SHIM}" -p --allowedTools Read; true`], {
       env: {
         PATH: process.env.PATH ?? '',
         CLAUDE_REAL_BIN: join(dir, 'fake-claude.mjs'),
@@ -228,6 +229,43 @@ describe('claude-acct.mjs', () => {
     expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('parent gone: stopping claude');
   }, 30_000);
 
+  it('hands no Tower key to a run with no tool list: Tower not asked, own sign-in', async () => {
+    const r = await runShim(['-p', '--output-format', 'json'], 'p');
+    expect(r.code).toBe(0);
+    expect(lastResult(r.stdout).who).toBe('own');
+    expect(asks).toHaveLength(0);
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('fence: no Tower key (no tool list)');
+  }, 20_000);
+
+  for (const [name, args, reason] of [
+    ['Bash allowed', ['-p', '--allowedTools', 'Read,Bash(git *)'], 'shell, web or unknown tool allowed'],
+    ['PowerShell allowed', ['-p', '--allowedTools', 'Read', 'PowerShell'], 'shell, web or unknown tool allowed'],
+    ['WebFetch allowed', ['-p', '--allowed-tools=WebFetch'], 'shell, web or unknown tool allowed'],
+    ['WebSearch in --tools', ['-p', '--tools', 'Read,WebSearch', '--allowedTools', 'Read'], 'shell, web or unknown tool allowed'],
+    ['permissions bypassed', ['-p', '--allowedTools', 'Read', '--dangerously-skip-permissions'], 'permission bypass'],
+    ['MCP config', ['-p', '--allowedTools', 'Read', '--mcp-config', 'm.json'], 'MCP, plugin or settings by argument']
+  ] as [string, string[], string][]) {
+    it(`hands no Tower key when ${name}`, async () => {
+      const r = await runShim(args, 'p');
+      expect(lastResult(r.stdout).who).toBe('own');
+      expect(asks).toHaveLength(0);
+      expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain(`fence: no Tower key (${reason})`);
+    }, 20_000);
+  }
+
+  it('an empty tool list (no tools at all, like the JICATE drain) still gets a Tower key', async () => {
+    const r = await runShim(['-p', '--output-format', 'json', '--allowedTools', ''], 'p');
+    expect(lastResult(r.stdout).who).toBe('aimech');
+    expect(asks).toHaveLength(1);
+  }, 20_000);
+
+  it('refuses a plain-http Tower URL that is not localhost', async () => {
+    writeFileSync(join(dir, 'http.env'), 'JICATE_AI_URL=http://tower.example.com\nJICATE_AI_RUNNER_TOKEN=' + LANE_TOKEN + '\n');
+    const r = await runShim(ARGS, 'p', { TOWER_LANE_ENV: join(dir, 'http.env') });
+    expect(lastResult(r.stdout).who).toBe('own');
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('tower: refused a non-https JICATE_AI_URL');
+  }, 20_000);
+
   it('never writes a key to any file', async () => {
     await runShim(ARGS, 'p', { FAKE_LIMITED: 'aimech' });
     expect(existsSync(join(dir, 'logs', 'claude-acct.log'))).toBe(true);
@@ -236,4 +274,41 @@ describe('claude-acct.mjs', () => {
       for (const k of Object.values(KEYS)) expect(text.includes(k), f).toBe(false);
     }
   }, 20_000);
+});
+
+describe('fenceOf (which runs may get a Tower key)', async () => {
+  const { fenceOf, towerUrlOk } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+  const ok = (a: string[]) => fenceOf(a).ok;
+  it('allows read/edit-only tool lists, including path rules and "="', () => {
+    expect(ok(['-p', '--model', 'sonnet', '--output-format', 'json', '--allowedTools', 'Read'])).toBe(true);
+    expect(ok(['--allowedTools', 'Read(./a b/**)', 'Grep,Glob'])).toBe(true);
+    expect(ok(['--tools=Read,Edit', '-p'])).toBe(true);
+    expect(ok(['--allowedTools', ''])).toBe(true);
+    expect(ok(['--allowedTools', 'Read', '--permission-mode', 'dontAsk'])).toBe(true);
+  });
+  it('refuses shell, web, MCP, agent, "default" and unknown tools', () => {
+    for (const t of ['Bash', 'Bash(git *)', 'PowerShell', 'WebFetch', 'WebSearch', 'mcp__x__y', 'Task', 'Agent', 'default', '*', 'BashOutput'])
+      expect(ok(['--allowedTools', 'Read', t]), t).toBe(false);
+  });
+  it('a prompt after the tool list reads as a tool (as claude does) and fails safe', () => {
+    expect(ok(['-p', '--allowedTools', 'Read', 'summarise this'])).toBe(false);
+  });
+  it('refuses no list, bypass modes, settings / plugins by argument', () => {
+    expect(fenceOf(['-p']).reason).toBe('no tool list');
+    expect(ok(['--allowedTools', 'Read', '--permission-mode', 'bypassPermissions'])).toBe(false);
+    expect(ok(['--allowedTools', 'Read', '--permission-mode=auto'])).toBe(false);
+    expect(ok(['--allowedTools', 'Read', '--allow-dangerously-skip-permissions'])).toBe(false);
+    for (const f of ['--settings', '--plugin-dir', '--plugin-url', '--mcp-config']) expect(ok(['--allowedTools', 'Read', f, 'x']), f).toBe(false);
+  });
+  it('the reason never carries argument text', () => {
+    expect(JSON.stringify(fenceOf(['--allowedTools', 'SECRET_TOOL_NAME']))).not.toContain('SECRET');
+  });
+  it('accepts https, and plain http only for localhost', () => {
+    expect(towerUrlOk('https://tower.example.com')).toBe(true);
+    expect(towerUrlOk('http://127.0.0.1:3000')).toBe(true);
+    expect(towerUrlOk('http://localhost:3000')).toBe(true);
+    expect(towerUrlOk('http://tower.example.com')).toBe(false);
+    expect(towerUrlOk('http://localhost.example.com')).toBe(false);
+    expect(towerUrlOk('not a url')).toBe(false);
+  });
 });

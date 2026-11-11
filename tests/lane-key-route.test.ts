@@ -112,6 +112,13 @@ function get(query = '', token = LANE) {
   );
 }
 const logs = () => db.inserts.filter((i) => i.table === 'ai_account_key_fetches').map((i) => i.row);
+/** Grant rows, as if the Tower had handed these labels to a lane agoMs ago. */
+function handed(labels: string[], runner = 'maxlane-biometric', agoMs = 60_000) {
+  const at = new Date(Date.now() - agoMs).toISOString();
+  for (const label of labels) {
+    db.tables.ai_account_key_fetches.push({ runner, label, job_id: null, host: null, granted: true, reason: 'lane: ok', fetched_at: at });
+  }
+}
 
 describe('GET /api/internal/ai-engine/lane-key', () => {
   beforeEach(seed);
@@ -146,6 +153,7 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
   });
 
   it('rolls to the next account on refused=, logs the refusal, and remembers it for the next ask', async () => {
+    handed(['aimech']);
     const res = await get('?refused=aimech');
     expect(await res.json()).toEqual({ label: 'ainursing', key: 'key-of-ainursing' });
     expect(logs().map((r) => [r.label, r.granted, r.reason])).toEqual([
@@ -157,15 +165,18 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
   });
 
   it('uses an account above 95% before giving up', async () => {
+    handed(['aimech', 'ainursing']);
     const res = await get('?refused=aimech,ainursing');
     expect((await res.json()).label).toBe('aiahs');
     db.tables.ai_accounts.find((a) => a.label === 'aiahs')!.seven_day_util = 0.99;
     seedRefusals([]);
+    handed(['aimech', 'ainursing']);
     const again = await get('?refused=aimech,ainursing');
     expect((await again.json()).label).toBe('aiahs');
   });
 
   it('answers 409 with a retry time when every account was refused', async () => {
+    handed(['aimech', 'ainursing', 'aiahs']);
     const res = await get('?refused=aimech,ainursing,aiahs');
     expect(res.status).toBe(409);
     const body = await res.json();
@@ -179,7 +190,7 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
   });
 
   it('applies the roll cap only to requests carrying refused=', async () => {
-    await get();
+    await get(); // hands aimech to this lane
     expect(db.rpc).toHaveLength(1);
     await get('?refused=aimech');
     expect(db.rpc).toHaveLength(3);
@@ -215,10 +226,70 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
   });
 
   it('does not roll on when a refusal cannot be written', async () => {
+    handed(['aimech']);
     db.failInsert = true;
     const res = await get('?refused=aimech');
     expect(res.status).toBe(503);
     expect(await res.text()).not.toContain('key-of-');
+  });
+
+  it('refuses (400) a refused= label never handed to this lane, benches nothing', async () => {
+    const res = await get('?refused=aimech');
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(JSON.parse(body).error.code).toBe('REFUSED_NOT_HANDED');
+    expect(body).not.toContain('key-of-');
+    expect(logs()).toEqual([
+      expect.objectContaining({ label: '-', granted: false, reason: 'lane: refused label not handed to this lane' })
+    ]);
+    // aimech was NOT benched: the next plain ask still gets the top account
+    expect((await (await get()).json()).label).toBe('aimech');
+  });
+
+  it('refuses (400) a label handed to a DIFFERENT lane', async () => {
+    handed(['aimech'], 'maxlane-otherbox');
+    expect((await get('?refused=aimech')).status).toBe(400);
+  });
+
+  it('refuses (400) a label handed more than 30 minutes ago', async () => {
+    handed(['aimech'], 'maxlane-biometric', LANE_REFUSAL_MS + 60_000);
+    expect((await get('?refused=aimech')).status).toBe(400);
+  });
+
+  it('refuses (400) the whole list when only some labels were handed', async () => {
+    handed(['aimech']);
+    const res = await get('?refused=aimech,ainursing');
+    expect(res.status).toBe(400);
+    expect(logs().some((r) => r.reason === 'lane: refused by claude')).toBe(false);
+  });
+
+  it('a refusal row (granted=false) does not count as handed', async () => {
+    db.tables.ai_account_key_fetches.push({
+      runner: 'maxlane-biometric', label: 'aimech', granted: false, reason: 'lane: refused by claude', fetched_at: new Date().toISOString()
+    });
+    expect((await get('?refused=aimech')).status).toBe(400);
+  });
+
+  it('handed then refused: rolls, and the next account can be refused in turn', async () => {
+    const first = await (await get()).json();
+    expect(first.label).toBe('aimech');
+    const second = await (await get('?refused=aimech')).json();
+    expect(second.label).toBe('ainursing');
+    const third = await (await get('?refused=aimech,ainursing')).json();
+    expect(third.label).toBe('aiahs');
+  });
+
+  it('fails closed (503) when the key log cannot be read for the ownership check', async () => {
+    db.failTable = 'ai_account_key_fetches';
+    const res = await get('?refused=aimech');
+    expect(res.status).toBe(503);
+    expect((await res.json()).error.code).toBe('LOG_UNAVAILABLE');
+  });
+
+  it('logs "-" (not an unchecked label) when a refused= ask is rate limited', async () => {
+    db.rpcResult = { data: [{ allowed: false, retry_after: 5 }], error: null };
+    expect((await get('?refused=aimech')).status).toBe(429);
+    expect(logs()).toEqual([expect.objectContaining({ label: '-', reason: 'lane: rate limited' })]);
   });
 
   it('answers 503 and logs when the chosen key cannot be opened', async () => {

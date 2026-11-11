@@ -15,9 +15,16 @@
  *   ?refused=<label>[,<label>...]  accounts Claude just refused (limit or bad
  *        key) on this run. Each is logged as a refusal and skipped by every
  *        lane for 30 minutes (LANE_REFUSAL_MS); this request picks among the rest.
+ *        Accepted ONLY for a label this same lane was handed (a granted row in
+ *        ai_account_key_fetches) in the last 30 minutes; any other label → 400
+ *        REFUSED_NOT_HANDED and nothing is benched (W12 review, PR #93). So a
+ *        leaked token cannot jump to a chosen account or bench accounts it was
+ *        never given. It can still walk the list one grant at a time (each
+ *        step benches that account for every lane, and shows on AI Routines).
  *   ?host=<computer name>          optional, for the log only.
  *
  * 200 { label, key }   run on this account (key in memory only, never logged)
+ * 400                  bad refused list, or a refused label not handed to this lane
  * 409 NO_ACCOUNT_LEFT  every stored account was refused; { retry_after_seconds }
  * 429 RATE_LIMITED     too many requests (Retry-After header)
  * 403 / 401            wrong or unknown token
@@ -102,12 +109,36 @@ export async function GET(request: NextRequest) {
       (await spend(admin, 'lane-key', runner, LANE_RATE)) ??
       (refused.length ? await spend(admin, 'lane-key-roll', runner, LANE_ROLL_RATE) : null);
     if (wait != null) {
-      await log(refused[0] ?? '-', false, 'lane: rate limited');
+      // '-', not a refused label: the labels are not checked yet.
+      await log('-', false, 'lane: rate limited');
       return fail('RATE_LIMITED', 'Too many requests.', 429, { retry_after_seconds: wait }, { 'Retry-After': String(wait) });
     }
   } catch (e) {
     console.error('[ai-engine/lane-key] rate counter unavailable:', e instanceof Error ? e.message : e);
     return fail('RATE_LIMIT_UNAVAILABLE', 'Could not check the rate limit.', 503);
+  }
+
+  // A lane may only report a refusal of an account the Tower handed THIS lane
+  // in the last 30 minutes. Otherwise one leaked token could jump straight to a
+  // chosen account, or bench every account for every lane (W12 review, PR #93).
+  if (refused.length) {
+    const handedSince = new Date(Date.now() - LANE_REFUSAL_MS).toISOString();
+    const handed = await admin
+      .from('ai_account_key_fetches')
+      .select('label')
+      .eq('runner', runner)
+      .eq('granted', true)
+      .in('label', refused)
+      .gte('fetched_at', handedSince);
+    if (handed.error) {
+      console.error('[ai-engine/lane-key] could not read the key log:', handed.error.message);
+      return fail('LOG_UNAVAILABLE', 'Could not read the key log.', 503);
+    }
+    const ok = new Set(((handed.data ?? []) as { label: string }[]).map((r) => r.label));
+    if (refused.some((l) => !ok.has(l))) {
+      await log('-', false, 'lane: refused label not handed to this lane');
+      return fail('REFUSED_NOT_HANDED', 'A refused account was not handed to this lane in the last 30 minutes.', 400);
+    }
   }
 
   // Claude's refusal, reported by the lane: remembered for every lane.

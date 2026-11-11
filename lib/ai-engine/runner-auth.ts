@@ -21,9 +21,13 @@
  * lane on a box, not a JICATE worker. It opens ONLY /lane-key, which hands it
  * the key of the account the Tower picks — no running job needed. The job
  * routes refuse it (403), and /lane-key refuses worker tokens (403). If a lane
- * token leaks, the holder can fetch every stored Claude account key (by
- * rolling with refused=), limited only by the rate limit; every request is
- * logged. Revoke by setting revoked_at.
+ * token leaks, the holder can still fetch every stored Claude account key, one
+ * grant at a time (refused= is accepted only for a label this lane was handed
+ * in the last 30 minutes, so it cannot jump or bench accounts it never got),
+ * limited by the rate limit; every request is logged. The token is not bound
+ * to a machine (ai_runner_tokens has no host column; ?host= is log-only).
+ * Revoke by setting revoked_at; keys already fetched stay valid until each
+ * account is signed out at claude.ai.
  *
  * - an X-API-Key header → 401. Application keys never drive the engine.
  * - missing or short token → 401. Unknown or revoked hash → 401.
