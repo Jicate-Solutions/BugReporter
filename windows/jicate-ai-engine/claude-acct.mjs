@@ -40,7 +40,7 @@
 
 import { spawn } from 'node:child_process';
 import { readFileSync, appendFileSync, mkdirSync, realpathSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, win32, posix } from 'node:path';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -131,9 +131,13 @@ function toolProblem(rule) {
  * May this claude run be handed a Tower key? Parses the drain's arguments the
  * way claude.exe (commander) does, so a flag hidden as another option's value
  * or after "--" is not mistaken for a fence. A key is handed ONLY when ALL of:
- *   - a tool list (--allowedTools / --allowed-tools / --tools; "" = no tools
- *     counts) whose every entry is in SAFE_TOOLS, file tools scoped with a
- *     relative "./" path and no "..", e.g. Read(./**);
+ *   - --tools, the set of tools claude LOADS, with plain names from SAFE_TOOLS
+ *     only (e.g. --tools Read,Grep,Glob; "" = no tools). So Bash, PowerShell
+ *     and WebFetch are not even loaded, and the fence does not rest on
+ *     dontAsk or on claude's own list of read-only commands (W12 round 3);
+ *   - any --allowedTools / --allowed-tools rules (optional) are SAFE_TOOLS
+ *     entries with file tools scoped by a relative "./" path and no "..",
+ *     e.g. Read(./**);
  *   - --setting-sources is given and leaves out "user": on Box 1
  *     C:\Users\Admin\.claude\settings.json defaults to bypassPermissions, so
  *     an allow list alone is NOT a fence there (found 8 Nov 2026);
@@ -156,7 +160,7 @@ function toolProblem(rule) {
  * @returns {{ ok: boolean, reason?: string }}
  */
 export function fenceOf(args) {
-  let lists = 0;
+  let toolSet = false;
   let mode_ = false;
   let sources_ = false;
   let strictMcp = false;
@@ -195,10 +199,18 @@ export function fenceOf(args) {
       continue;
     }
     switch (flag) {
-      case '--allowedTools':
-      case '--allowed-tools':
       case '--tools': {
-        lists++;
+        // The loaded tool set: plain names only (claude takes "Bash,Edit,Read" here).
+        toolSet = true;
+        for (const v of takeList()) {
+          for (const t of toolNames(v)) {
+            if (!SAFE_TOOLS.has(t)) return no(/^[A-Za-z]+\(/.test(t) ? 'bad --tools entry' : 'shell, web or unknown tool allowed');
+          }
+        }
+        break;
+      }
+      case '--allowedTools':
+      case '--allowed-tools': {
         for (const v of takeList()) {
           for (const t of toolNames(v)) {
             const problem = toolProblem(t);
@@ -228,7 +240,7 @@ export function fenceOf(args) {
         return no('unknown or unsafe option');
     }
   }
-  if (!lists) return no('no tool list');
+  if (!toolSet) return no('no --tools list');
   if (!sources_) return no('no --setting-sources without user');
   if (!mode_) return no('no --permission-mode');
   if (!strictMcp) return no('no --strict-mcp-config');
@@ -244,6 +256,25 @@ export function fenceOf(args) {
 export function envFenceOf(env) {
   if (env.ANTHROPIC_BASE_URL) return { ok: false, reason: 'ANTHROPIC_BASE_URL set' };
   return { ok: true };
+}
+
+/**
+ * Is the lane-token file inside the folder claude runs in (or that folder
+ * itself)? Then even Read(./**) reaches it, with no link needed.
+ * Case-insensitive on Windows.
+ */
+export function tokenInsideFolder(envFile, cwd, platform = process.platform) {
+  const P = platform === 'win32' ? win32 : posix;
+  const real = (p) => {
+    const abs = P.resolve(p);
+    if (platform !== process.platform) return abs;
+    try { return realpathSync(abs); } catch { return abs; }
+  };
+  let dir = real(P.dirname(P.resolve(envFile)));
+  let folder = real(cwd);
+  if (platform === 'win32') { dir = dir.toLowerCase(); folder = folder.toLowerCase(); }
+  const rel = P.relative(folder, dir);
+  return rel === '' || (!rel.startsWith('..') && !P.isAbsolute(rel));
 }
 
 /** The Tower URL, only if https (plain http allowed for localhost tests). */
@@ -447,7 +478,10 @@ async function main() {
 
   let cfg = null;
   const argFence = fenceOf(args);
-  const fence = argFence.ok ? envFenceOf(process.env) : argFence;
+  const envFence = argFence.ok ? envFenceOf(process.env) : argFence;
+  const fence = envFence.ok && tokenInsideFolder(ENV_FILE, process.cwd())
+    ? { ok: false, reason: 'token file inside the working folder' }
+    : envFence;
   if (process.env.CLAUDE_ACCT_OFF !== '1' && process.env.CLAUDE_ACCT_ACTIVE !== '1') {
     if (!fence.ok) {
       // Not fenced off from the shell / web: never ask for a key.

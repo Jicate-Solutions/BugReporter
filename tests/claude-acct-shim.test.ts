@@ -57,9 +57,10 @@ process.stdin.on('end', () => {
 });
 `;
 
-function runShim(args: string[], input: string, env: Record<string, string> = {}) {
+function runShim(args: string[], input: string, env: Record<string, string> = {}, cwd?: string) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
     const child = spawn(process.execPath, [SHIM, ...args], {
+      cwd,
       env: {
         PATH: process.env.PATH ?? '',
         CLAUDE_REAL_BIN: join(dir, 'fake-claude.mjs'),
@@ -122,7 +123,7 @@ beforeEach(() => {
 });
 
 // The Box 1 fence (user settings off, dontAsk, read-only list); prompt on stdin.
-const FENCE = ['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config'];
+const FENCE = ['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--tools', 'Read,Grep,Glob'];
 const ARGS = ['-p', '--model', 'sonnet', '--append-system-prompt', 'a "quoted" arg', '--output-format', 'json', ...FENCE, '--allowedTools', 'Read(./**)'];
 
 function lastResult(stdout: string) {
@@ -230,12 +231,12 @@ describe('claude-acct.mjs', () => {
     expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('parent gone: stopping claude');
   }, 30_000);
 
-  it('hands no Tower key to a run with no tool list: Tower not asked, own sign-in', async () => {
-    const r = await runShim(['-p', '--output-format', 'json', ...FENCE], 'p');
+  it('hands no Tower key to a run with no --tools list (shell tools loaded): Tower not asked, own sign-in', async () => {
+    const r = await runShim(['-p', '--output-format', 'json', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--allowedTools', 'Read(./**)'], 'p');
     expect(r.code).toBe(0);
     expect(lastResult(r.stdout).who).toBe('own');
     expect(asks).toHaveLength(0);
-    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('fence: no Tower key (no tool list)');
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('fence: no Tower key (no --tools list)');
   }, 20_000);
 
   for (const [name, args, reason] of [
@@ -250,12 +251,14 @@ describe('claude-acct.mjs', () => {
     ['a permission prompt tool', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', '--permission-prompt-tool', 'mcp__x__ok'], 'permission bypass'],
     ['an extra folder', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', '--add-dir', 'C:/jicate-ai'], 'extra folders by argument'],
     ['MCP config', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', '--mcp-config', 'm.json'], 'MCP, plugin or settings by argument'],
-    ['allow list alone (Box 1 user settings bypass)', ['-p', '--allowedTools', 'Read(./**)'], 'no --setting-sources without user'],
+    ['allow list alone (Box 1 user settings bypass)', ['-p', '--tools', 'Read', '--allowedTools', 'Read(./**)'], 'no --setting-sources without user'],
+    ['Bash loaded by --tools', ['-p', ...FENCE, '--tools', 'Read,Bash'], 'shell, web or unknown tool allowed'],
+    ['a path rule in --tools', ['-p', ...FENCE.slice(0, 5), '--tools', 'Read(./**)'], 'bad --tools entry'],
     ['user settings loaded', ['-p', '--setting-sources', 'user,project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(./**)'], 'user settings loaded'],
-    ['no permission mode', ['-p', '--setting-sources', 'project', '--allowedTools', 'Read(./**)'], 'no --permission-mode'],
-    ['no --strict-mcp-config', ['-p', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(./**)'], 'no --strict-mcp-config'],
+    ['no permission mode', ['-p', '--setting-sources', 'project', '--tools', 'Read', '--allowedTools', 'Read(./**)'], 'no --permission-mode'],
+    ['no --strict-mcp-config', ['-p', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--tools', 'Read', '--allowedTools', 'Read(./**)'], 'no --strict-mcp-config'],
     ['the fence hidden as an option value', ['-p', '--system-prompt', '--setting-sources=project', '--permission-mode=dontAsk', '--strict-mcp-config', '--allowedTools=Read(./**)'], 'option value looks like a flag'],
-    ['the fence after "--"', ['-p', '--', ...FENCE, '--allowedTools', 'Read(./**)'], 'no tool list']
+    ['the fence after "--"', ['-p', '--', ...FENCE, '--allowedTools', 'Read(./**)'], 'no --tools list']
   ] as [string, string[], string][]) {
     it(`hands no Tower key when ${name}`, async () => {
       const r = await runShim(args, 'p');
@@ -264,6 +267,13 @@ describe('claude-acct.mjs', () => {
       expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain(`fence: no Tower key (${reason})`);
     }, 20_000);
   }
+
+  it('hands no Tower key when the token file is inside the working folder', async () => {
+    const r = await runShim(ARGS, 'p', {}, dir); // dir holds maxlane-test.env
+    expect(lastResult(r.stdout).who).toBe('own');
+    expect(asks).toHaveLength(0);
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('fence: no Tower key (token file inside the working folder)');
+  }, 20_000);
 
   it('hands no Tower key when ANTHROPIC_BASE_URL is set', async () => {
     const r = await runShim(ARGS, 'p', { ANTHROPIC_BASE_URL: 'https://elsewhere.example.com' });
@@ -302,10 +312,13 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
   it('allows the Box 1 fence with ./-scoped read-only tools, and "=" forms', () => {
     expect(ok(['-p', '--model', 'sonnet', '--output-format', 'json', '--max-turns', '5', '--allowedTools', 'Read(./**)'])).toBe(true);
     expect(ok(['--allowedTools', 'Read(./**)', 'Grep(./**),Glob(./jobs/**)', 'TodoWrite'])).toBe(true);
-    expect(ok(['--tools=Read(./**),Grep(./**)', '-p'])).toBe(true);
+    expect(ok(['--tools=Read,Grep', '-p'])).toBe(true);
+    expect(ok(['--tools', ''])).toBe(true); // no tools at all
     expect(ok(['--allowedTools', ''])).toBe(true);
-    expect(fenceOf(['--setting-sources=project,local', '--permission-mode=plan', '--strict-mcp-config', '--allowedTools', 'Read(./**)']).ok).toBe(true);
-    expect(fenceOf(['--setting-sources', '', '--permission-mode', 'default', '--strict-mcp-config', '--allowedTools', 'Read(./**)']).ok).toBe(true);
+    expect(fenceOf(['--setting-sources=project,local', '--permission-mode=plan', '--strict-mcp-config', '--tools', 'Read', '--allowedTools', 'Read(./**)']).ok).toBe(true);
+    expect(fenceOf(['--setting-sources', '', '--permission-mode', 'default', '--strict-mcp-config', '--tools', 'Read,Grep']).ok).toBe(true);
+    // W12's shape: shell tools never loaded, Read confined to the folder
+    expect(fenceOf(['-p', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--allowedTools', 'Read(./**)']).ok).toBe(true);
     expect(ok(['--allowedTools', 'Read(./**)', '--', '--dangerously-skip-permissions'])).toBe(true); // prompt text after --
   });
   it('refuses shell, web, write, MCP, agent, "default" and unknown tools', () => {
@@ -320,11 +333,18 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
     expect(ok(['-p', '--allowedTools', 'Read(./**)', 'summarise this'])).toBe(false);
   });
   it('an allow list alone is not a fence (Box 1 user settings default to bypassPermissions)', () => {
-    expect(fenceOf(['-p']).reason).toBe('no tool list');
-    expect(fenceOf(['-p', '--allowedTools', 'Read(./**)']).reason).toBe('no --setting-sources without user');
-    expect(fenceOf(['--setting-sources', 'project', '--allowedTools', 'Read(./**)']).reason).toBe('no --permission-mode');
-    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(./**)']).reason).toBe('no --strict-mcp-config');
-    expect(fenceOf(['--setting-sources', 'project,user', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--allowedTools', 'Read(./**)']).reason).toBe('user settings loaded');
+    expect(fenceOf(['-p']).reason).toBe('no --tools list');
+    // a full fence but no --tools: Bash / PowerShell stay loaded -> no key
+    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--allowedTools', 'Read(./**)']).reason).toBe('no --tools list');
+    expect(fenceOf(['-p', '--tools', 'Read', '--allowedTools', 'Read(./**)']).reason).toBe('no --setting-sources without user');
+    expect(fenceOf(['--setting-sources', 'project', '--tools', 'Read']).reason).toBe('no --permission-mode');
+    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--tools', 'Read']).reason).toBe('no --strict-mcp-config');
+    expect(fenceOf(['--setting-sources', 'project,user', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--tools', 'Read']).reason).toBe('user settings loaded');
+  });
+  it('--tools takes plain safe names only', () => {
+    for (const t of ['Bash', 'PowerShell', 'WebFetch', 'WebSearch', 'Edit', 'Write', 'mcp__x__y', 'default', 'Task'])
+      expect(why(['--tools', `Read,${t}`]), t).toBe('shell, web or unknown tool allowed');
+    expect(why(['--tools', 'Read(./**)'])).toBe('bad --tools entry');
   });
   it('refuses bypass modes, prompt tools, extra folders, settings / plugins / MCP by argument', () => {
     expect(why(['--permission-mode', 'bypassPermissions', '--allowedTools', 'Read(./**)'])).toBe('permission bypass');
@@ -349,6 +369,18 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
     expect(JSON.stringify(fenceOf([...FENCE, '--allowedTools', 'SECRET_TOOL_NAME']))).not.toContain('SECRET');
     expect(JSON.stringify(fenceOf([...FENCE, '--SECRET-flag']))).not.toContain('SECRET');
   });
+  it('spots the token file inside (or equal to) the working folder, case-insensitive on Windows', async () => {
+    const { tokenInsideFolder } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+    const env = 'C:\\jicate-ai\\maxlane-biometric.env';
+    expect(tokenInsideFolder(env, 'C:\\jicate-ai', 'win32')).toBe(true);
+    expect(tokenInsideFolder(env, 'c:\\JICATE-AI', 'win32')).toBe(true);
+    expect(tokenInsideFolder(env, 'C:\\', 'win32')).toBe(true);
+    expect(tokenInsideFolder(env, 'C:\\jkkn-cards\\jobs', 'win32')).toBe(false);
+    expect(tokenInsideFolder(env, 'C:\\jicate-ai-jobs', 'win32')).toBe(false);
+    expect(tokenInsideFolder('/srv/lane/token.env', '/srv', 'linux')).toBe(true);
+    expect(tokenInsideFolder('/srv/lane/token.env', '/srv/jobs', 'linux')).toBe(false);
+  });
+
   it('refuses a key when ANTHROPIC_BASE_URL is set', () => {
     expect(envFenceOf({ ANTHROPIC_BASE_URL: 'https://x.example.com' })).toEqual({ ok: false, reason: 'ANTHROPIC_BASE_URL set' });
     expect(envFenceOf({}).ok).toBe(true);
