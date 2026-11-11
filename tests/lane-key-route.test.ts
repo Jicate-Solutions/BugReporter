@@ -279,7 +279,7 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
     expect(third.label).toBe('aiahs');
   });
 
-  it('fails closed (503) when the key log cannot be read for the ownership check', async () => {
+  it('fails closed (503) when the key log cannot be read for the ownership / cap check', async () => {
     db.failTable = 'ai_account_key_fetches';
     const res = await get('?refused=aimech');
     expect(res.status).toBe(503);
@@ -290,6 +290,55 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
     db.rpcResult = { data: [{ allowed: false, retry_after: 5 }], error: null };
     expect((await get('?refused=aimech')).status).toBe(429);
     expect(logs()).toEqual([expect.objectContaining({ label: '-', reason: 'lane: rate limited' })]);
+  });
+
+  describe('per-token cap: 3 distinct accounts per rolling hour', () => {
+    beforeEach(() => {
+      db.tables.ai_account_secrets.push({ label: 'aiextra', ciphertext: 'sealed:aiextra' });
+      db.tables.ai_accounts.push({ label: 'aiextra', priority: 4, five_hour_util: 0.1, seven_day_util: 0.1, five_hour_resets_at: soon, seven_day_resets_at: soon, updated_at: freshAt });
+    });
+
+    it('a 4th distinct account gets 429 ACCOUNT_CAP_REACHED, no key, Retry-After', async () => {
+      handed(['ainursing', 'aiahs', 'aiextra'], 'maxlane-biometric', 40 * 60_000);
+      const res = await get(); // would pick aimech: a 4th distinct account
+      expect(res.status).toBe(429);
+      const body = await res.text();
+      expect(JSON.parse(body).error.code).toBe('ACCOUNT_CAP_REACHED');
+      expect(body).not.toContain('key-of-');
+      const wait = Number(res.headers.get('retry-after'));
+      expect(wait).toBeGreaterThan(19 * 60 - 5);
+      expect(wait).toBeLessThanOrEqual(20 * 60 + 1);
+      expect(logs()).toEqual([expect.objectContaining({ label: '-', granted: false, reason: 'lane: account cap reached' })]);
+    });
+
+    it('the cap benches nothing: refusals in a capped request are not written', async () => {
+      handed(['aimech', 'ainursing', 'aiahs']);
+      const res = await get('?refused=aimech,ainursing,aiahs'); // next pick would be aiextra
+      expect(res.status).toBe(429);
+      expect(logs().some((r) => r.reason === 'lane: refused by claude')).toBe(false);
+      // aimech was not benched: a plain ask is handed aimech again (already handed this hour)
+      expect((await (await get()).json()).label).toBe('aimech');
+    });
+
+    it('re-handing an account already handed this hour is allowed at the cap', async () => {
+      handed(['aimech', 'ainursing', 'aiahs']);
+      const res = await get();
+      expect(res.status).toBe(200);
+      expect((await res.json()).label).toBe('aimech');
+    });
+
+    it('walking the list stops at the 4th account', async () => {
+      expect((await (await get()).json()).label).toBe('aimech');
+      expect((await (await get('?refused=aimech')).json()).label).toBe('ainursing');
+      expect((await (await get('?refused=aimech,ainursing')).json()).label).toBe('aiahs');
+      expect((await get('?refused=aimech,ainursing,aiahs')).status).toBe(429);
+    });
+
+    it('grants older than an hour, or to another lane, do not count', async () => {
+      handed(['ainursing', 'aiahs', 'aiextra'], 'maxlane-biometric', 61 * 60_000);
+      handed(['ainursing', 'aiahs', 'aiextra'], 'maxlane-otherbox');
+      expect((await get()).status).toBe(200);
+    });
   });
 
   it('answers 503 and logs when the chosen key cannot be opened', async () => {

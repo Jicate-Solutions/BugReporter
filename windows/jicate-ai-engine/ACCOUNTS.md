@@ -154,17 +154,21 @@ How it behaves:
   when the Tower URL is not https, go on the box's own sign-in as before.
 
 Risks to know:
-- A lane token can still fetch the key of EVERY stored account, one at a time:
-  get a key, report it refused, get the next. The Tower accepts refused= only
-  for an account it handed THAT lane in the last 30 minutes (else 400
-  REFUSED_NOT_HANDED, logged "lane: refused label not handed to this lane"),
-  so a holder cannot jump to a chosen account or bench accounts it never got;
-  but each step it does take benches that account for every lane for 30 min.
-  Only the rate limit (120/min, 60 rolls per 10 min), the log on AI Routines
-  and revoking the token limit that. Keep maxlane-biometric.env readable by the
-  box user only (new-runner-token.ps1 does this).
-  Follow-up (not in this PR): a cap on distinct accounts handed per token per
-  hour, with an alert; the number needs the Box desk / W12 to agree it.
+- If a lane token leaks, the holder gets at most 3 DIFFERENT account keys per
+  rolling hour. The Tower accepts refused= only for an account it handed THAT
+  lane in the last 30 minutes (else 400 REFUSED_NOT_HANDED, logged "lane:
+  refused label not handed to this lane"), so a holder cannot jump to a chosen
+  account or bench accounts it never got. And it hands one lane token at most
+  3 distinct accounts per rolling hour (else 429 ACCOUNT_CAP_REACHED, logged
+  "lane: account cap reached", nothing benched); handing an account it already
+  got this hour again is fine. Each roll it does take benches that account for
+  every lane for 30 min. Rate limit (120/min, 60 rolls per 10 min), the log on
+  AI Routines and revoking the token are the other limits. Keep
+  maxlane-biometric.env readable by the box user only (new-runner-token.ps1
+  does this).
+- The cap also binds the real drains: when Box 1 burns through 3 accounts in
+  an hour, further runs get 429 and go on the box's own sign-in (logged
+  "tower: tower 429 ACCOUNT_CAP_REACHED") until the oldest grant is an hour old.
 - The token is not tied to one machine: ai_runner_tokens has no host column
   and ?host= is self-reported, log only. Follow-up: add a host binding.
 - A drain's timeout kills what it started (cmd.exe or claude-acct.exe), not the

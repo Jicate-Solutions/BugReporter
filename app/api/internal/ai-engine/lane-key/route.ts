@@ -19,14 +19,19 @@
  *        ai_account_key_fetches) in the last 30 minutes; any other label → 400
  *        REFUSED_NOT_HANDED and nothing is benched (W12 review, PR #93). So a
  *        leaked token cannot jump to a chosen account or bench accounts it was
- *        never given. It can still walk the list one grant at a time (each
- *        step benches that account for every lane, and shows on AI Routines).
+ *        never given. Walking the list one grant at a time is stopped by the
+ *        account cap below.
  *   ?host=<computer name>          optional, for the log only.
  *
  * 200 { label, key }   run on this account (key in memory only, never logged)
  * 400                  bad refused list, or a refused label not handed to this lane
  * 409 NO_ACCOUNT_LEFT  every stored account was refused; { retry_after_seconds }
  * 429 RATE_LIMITED     too many requests (Retry-After header)
+ * 429 ACCOUNT_CAP_REACHED  the pick would be a 4th distinct account handed to
+ *                      this token in the last hour (LANE_MAX_ACCOUNTS = 3);
+ *                      nothing is benched; Retry-After = when the oldest grant
+ *                      leaves the hour. Re-handing an account already handed
+ *                      this hour is allowed.
  * 403 / 401            wrong or unknown token
  * 503                  counter, database, key or log could not be read or
  *                      written (fails CLOSED: no key leaves without its log row)
@@ -50,7 +55,7 @@ import { createHash } from 'crypto';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth, LANE_PREFIX } from '@/lib/ai-engine/runner-auth';
 import { openAccountKey } from '@/lib/ai-engine/account-keys';
-import { chooseLaneAccount, LANE_REFUSAL_MS } from '@/lib/ai-engine/accounts';
+import { chooseLaneAccount, LANE_REFUSAL_MS, LANE_MAX_ACCOUNTS, LANE_CAP_WINDOW_MS } from '@/lib/ai-engine/accounts';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,33 +123,32 @@ export async function GET(request: NextRequest) {
     return fail('RATE_LIMIT_UNAVAILABLE', 'Could not check the rate limit.', 503);
   }
 
+  // What this lane was handed in the last hour: for the refusal check and the
+  // per-token account cap below. Unreadable → fail closed.
+  const now = Date.now();
+  const grants = await admin
+    .from('ai_account_key_fetches')
+    .select('label, fetched_at')
+    .eq('runner', runner)
+    .eq('granted', true)
+    .gte('fetched_at', new Date(now - LANE_CAP_WINDOW_MS).toISOString());
+  if (grants.error) {
+    console.error('[ai-engine/lane-key] could not read the key log:', grants.error.message);
+    return fail('LOG_UNAVAILABLE', 'Could not read the key log.', 503);
+  }
+  const grantRows = (grants.data ?? []) as { label: string; fetched_at: string }[];
+
   // A lane may only report a refusal of an account the Tower handed THIS lane
   // in the last 30 minutes. Otherwise one leaked token could jump straight to a
   // chosen account, or bench every account for every lane (W12 review, PR #93).
   if (refused.length) {
-    const handedSince = new Date(Date.now() - LANE_REFUSAL_MS).toISOString();
-    const handed = await admin
-      .from('ai_account_key_fetches')
-      .select('label')
-      .eq('runner', runner)
-      .eq('granted', true)
-      .in('label', refused)
-      .gte('fetched_at', handedSince);
-    if (handed.error) {
-      console.error('[ai-engine/lane-key] could not read the key log:', handed.error.message);
-      return fail('LOG_UNAVAILABLE', 'Could not read the key log.', 503);
-    }
-    const ok = new Set(((handed.data ?? []) as { label: string }[]).map((r) => r.label));
+    const ok = new Set(
+      grantRows.filter((r) => new Date(r.fetched_at).getTime() >= now - LANE_REFUSAL_MS).map((r) => r.label)
+    );
     if (refused.some((l) => !ok.has(l))) {
       await log('-', false, 'lane: refused label not handed to this lane');
       return fail('REFUSED_NOT_HANDED', 'A refused account was not handed to this lane in the last 30 minutes.', 400);
     }
-  }
-
-  // Claude's refusal, reported by the lane: remembered for every lane.
-  // A refusal that cannot be written would be forgotten: fail closed.
-  for (const label of refused) {
-    if (!(await log(label, false, 'lane: refused by claude'))) return unlogged();
   }
 
   const since = new Date(Date.now() - LANE_REFUSAL_MS).toISOString();
@@ -171,7 +175,26 @@ export async function GET(request: NextRequest) {
     if (t > (refusedAt.get(r.label) ?? 0)) refusedAt.set(r.label, t);
   }
   const readings = (acc.data ?? []) as Parameters<typeof chooseLaneAccount>[0];
-  const choice = chooseLaneAccount(readings, labels, refused, refusedAt, Date.now());
+  const choice = chooseLaneAccount(readings, labels, refused, refusedAt, now);
+
+  // Per-token cap (W12, PR #93): at most LANE_MAX_ACCOUNTS distinct accounts
+  // handed to one lane token per rolling hour. A new account past the cap →
+  // 429, and this request's refusals are NOT written (nothing benched). An
+  // account already handed this hour may be handed again.
+  const handedThisHour = new Set(grantRows.map((r) => r.label));
+  if (choice.label !== null && !handedThisHour.has(choice.label) && handedThisHour.size >= LANE_MAX_ACCOUNTS) {
+    const oldest = Math.min(...grantRows.map((r) => new Date(r.fetched_at).getTime()));
+    const wait = Math.max(1, Math.ceil((oldest + LANE_CAP_WINDOW_MS - now) / 1000));
+    await log('-', false, 'lane: account cap reached');
+    return fail('ACCOUNT_CAP_REACHED', `This lane was handed ${LANE_MAX_ACCOUNTS} accounts in the last hour.`, 429,
+      { retry_after_seconds: wait }, { 'Retry-After': String(wait) });
+  }
+
+  // Claude's refusal, reported by the lane: remembered for every lane.
+  // A refusal that cannot be written would be forgotten: fail closed.
+  for (const label of refused) {
+    if (!(await log(label, false, 'lane: refused by claude'))) return unlogged();
+  }
 
   if (choice.label === null) {
     await log('-', false, 'lane: no account left');

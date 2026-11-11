@@ -163,6 +163,10 @@ export async function resolveBoxAccount(
  */
 export const LANE_REFUSAL_MS = 30 * 60_000;
 
+/** Per-token cap (W12, PR #93): distinct accounts handed to one lane token per rolling hour. */
+export const LANE_MAX_ACCOUNTS = 3;
+export const LANE_CAP_WINDOW_MS = 60 * 60_000;
+
 export type LaneChoice = { label: string } | { label: null; retryAfterSeconds: number };
 
 /**
