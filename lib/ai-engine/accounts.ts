@@ -153,3 +153,59 @@ export async function resolveBoxAccount(
   }
   return label;
 }
+
+/**
+ * MyJKKN max lanes (lane-key route, 2026-11-11). The Tower does not see the
+ * lanes' own usage, so an account can read under 95% here while Claude already
+ * refuses it. A lane reports each refusal (refused=<label>); the route logs it
+ * and, for LANE_REFUSAL_MS, the account goes to the back of the line for every
+ * lane.
+ */
+export const LANE_REFUSAL_MS = 30 * 60_000;
+
+export type LaneChoice = { label: string } | { label: null; retryAfterSeconds: number };
+
+/**
+ * Pure choice for a lane, kept apart from chooseAccount (which the job claim
+ * and box agent use, unchanged). Among `labels` (accounts with a stored key;
+ * never "default", which has no key to hand out):
+ *   1. not refused in this request nor recently, under 95% — fresh reading
+ *      first, then any reading, each by priority (then lowest weekly use);
+ *   2. not refused, above 95% — by priority. Director 2026-11-11: use each
+ *      account up to its REAL limit, so a high reading is tried before giving up;
+ *   3. otherwise nothing: retry once the earliest recent refusal expires.
+ */
+export function chooseLaneAccount(
+  readings: AccountReading[],
+  labels: string[],
+  refusedNow: string[],
+  refusedRecently: Map<string, number>,
+  now: number
+): LaneChoice {
+  const byLabel = new Map(readings.map((r) => [r.label, r]));
+  const recent = (l: string) => {
+    const at = refusedRecently.get(l);
+    return at != null && now - at < LANE_REFUSAL_MS;
+  };
+  const info = labels
+    .filter((l) => l !== 'default' && !refusedNow.includes(l) && !recent(l))
+    .map((l) => {
+      const r = byLabel.get(l);
+      const five = used(r?.five_hour_util ?? null, r?.five_hour_resets_at ?? null, now);
+      const week = used(r?.seven_day_util ?? null, r?.seven_day_resets_at ?? null, now);
+      const fresh = Boolean(r?.updated_at) && now - new Date(r!.updated_at as string).getTime() < FRESH_MS;
+      return { l, prio: r?.priority ?? 100, five, week, ok: five < FULL && week < FULL, fresh };
+    });
+  const order = (a: (typeof info)[number], b: (typeof info)[number]) =>
+    a.prio - b.prio || a.week - b.week || a.five - b.five || a.l.localeCompare(b.l);
+  const pick =
+    info.filter((a) => a.ok && a.fresh).sort(order)[0] ??
+    info.filter((a) => a.ok).sort(order)[0] ??
+    [...info].sort(order)[0];
+  if (pick) return { label: pick.l };
+  const expiries = labels
+    .filter((l) => l !== 'default' && recent(l))
+    .map((l) => (refusedRecently.get(l) as number) + LANE_REFUSAL_MS - now);
+  const wait = expiries.length ? Math.min(...expiries) : LANE_REFUSAL_MS;
+  return { label: null, retryAfterSeconds: Math.max(60, Math.ceil(wait / 1000)) };
+}

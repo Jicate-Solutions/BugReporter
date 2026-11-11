@@ -9,12 +9,21 @@
  *
  *   Authorization: Bearer <runner token>
  *
- * The token opens /api/internal/ai-engine/claim, /complete and /account-key.
- * It is not a database key. If it leaks, the holder can take queued AI jobs as
- * that one runner and answer them, AND — while holding a running job — fetch
- * the keys of Claude accounts stored in the Control Tower (every fetch is
- * logged in ai_account_key_fetches and shown on AI Routines). Revoke by setting
- * revoked_at.
+ * A worker token opens /api/internal/ai-engine/claim, /complete and
+ * /account-key. It is not a database key. If it leaks, the holder can take
+ * queued AI jobs as that one runner and answer them, AND — while holding a
+ * running job — fetch the keys of Claude accounts stored in the Control Tower
+ * (every fetch is logged in ai_account_key_fetches and shown on AI Routines).
+ * Revoke by setting revoked_at.
+ *
+ * LANE tokens (2026-11-11): a runner whose name starts with "maxlane-" (made
+ * the same way: new-runner-token.ps1 -Runner maxlane-<box>) is a MyJKKN max
+ * lane on a box, not a JICATE worker. It opens ONLY /lane-key, which hands it
+ * the key of the account the Tower picks — no running job needed. The job
+ * routes refuse it (403), and /lane-key refuses worker tokens (403). If a lane
+ * token leaks, the holder can fetch every stored Claude account key (by
+ * rolling with refused=), limited only by the rate limit; every request is
+ * logged. Revoke by setting revoked_at.
  *
  * - an X-API-Key header → 401. Application keys never drive the engine.
  * - missing or short token → 401. Unknown or revoked hash → 401.
@@ -33,9 +42,21 @@ function fail(code: string, message: string, status: number) {
 
 export type RunnerAuth = { ok: true; runner: string } | { ok: false; response: NextResponse };
 
+/** Runner names with this prefix are MyJKKN max-lane tokens (see above). */
+export const LANE_PREFIX = 'maxlane-';
+
+export function isLaneRunner(runner: string): boolean {
+  return runner.startsWith(LANE_PREFIX);
+}
+
+/**
+ * opts.lane: true only on /lane-key. Without it a lane token is refused, so
+ * it can never claim, answer or fetch a key through the job routes.
+ */
 export async function checkEngineRunnerAuth(
   request: Request,
-  admin: SupabaseClient
+  admin: SupabaseClient,
+  opts: { lane?: boolean } = {}
 ): Promise<RunnerAuth> {
   if (request.headers.get('x-api-key')) {
     return {
@@ -72,5 +93,14 @@ export async function checkEngineRunnerAuth(
     };
   }
   if (!data) return { ok: false, response: fail('UNAUTHORIZED', 'Unauthorized.', 401) };
-  return { ok: true, runner: (data as { runner: string }).runner };
+  const runner = (data as { runner: string }).runner;
+  if (Boolean(opts.lane) !== isLaneRunner(runner)) {
+    return {
+      ok: false,
+      response: opts.lane
+        ? fail('NOT_A_LANE_TOKEN', 'Only a max-lane token may use this route.', 403)
+        : fail('LANE_TOKEN_NOT_ACCEPTED', 'A max-lane token cannot use the job routes.', 403)
+    };
+  }
+  return { ok: true, runner };
 }
