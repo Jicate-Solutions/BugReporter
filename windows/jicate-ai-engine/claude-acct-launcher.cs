@@ -12,7 +12,7 @@
 //   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /out:C:\jicate-ai\claude-acct.exe C:\jicate-ai\claude-acct-launcher.cs
 // node.exe: CLAUDE_ACCT_NODE if set, else C:\Program Files\nodejs\node.exe.
 // claude-acct.mjs: next to this .exe.
-// UNTESTED on Windows as of 2026-11-11 (written on a Mac); install step 0 proves it.
+// UNTESTED on Windows as of 2026-11-11 (written on a Mac); install step 4 (ACCOUNTS.md) proves it.
 using System;
 using System.Diagnostics;
 using System.IO;

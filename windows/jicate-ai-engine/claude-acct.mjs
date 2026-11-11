@@ -149,36 +149,81 @@ function runClaude(args, env, input) {
  * Why a finished run failed, if it is the account's fault: 'limit', 'auth' or
  * null. Only a failed run counts (non-zero exit, or a JSON result with
  * is_error) — the text of a good answer is never matched. stream-json's
- * rate_limit_event lines (present on every run) are ignored.
+ * rate_limit_event lines (present on every run) are ignored, and with JSON
+ * output only stderr and the final result line are read.
  */
 export function refusalOf(run) {
   const outText = run.stdout.toString('utf8');
   const lines = outText.split(/\r?\n/).filter((l) => l.trim() && !l.includes('"rate_limit_event"'));
   let isError = false;
+  let parsedLast = false;
   const last = lines.at(-1);
   if (last) {
     try {
       isError = JSON.parse(last)?.is_error === true;
+      parsedLast = true;
     } catch { /* plain text output */ }
   }
   if (run.code === 0 && !isError) return null;
-  const text = `${run.stderr.toString('utf8')}\n${lines.join('\n')}`;
+  // JSON output: only the final result line counts, never the transcript before
+  // it (a run that failed for another reason may mention "429" anywhere).
+  const text = `${run.stderr.toString('utf8')}\n${parsedLast ? last : lines.join('\n')}`;
   if (LIMIT_RE.test(text)) return 'limit';
   if (AUTH_RE.test(text)) return 'auth';
   return null;
 }
 
 let current = null;
+
+/** Stop the running claude.exe and everything it started. */
+function killCurrent() {
+  const c = current;
+  if (!c?.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    } else {
+      c.kill('SIGKILL');
+    }
+  } catch { /* already gone */ }
+}
+
+/**
+ * A drain's timeout kills what it started — the .cmd's cmd.exe or
+ * claude-acct.exe — not this node process or the claude.exe under it. So
+ * every 2 s: if the process that started us is gone, stop claude and leave,
+ * instead of leaving a run spending the account with nobody waiting for it.
+ */
+const START_PPID = process.ppid;
+function parentGone() {
+  if (process.ppid !== START_PPID) return true; // re-parented (macOS / Linux)
+  try {
+    process.kill(START_PPID, 0);
+    return false;
+  } catch (e) {
+    return e?.code !== 'EPERM'; // EPERM = alive, not ours to signal
+  }
+}
+function watchParent() {
+  setInterval(() => {
+    if (!parentGone()) return;
+    log('parent gone: stopping claude');
+    killCurrent();
+    process.exit(137);
+  }, Number(process.env.CLAUDE_ACCT_PARENT_POLL_MS) || 2_000).unref();
+}
+
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
   try {
     process.on(sig, () => {
-      try { current?.kill(); } catch { /* already gone */ }
+      killCurrent();
       process.exit(130);
     });
   } catch { /* signal not supported on this platform */ }
 }
 
 async function main() {
+  watchParent();
   const args = process.argv.slice(2);
   const self = (() => { try { return realpathSync(fileURLToPath(import.meta.url)); } catch { return ''; } })();
   const real = (() => { try { return realpathSync(resolve(REAL_BIN)); } catch { return resolve(REAL_BIN); } })();

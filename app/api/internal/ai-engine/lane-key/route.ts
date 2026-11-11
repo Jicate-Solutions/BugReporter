@@ -21,7 +21,8 @@
  * 409 NO_ACCOUNT_LEFT  every stored account was refused; { retry_after_seconds }
  * 429 RATE_LIMITED     too many requests (Retry-After header)
  * 403 / 401            wrong or unknown token
- * 503                  counter, database or key could not be read (fails CLOSED)
+ * 503                  counter, database, key or log could not be read or
+ *                      written (fails CLOSED: no key leaves without its log row)
  *
  * Choice: chooseLaneAccount (lib/ai-engine/accounts.ts) — priority order under
  * 95% first, then accounts above 95% (used to their real limit), never one
@@ -85,8 +86,15 @@ export async function GET(request: NextRequest) {
   if (refused.length > 10 || refused.some((l) => !LABEL.test(l))) {
     return fail('BAD_REQUEST', 'Bad refused list.', 400);
   }
-  const log = (label: string, granted: boolean, reason: string) =>
-    admin.from('ai_account_key_fetches').insert({ runner, label, job_id: null, host, granted, reason });
+  /** Writes one log row; false when the row could not be written. */
+  const log = async (label: string, granted: boolean, reason: string) => {
+    const { error } = await admin
+      .from('ai_account_key_fetches')
+      .insert({ runner, label, job_id: null, host, granted, reason });
+    if (error) console.error('[ai-engine/lane-key] log row not written:', error.message);
+    return !error;
+  };
+  const unlogged = () => fail('LOG_UNAVAILABLE', 'Could not write the key log.', 503);
 
   // Rate limits fail CLOSED: this route hands out account keys.
   try {
@@ -103,7 +111,10 @@ export async function GET(request: NextRequest) {
   }
 
   // Claude's refusal, reported by the lane: remembered for every lane.
-  for (const label of refused) await log(label, false, 'lane: refused by claude');
+  // A refusal that cannot be written would be forgotten: fail closed.
+  for (const label of refused) {
+    if (!(await log(label, false, 'lane: refused by claude'))) return unlogged();
+  }
 
   const since = new Date(Date.now() - LANE_REFUSAL_MS).toISOString();
   const [sec, acc, recent] = await Promise.all([
@@ -151,6 +162,7 @@ export async function GET(request: NextRequest) {
     await log(choice.label, false, 'lane: key could not be opened');
     return fail('KEY_UNAVAILABLE', 'Key could not be opened.', 503);
   }
-  await log(choice.label, true, refused.length ? 'lane: ok after refusal' : 'lane: ok');
+  // No key leaves without its log row.
+  if (!(await log(choice.label, true, refused.length ? 'lane: ok after refusal' : 'lane: ok'))) return unlogged();
   return NextResponse.json({ label: choice.label, key }, { headers: NO_STORE });
 }

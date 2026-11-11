@@ -28,6 +28,7 @@ let url = '';
 const asks: { refused: string | null; auth: string | null }[] = [];
 
 const FAKE_CLAUDE = `#!/usr/bin/env node
+const require = (await import('node:module')).createRequire(import.meta.url);
 const chunks = [];
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('end', () => {
@@ -35,6 +36,16 @@ process.stdin.on('end', () => {
   const limited = (process.env.FAKE_LIMITED || '').split(',').filter(Boolean);
   const who = Object.entries(JSON.parse(process.env.FAKE_KEYS)).find(([, k]) => k === key)?.[0] || key;
   console.log(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }));
+  if (process.env.FAKE_HANG) {
+    require('fs').writeFileSync(process.env.FAKE_HANG, String(process.pid));
+    setInterval(() => {}, 1000);
+    return;
+  }
+  if (process.env.FAKE_OTHER_FAIL) {
+    console.log(JSON.stringify({ type: 'assistant', text: 'the API said 429 rate limit earlier, then a tool broke' }));
+    console.log(JSON.stringify({ type: 'result', is_error: true, subtype: 'error_max_turns', result: 'max turns reached' }));
+    process.exit(1);
+  }
   if (limited.includes(who)) {
     console.log(JSON.stringify({ type: 'result', is_error: true, result: "You've hit your limit · resets 3pm" }));
     process.stderr.write('limit for ' + who + '\\n');
@@ -171,6 +182,51 @@ describe('claude-acct.mjs', () => {
     expect(r.code).toBe(2);
     expect(asks).toHaveLength(0);
   }, 20_000);
+
+  it('a run that failed for another reason does not roll, even if its transcript mentions 429', async () => {
+    const r = await runShim(ARGS, 'p', { FAKE_OTHER_FAIL: '1' });
+    expect(r.code).toBe(1);
+    expect(asks).toHaveLength(1);
+    expect(lastResult(r.stdout).subtype).toBe('error_max_turns');
+  }, 20_000);
+
+  it('stops claude when the process that started the shim is killed', async () => {
+    const pidFile = join(dir, 'hang.pid');
+    // sh is the "drain-side" parent (like cmd.exe or claude-acct.exe on Windows);
+    // "; true" stops sh from exec-ing node in its place.
+    const sh = spawn('sh', ['-c', `"${process.execPath}" "${SHIM}" -p; true`], {
+      env: {
+        PATH: process.env.PATH ?? '',
+        CLAUDE_REAL_BIN: join(dir, 'fake-claude.mjs'),
+        TOWER_LANE_ENV: join(dir, 'maxlane-test.env'),
+        CLAUDE_ACCT_LOG: join(dir, 'logs', 'claude-acct.log'),
+        CLAUDE_ACCT_PARENT_POLL_MS: '200',
+        FAKE_KEYS: JSON.stringify(KEYS),
+        FAKE_HANG: pidFile
+      } as unknown as NodeJS.ProcessEnv,
+      stdio: ['pipe', 'ignore', 'ignore']
+    });
+    sh.stdin.end('p');
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let claudePid = 0;
+    for (let i = 0; i < 100 && !claudePid; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (existsSync(pidFile)) claudePid = Number(readFileSync(pidFile, 'utf8'));
+    }
+    expect(claudePid).toBeGreaterThan(0);
+    expect(alive(claudePid)).toBe(true);
+    sh.kill('SIGKILL');
+    for (let i = 0; i < 50 && alive(claudePid); i++) await new Promise((r) => setTimeout(r, 100));
+    expect(alive(claudePid)).toBe(false);
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('parent gone: stopping claude');
+  }, 30_000);
 
   it('never writes a key to any file', async () => {
     await runShim(ARGS, 'p', { FAKE_LIMITED: 'aimech' });

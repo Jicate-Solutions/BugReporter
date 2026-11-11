@@ -55,33 +55,39 @@ Files (in C:\jicate-ai\):
 Tower side: GET /api/internal/ai-engine/lane-key (merged PR; see its header).
 
 Install (after the PR is merged and live; only on the Director's yes):
-0. PROBE: can the drains start a .cmd? The drains call execFile(CLAUDE_BIN, ...)
-   with no shell; Node 18.20.2+, 20.12.2+ and 22 refuse a .cmd that way (EINVAL).
-   In C:\jicate-ai\ (after step 2):
-     node -e "require('child_process').execFile('C:\\jicate-ai\\claude-acct.cmd',['--version'],(e,o)=>console.log(e?'FAIL '+e.code:'OK '+o))"
-   OK -> use claude-acct.cmd in step 4. FAIL EINVAL -> build the .exe:
-     C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /out:C:\jicate-ai\claude-acct.exe C:\jicate-ai\claude-acct-launcher.cs
-   and repeat the probe with claude-acct.exe; use that in step 4.
-   (If node.exe is not in C:\Program Files\nodejs\, set CLAUDE_ACCT_NODE.)
-1. Lane token, made ON the box (prints only a hash; secret stays in the file):
+1. Check first:
+   - node --version on Box 1 is 18 or newer (the shim needs fetch);
+   - EVERY drain reads CLAUDE_BIN from its environment. Some older drains
+     hardcode C:\Users\Admin\.local\bin\claude.exe; those need a one-line
+     MyJKKN change first, or they will simply keep running as today.
+2. Lane token, made ON the box (prints only a hash; secret stays in the file):
      powershell -NoProfile -ExecutionPolicy Bypass -File .\new-runner-token.ps1 -Runner maxlane-biometric
    Send the printed "runner=maxlane-biometric sha256=..." line to the Box desk.
    The Box desk inserts it into ai_runner_tokens (runner maxlane-biometric).
    The name MUST start with "maxlane-": only such tokens open /lane-key, and
    they cannot claim or answer JICATE jobs.
-2. Copy claude-acct.mjs (+ .cmd or .cs) into C:\jicate-ai\ and check SHA-256s.
-   In claude-acct.cmd replace __NODE_EXE__ with the full path of node.exe.
-3. Dry run, as the drains' Windows user (Admin):
-     echo say OK | C:\jicate-ai\claude-acct.cmd -p --model haiku
-   Expect "OK"; C:\jicate-ai\logs\claude-acct.log gets
-     attempt=1 account=<label> exit=0
-   and AI Routines shows a "lane: ok" key fetch for maxlane-biometric.
-4. For each drain task, set (where the task gets its environment):
+3. Copy claude-acct.mjs, claude-acct.cmd and claude-acct-launcher.cs into
+   C:\jicate-ai\ and check their SHA-256s. In claude-acct.cmd replace
+   __NODE_EXE__ with the full path of node.exe.
+4. PROBE: can the drains start a .cmd? They call execFile(CLAUDE_BIN, ...) with
+   no shell; Node 18.20.2+, 20.12.2+ and 22 refuse a .cmd that way (EINVAL):
+     node -e "require('child_process').execFile('C:\\jicate-ai\\claude-acct.cmd',['--version'],(e,o)=>console.log(e?'FAIL '+e.code:'OK '+o))"
+   OK -> SHIM = C:\jicate-ai\claude-acct.cmd. FAIL EINVAL -> build the .exe:
+     C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /out:C:\jicate-ai\claude-acct.exe C:\jicate-ai\claude-acct-launcher.cs
+   repeat the probe with claude-acct.exe; SHIM = C:\jicate-ai\claude-acct.exe.
+   (If node.exe is not in C:\Program Files\nodejs\, set CLAUDE_ACCT_NODE.)
+5. Dry run, as the drains' Windows user (Admin), with CLAUDE_REAL_BIN set:
+     echo say OK | <SHIM> -p --model haiku
+   GATE: C:\jicate-ai\logs\claude-acct.log must show
+     attempt=1 account=<a label, NOT own-sign-in> exit=0
+   and AI Routines a "lane: ok" key fetch for maxlane-biometric. "own-sign-in"
+   or a "tower: ..." line means the Tower was not used: stop and report.
+6. For each drain task, set (where the task gets its environment):
      CLAUDE_REAL_BIN = C:\Users\Admin\.local\bin\claude.exe   (the old CLAUDE_BIN)
-     CLAUDE_BIN      = C:\jicate-ai\claude-acct.cmd           (or claude-acct.exe)
+     CLAUDE_BIN      = <SHIM>
    then restart the drain tasks (stop their node processes too).
    CLAUDE_REAL_BIN must be the real claude.exe, never the shim (it refuses to run itself).
-5. Watch logs\claude-acct.log and the MyJKKN queue drain.
+7. Watch logs\claude-acct.log and the MyJKKN queue drain.
 
 Undo (fastest first):
 - Set CLAUDE_ACCT_OFF=1 for the drains (or delete maxlane-biometric.env): every
@@ -109,8 +115,13 @@ Risks to know:
   10 min), the log on AI Routines and revoking the token limit that. Keep
   maxlane-biometric.env readable by the box user only (new-runner-token.ps1
   does this).
-- If a drain kills the shim on its timeout, Windows does not stop the claude.exe
-  it started; that run finishes (or hangs) on its own. Watch for stray claude.exe.
+- A drain's timeout kills what it started (cmd.exe or claude-acct.exe), not the
+  shim's node or the claude.exe under it. The shim checks every 2 s whether
+  that parent is gone and then stops claude (taskkill /T /F). Proven on a Mac
+  only; on the box, after a drain timeout, check no stray claude.exe is left.
+- 14 drains share one token's 120 asks a minute; past that a run gets 429 and
+  falls back to the box's own sign-in (logged as "tower: tower 429").
+- Every Claude run adds one row to ai_account_key_fetches; nothing prunes it.
 - The box agent may also set CLAUDE_CODE_OAUTH_TOKEN for the whole box. For a
   run through the shim, the Tower's lane key wins (set in the child last); when
   the Tower is unreachable, the box agent's key (or the own sign-in) applies.

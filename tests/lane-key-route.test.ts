@@ -20,7 +20,8 @@ const db = vi.hoisted(() => ({
   inserts: [] as { table: string; row: Row }[],
   rpc: [] as Row[],
   rpcResult: null as null | { data: unknown; error: unknown },
-  failTable: null as string | null
+  failTable: null as string | null,
+  failInsert: false
 }));
 
 vi.mock('@/lib/ai-engine/account-keys', () => ({
@@ -55,6 +56,7 @@ vi.mock('@/lib/supabase/admin', () => ({
         update: () => b,
         upsert: async () => ({ error: null }),
         insert: async (row: Row) => {
+          if (db.failInsert) return { error: { message: 'insert failed' } };
           db.inserts.push({ table, row });
           (db.tables[table] ??= []).push({ ...row, fetched_at: new Date().toISOString() });
           return { error: null };
@@ -99,6 +101,7 @@ function seed() {
   db.rpc.length = 0;
   db.rpcResult = null;
   db.failTable = null;
+  db.failInsert = false;
 }
 
 function get(query = '', token = LANE) {
@@ -202,6 +205,20 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
     db.failTable = 'ai_account_key_fetches';
     const res = await get();
     expect(res.status).toBe(503);
+  });
+
+  it('releases no key when its log row cannot be written', async () => {
+    db.failInsert = true;
+    const res = await get();
+    expect(res.status).toBe(503);
+    expect((await res.json()).error.code).toBe('LOG_UNAVAILABLE');
+  });
+
+  it('does not roll on when a refusal cannot be written', async () => {
+    db.failInsert = true;
+    const res = await get('?refused=aimech');
+    expect(res.status).toBe(503);
+    expect(await res.text()).not.toContain('key-of-');
   });
 
   it('answers 503 and logs when the chosen key cannot be opened', async () => {
