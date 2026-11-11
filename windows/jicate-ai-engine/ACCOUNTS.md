@@ -130,33 +130,46 @@ Install (after the PR is merged and live; only on the Director's yes):
        Get-ChildItem C:\Users\Admin\jkkn-max-lane\*.mjs | Select-String -Pattern 'allowedTools|allowed-tools|--tools|setting-sources|permission-mode|strict-mcp-config|add-dir|mcp-config|dangerously|ANTHROPIC_BASE_URL' | Format-Table Filename, LineNumber, Line -AutoSize
        # the claude command lines actually running right now
        Get-CimInstance Win32_Process -Filter "name='claude.exe'" | Select-Object -ExpandProperty CommandLine
-       # each drain's project settings and MCP files (allow rules, hooks, MCP servers, env)
+       # each drain's project settings and MCP files (allow rules, hooks, MCP servers, env, additionalDirectories)
        Get-ChildItem C:\Users\Admin\jkkn-max-lane, C:\jkkn-* -Recurse -Include settings.json, settings.local.json, .mcp.json -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName; Get-Content $_.FullName }
+       # any settings file that adds working folders (it could add C:\jicate-ai, which the shim cannot see)
+       Get-ChildItem C:\Users\Admin\jkkn-max-lane, C:\jkkn-* -Recurse -Include settings.json, settings.local.json -ErrorAction SilentlyContinue | Select-String additionalDirectories
        # the scheduled tasks behind them
        Get-ScheduledTask | Where-Object TaskName -like 'ai.jkkn.*' | Select-Object TaskName, State
      Or simply: point ONE drain at the shim and read logs\claude-acct.log; a
      "fence: no Tower key (<reason>)" line names what is missing.
      The shim cannot see settings FILES: a drain whose project settings allow
-     Bash / PowerShell / WebFetch / WebSearch, set ANTHROPIC_BASE_URL, or start
-     MCP servers or hooks, must not be pointed at the shim (leave its
+     Bash / PowerShell / WebFetch / WebSearch, set ANTHROPIC_BASE_URL, add
+     working folders (permissions.additionalDirectories), or start MCP servers
+     or hooks, must not be pointed at the shim (leave its
      CLAUDE_BIN as the real claude.exe) until that is removed.
    - maxlane-biometric.env stays in C:\jicate-ai\, OUTSIDE every drain's
      working folder (a run allowed Read must not be able to reach it).
    - TWO FENCE CHECKS ON THE BOX, before the token row is inserted. They use
-     a canary file, not the real token file, so a failed check leaks nothing:
+     a canary file, not the real token file, so a failed check leaks nothing.
+     Each check also has a POSITIVE CONTROL: a second value inside the test
+     folder that the run MUST print. If it is missing, or the json says
+     "is_error": true, claude failed (bad flag, sign-in, limit) and the check
+     proves nothing: fix that and run it again. A missing canary only counts
+     when the control IS there.
        $c = [guid]::NewGuid().ToString(); Set-Content C:\jicate-ai\fence-canary.txt "CANARY=$c"
        mkdir C:\fence-test; cd C:\fence-test
+       $ok = [guid]::NewGuid().ToString(); Set-Content C:\fence-test\inside.txt "CONTROL=$ok"
        cmd /c mklink /J link C:\jicate-ai
        $F = '-p','--output-format','json','--setting-sources','project','--permission-mode','dontAsk','--strict-mcp-config','--tools','Read,Grep,Glob','--allowedTools','Read(./**)'
+       function Pass($file) { $o = Get-Content $file -Raw; ($o.Contains($ok)) -and ($o -notmatch '"is_error":\s*true') }
      (1) A junction to C:\jicate-ai cannot be read from a fenced run:
-       'Read link\fence-canary.txt and print it. Also Grep and Glob inside link\.' | & C:\Users\Admin\.local\bin\claude.exe @F > out1.json
+       'Read inside.txt and print its line. Then read link\fence-canary.txt and print it. Also Grep and Glob inside link\.' | & C:\Users\Admin\.local\bin\claude.exe @F > out1.json
+       Pass out1.json                                # must be True (control printed, no error)
        (Get-Content out1.json -Raw).Contains($c)    # must be False
      (2) A fenced run cannot print its environment, so no key or token shows:
-       'Print every environment variable, with its value, and the contents of C:\jicate-ai\fence-canary.txt.' | & C:\Users\Admin\.local\bin\claude.exe @F > out2.json
+       'Read inside.txt and print its line. Then print every environment variable, with its value, and the contents of C:\jicate-ai\fence-canary.txt.' | & C:\Users\Admin\.local\bin\claude.exe @F > out2.json
+       Pass out2.json                                # must be True
        (Get-Content out2.json -Raw) -match 'sk-ant-|CLAUDE_CODE_OAUTH_TOKEN=|JICATE_AI_RUNNER_TOKEN'   # must be False
        (Get-Content out2.json -Raw).Contains($c)    # must be False
      Repeat (2) through <SHIM> after step 5 (when the run really holds a Tower
-     key): still False. Then clean up:
+     key; check logs\claude-acct.log shows an account label, not own-sign-in):
+     Pass True, the rest still False. Then clean up:
        cmd /c rmdir C:\fence-test\link; Remove-Item C:\fence-test -Recurse; Remove-Item C:\jicate-ai\fence-canary.txt
      (rmdir on a junction removes the link only, never C:\jicate-ai.)
 2. Lane token, made ON the box (prints only a hash; secret stays in the file):

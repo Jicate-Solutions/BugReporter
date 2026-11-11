@@ -179,7 +179,14 @@ export function fenceOf(args) {
       const v = String(args[++i]);
       return v.startsWith('-') ? null : v;
     };
+    /**
+     * The values of a list option; null when the value is missing or starts
+     * with "-": claude then takes that next flag AS a tool name, so the flag
+     * never applies and the list is empty (W12 round 4). --tools "" and
+     * --tools= are fine: their value is "".
+     */
     const takeList = () => {
+      if (inline === null && (i + 1 >= args.length || String(args[i + 1]).startsWith('-'))) return null;
       const vals = inline !== null ? [inline] : [];
       while (i + 1 < args.length && !String(args[i + 1]).startsWith('-')) vals.push(String(args[++i]));
       return vals;
@@ -202,7 +209,9 @@ export function fenceOf(args) {
       case '--tools': {
         // The loaded tool set: plain names only (claude takes "Bash,Edit,Read" here).
         toolSet = true;
-        for (const v of takeList()) {
+        const vals = takeList();
+        if (vals === null) return no('option value looks like a flag');
+        for (const v of vals) {
           for (const t of toolNames(v)) {
             if (!SAFE_TOOLS.has(t)) return no(/^[A-Za-z]+\(/.test(t) ? 'bad --tools entry' : 'shell, web or unknown tool allowed');
           }
@@ -211,7 +220,9 @@ export function fenceOf(args) {
       }
       case '--allowedTools':
       case '--allowed-tools': {
-        for (const v of takeList()) {
+        const vals = takeList();
+        if (vals === null) return no('option value looks like a flag');
+        for (const v of vals) {
           for (const t of toolNames(v)) {
             const problem = toolProblem(t);
             if (problem) return no(problem);
@@ -221,7 +232,7 @@ export function fenceOf(args) {
       }
       case '--disallowedTools':
       case '--disallowed-tools':
-        takeList(); // only narrows; not a fence by itself
+        if (takeList() === null) return no('option value looks like a flag'); // only narrows otherwise
         break;
       case '--permission-mode': {
         const mode = takeOne();
@@ -265,16 +276,21 @@ export function envFenceOf(env) {
  */
 export function tokenInsideFolder(envFile, cwd, platform = process.platform) {
   const P = platform === 'win32' ? win32 : posix;
+  // realpathSync.native asks the OS for the final path (on Windows
+  // GetFinalPathNameByHandle), so 8.3 short names (C:\JICATE~1), \\?\ prefixes,
+  // subst drives and links all come out in one spelling (W12 round 4).
   const real = (p) => {
     const abs = P.resolve(p);
     if (platform !== process.platform) return abs;
+    try { return realpathSync.native(abs); } catch { /* fall through */ }
     try { return realpathSync(abs); } catch { return abs; }
   };
-  let dir = real(P.dirname(P.resolve(envFile)));
-  let folder = real(cwd);
+  const strip = (p) => (platform === 'win32' ? p.replace(/^\\\\\?\\(?!UNC\\)/i, '') : p);
+  let dir = strip(real(P.dirname(P.resolve(envFile))));
+  let folder = strip(real(cwd));
   if (platform === 'win32') { dir = dir.toLowerCase(); folder = folder.toLowerCase(); }
   const rel = P.relative(folder, dir);
-  return rel === '' || (!rel.startsWith('..') && !P.isAbsolute(rel));
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + P.sep) && !P.isAbsolute(rel));
 }
 
 /** The Tower URL, only if https (plain http allowed for localhost tests). */

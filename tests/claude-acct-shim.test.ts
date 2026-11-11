@@ -365,6 +365,30 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
     expect(why(['--allowedTools', 'Read(./**)', '-pc'])).toBe('unknown or unsafe option');
     expect(why(['--allowedTools', 'Read(./**)', '--chrome'])).toBe('unknown or unsafe option');
   });
+  const BASE = ['-p', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config'];
+  it('refuses an empty --tools before a flag (claude would take --strict-mcp-config as a tool name)', () => {
+    expect(fenceOf(['-p', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--tools', '--strict-mcp-config']).reason)
+      .toBe('option value looks like a flag');
+    expect(fenceOf([...BASE, '--tools']).ok).toBe(false); // missing value at the end
+  });
+  it('refuses an empty --allowedTools before a flag (it would swallow --setting-sources: user bypass settings load)', () => {
+    expect(fenceOf(['-p', '--tools', 'Read,Grep,Glob', '--allowedTools', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config']).reason)
+      .toBe('option value looks like a flag');
+    expect(fenceOf([...BASE, '--tools', 'Read', '--allowedTools']).ok).toBe(false);
+    // W12's proven case: two swallows in one list
+    expect(fenceOf(['--tools', 'Read,Grep,Glob', '--allowedTools', '--setting-sources', 'project', '--disallowedTools', '--permission-mode', 'dontAsk', '--strict-mcp-config']).ok)
+      .toBe(false);
+  });
+  it('refuses an empty --disallowedTools before a flag (it would swallow --permission-mode)', () => {
+    expect(fenceOf(['-p', '--tools', 'Read', '--setting-sources', 'project', '--disallowedTools', '--permission-mode', 'dontAsk', '--strict-mcp-config']).reason)
+      .toBe('option value looks like a flag');
+  });
+  it('PowerShell 5.1 dropping "" (--tools "" --strict-mcp-config) is refused; the real empty forms still pass', () => {
+    expect(fenceOf([...BASE.slice(0, 5), '--tools', '--strict-mcp-config']).ok).toBe(false);
+    expect(fenceOf([...BASE, '--tools', '']).ok).toBe(true);
+    expect(fenceOf([...BASE, '--tools=']).ok).toBe(true);
+    expect(fenceOf([...BASE, '--tools', '', '--disallowedTools', 'Bash']).ok).toBe(true);
+  });
   it('the reason never carries argument text', () => {
     expect(JSON.stringify(fenceOf([...FENCE, '--allowedTools', 'SECRET_TOOL_NAME']))).not.toContain('SECRET');
     expect(JSON.stringify(fenceOf([...FENCE, '--SECRET-flag']))).not.toContain('SECRET');
@@ -377,8 +401,25 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
     expect(tokenInsideFolder(env, 'C:\\', 'win32')).toBe(true);
     expect(tokenInsideFolder(env, 'C:\\jkkn-cards\\jobs', 'win32')).toBe(false);
     expect(tokenInsideFolder(env, 'C:\\jicate-ai-jobs', 'win32')).toBe(false);
+    expect(tokenInsideFolder('\\\\?\\C:\\jicate-ai\\maxlane-biometric.env', 'C:\\jicate-ai', 'win32')).toBe(true);
+    expect(tokenInsideFolder(env, '\\\\?\\c:\\JICATE-AI', 'win32')).toBe(true);
+    expect(tokenInsideFolder('C:\\..lane\\token.env', 'C:\\', 'win32')).toBe(true); // a folder named "..lane" is inside
     expect(tokenInsideFolder('/srv/lane/token.env', '/srv', 'linux')).toBe(true);
     expect(tokenInsideFolder('/srv/lane/token.env', '/srv/jobs', 'linux')).toBe(false);
+  });
+
+  it('resolves links on this machine with the native realpath (another spelling cannot hide the folder)', async () => {
+    const { tokenInsideFolder } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+    const { mkdtempSync, mkdirSync, symlinkSync } = await import('node:fs');
+    const d = mkdtempSync(join(tmpdir(), 'tk-'));
+    mkdirSync(join(d, 'real'));
+    symlinkSync(join(d, 'real'), join(d, 'link'));
+    expect(tokenInsideFolder(join(d, 'link', 'x.env'), join(d, 'real'))).toBe(true);
+    expect(tokenInsideFolder(join(d, 'real', 'x.env'), join(d, 'link'))).toBe(true);
+    expect(tokenInsideFolder(join(d, 'real', 'x.env'), d)).toBe(true);
+    mkdirSync(join(d, 'jobs'));
+    expect(tokenInsideFolder(join(d, 'real', 'x.env'), join(d, 'jobs'))).toBe(false);
+    rmSync(d, { recursive: true, force: true });
   });
 
   it('refuses a key when ANTHROPIC_BASE_URL is set', () => {
