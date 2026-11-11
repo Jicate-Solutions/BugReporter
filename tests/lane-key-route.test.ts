@@ -21,7 +21,11 @@ const db = vi.hoisted(() => ({
   rpc: [] as Row[],
   rpcResult: null as null | { data: unknown; error: unknown },
   failTable: null as string | null,
-  failInsert: false
+  failInsert: false,
+  /** Fail only the reads of granted rows (the cap / ownership read). */
+  failGrants: false,
+  /** Like PostgREST's max_rows (Supabase default 1000): every select is cut here. */
+  maxRows: 1000
 }));
 
 vi.mock('@/lib/ai-engine/account-keys', () => ({
@@ -40,19 +44,31 @@ vi.mock('@/lib/supabase/admin', () => ({
     },
     from: (table: string) => {
       const filters: ((r: Row) => boolean)[] = [];
+      let orderBy: { c: string; asc: boolean } | null = null;
+      let lim = Infinity;
+      let grantRead = false;
       const run = () => {
         if (db.failTable === table) return { data: null, error: { message: 'down' } };
-        return { data: (db.tables[table] ?? []).filter((r) => filters.every((f) => f(r))), error: null };
+        if (db.failGrants && grantRead) return { data: null, error: { message: 'down' } };
+        const rows = (db.tables[table] ?? []).filter((r) => filters.every((f) => f(r)));
+        // No ORDER BY: rows come back newest-first, like the fetched_at DESC index.
+        const o = orderBy ?? (rows[0] && 'fetched_at' in rows[0] ? { c: 'fetched_at', asc: false } : null);
+        if (o) rows.sort((a, b) => (String(a[o.c]) < String(b[o.c]) ? -1 : String(a[o.c]) > String(b[o.c]) ? 1 : 0) * (o.asc ? 1 : -1));
+        return { data: rows.slice(0, Math.min(lim, db.maxRows)), error: null };
       };
       const b: Record<string, unknown> = {
         select: () => b,
-        eq: (c: string, v: unknown) => (filters.push((r) => r[c] === v), b),
+        eq: (c: string, v: unknown) => {
+          if (c === 'granted' && v === true) grantRead = true;
+          filters.push((r) => r[c] === v);
+          return b;
+        },
         is: (c: string, v: unknown) => (filters.push((r) => (r[c] ?? null) === v), b),
         like: (c: string, p: string) => (filters.push((r) => String(r[c]).startsWith(p.replace(/%$/, ''))), b),
         gte: (c: string, v: string) => (filters.push((r) => String(r[c]) >= v), b),
         in: (c: string, vs: unknown[]) => (filters.push((r) => vs.includes(r[c])), b),
-        order: () => b,
-        limit: () => b,
+        order: (c: string, o?: { ascending?: boolean }) => ((orderBy = { c, asc: o?.ascending !== false }), b),
+        limit: (n: number) => ((lim = n), b),
         update: () => b,
         upsert: async () => ({ error: null }),
         insert: async (row: Row) => {
@@ -102,6 +118,8 @@ function seed() {
   db.rpcResult = null;
   db.failTable = null;
   db.failInsert = false;
+  db.maxRows = 1000;
+  db.failGrants = false;
 }
 
 function get(query = '', token = LANE) {
@@ -280,10 +298,12 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
   });
 
   it('fails closed (503) when the key log cannot be read for the ownership / cap check', async () => {
-    db.failTable = 'ai_account_key_fetches';
+    db.failGrants = true;
     const res = await get('?refused=aimech');
     expect(res.status).toBe(503);
     expect((await res.json()).error.code).toBe('LOG_UNAVAILABLE');
+    db.failGrants = true;
+    expect((await get()).status).toBe(503); // also without refused=: the cap needs it
   });
 
   it('logs "-" (not an unchecked label) when a refused= ask is rate limited', async () => {
@@ -333,6 +353,25 @@ describe('GET /api/internal/ai-engine/lane-key', () => {
       expect((await (await get('?refused=aimech,ainursing')).json()).label).toBe('aiahs');
       expect((await get('?refused=aimech,ainursing,aiahs')).status).toBe(429);
     });
+
+    it('~1000 re-hands of one account do not let a 4th account through (row cap, newest-first)', async () => {
+      // W12's walk: A, then B, then C (cap full). Then ~1000 plain asks re-hand C
+      // (A and B are benched), filling the newest 1000 log rows with C. Then
+      // refused=C must NOT reach a 4th account.
+      expect((await (await get()).json()).label).toBe('aimech');
+      expect((await (await get('?refused=aimech')).json()).label).toBe('ainursing');
+      expect((await (await get('?refused=ainursing')).json()).label).toBe('aiahs');
+      for (let i = 0; i < 1000; i++) {
+        const r = await get();
+        expect(r.status).toBe(200);
+      }
+      const granted = logs().filter((r) => r.granted === true);
+      expect(granted.length).toBeGreaterThan(1000);
+      const res = await get('?refused=aiahs');
+      expect(res.status).toBe(429);
+      expect((await res.json()).error.code).toBe('ACCOUNT_CAP_REACHED');
+      expect(logs().some((r) => r.granted === true && r.label === 'aiextra')).toBe(false);
+    }, 30_000);
 
     it('grants older than an hour, or to another lane, do not count', async () => {
       handed(['ainursing', 'aiahs', 'aiextra'], 'maxlane-biometric', 61 * 60_000);

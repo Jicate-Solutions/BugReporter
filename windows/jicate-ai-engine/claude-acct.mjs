@@ -64,11 +64,43 @@ export const AUTH_RE = /failed to authenticate|oauth access token|invalid api ke
  * folder for the next run to start, key in hand). Anything else — Bash,
  * PowerShell, WebFetch, WebSearch, Edit, Write, Task/Agent, mcp__*, "default",
  * a name we do not know — means no key.
+ * The file tools must be scoped to the run's own folder, "Read(./**)" style:
+ * a bare "Read" or "Read(C:/...)" can reach C:\jicate-ai\maxlane-biometric.env
+ * (the lane token) wherever it sits (W12 re-review, PR #93).
  */
 export const SAFE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite']);
+const PATH_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead']);
 const SAFE_PERMISSION_MODES = new Set(['dontAsk', 'default', 'plan']);
 
-/** "Read,Grep Bash(git *)" -> ['Read', 'Grep', 'Bash(git *)'] (commas/spaces outside brackets split). */
+/** claude options that change nothing the fence cares about. */
+const PLAIN_FLAGS = new Set([
+  '-p', '--print', '--verbose', '--strict-mcp-config', '--no-session-persistence', '--include-partial-messages',
+  '--include-hook-events', '--replay-user-messages', '--fork-session', '--bare', '--safe-mode',
+  '--disable-slash-commands', '--exclude-dynamic-system-prompt-sections', '--forward-subagent-text', '--mcp-debug',
+  '--restricted', '-c', '--continue'
+]);
+/** claude options that take exactly one value (claude reads the next argument as it, whatever it is). */
+const VALUE_OPTIONS = new Set([
+  '--model', '--fallback-model', '--output-format', '--input-format', '--system-prompt', '--append-system-prompt',
+  '--system-prompt-file', '--append-system-prompt-file', '--max-turns', '--max-budget-usd', '--json-schema',
+  '--session-id', '--effort', '--autocompact', '--name', '-n', '--debug-file', '--system-prompt-snapshot',
+  '--permission-prompts'
+]);
+/** claude options whose value is optional (taken only when it does not start with "-"). */
+const OPTIONAL_VALUE_OPTIONS = new Set(['-r', '--resume', '-d', '--debug', '--prompt-suggestions']);
+/** Options that bring in tools, programs, folders or approvers the fence cannot see. */
+const UNSAFE_OPTIONS = new Map([
+  ['--dangerously-skip-permissions', 'permission bypass'],
+  ['--allow-dangerously-skip-permissions', 'permission bypass'],
+  ['--permission-prompt-tool', 'permission bypass'],
+  ['--mcp-config', 'MCP, plugin or settings by argument'],
+  ['--plugin-dir', 'MCP, plugin or settings by argument'],
+  ['--plugin-url', 'MCP, plugin or settings by argument'],
+  ['--settings', 'MCP, plugin or settings by argument'],
+  ['--add-dir', 'extra folders by argument']
+]);
+
+/** "Read(./a),Grep Bash(git *)" -> ['Read(./a)', 'Grep', 'Bash(git *)'] (commas/spaces outside brackets split). */
 function toolNames(value) {
   const out = [];
   let cur = '';
@@ -85,42 +117,83 @@ function toolNames(value) {
   return out;
 }
 
+/** null when the tool rule is allowed, else the reason. */
+function toolProblem(rule) {
+  const m = rule.match(/^([A-Za-z]+)(?:\((.*)\))?$/s);
+  if (!m || !SAFE_TOOLS.has(m[1])) return 'shell, web or unknown tool allowed';
+  if (!PATH_TOOLS.has(m[1])) return null;
+  const spec = m[2];
+  if (spec === undefined || !spec.startsWith('./') || spec.includes('..')) return 'file tool not scoped to ./';
+  return null;
+}
+
 /**
- * May this claude run be handed a Tower key? Reads the drain's arguments the
- * way claude.exe does. A key is handed ONLY when ALL of:
- *   - the run carries a tool list (--allowedTools / --allowed-tools / --tools,
- *     "" = no tools counts), and every tool in every such list is in
- *     SAFE_TOOLS (a "Read(path)" rule counts as Read);
+ * May this claude run be handed a Tower key? Parses the drain's arguments the
+ * way claude.exe (commander) does, so a flag hidden as another option's value
+ * or after "--" is not mistaken for a fence. A key is handed ONLY when ALL of:
+ *   - a tool list (--allowedTools / --allowed-tools / --tools; "" = no tools
+ *     counts) whose every entry is in SAFE_TOOLS, file tools scoped with a
+ *     relative "./" path and no "..", e.g. Read(./**);
  *   - --setting-sources is given and leaves out "user": on Box 1
  *     C:\Users\Admin\.claude\settings.json defaults to bypassPermissions, so
  *     an allow list alone is NOT a fence there (found 8 Nov 2026);
- *   - --permission-mode is given and is dontAsk, default or plan, and no
- *     --dangerously-skip-permissions / --allow-dangerously-skip-permissions;
- *   - no MCP servers, plugins or settings brought in by argument
- *     (--mcp-config, --plugin-dir, --plugin-url, --settings): they can add
- *     tools or start programs that inherit the key.
- * Like claude.exe, a tool list takes every following argument up to the next
- * one starting with "-", so a prompt passed after the list reads as an unknown
+ *   - --permission-mode is given and is dontAsk, default or plan;
+ *   - --strict-mcp-config (no MCP servers from the user's config: they would
+ *     start with the key in their environment);
+ *   - no option from UNSAFE_OPTIONS (bypass, --permission-prompt-tool, MCP,
+ *     plugins, --settings, --add-dir), and no option this list does not know
+ *     (fails safe: add a real drain's harmless option here if one needs it);
+ *   - no option value that starts with "-" (a flag hidden as a value).
+ * A tool list takes every following argument up to the next one starting with
+ * "-", as claude does, so a prompt passed after the list reads as an unknown
  * tool and the run gets no key (fails safe; the drains pass the prompt on stdin).
- * Settings FILES on the box (permissions.allow, hooks, MCP servers) are not
- * visible here: ACCOUNTS.md install step 1 checks them.
+ * Everything after "--" is prompt text to claude and is not read as options.
+ * Settings FILES in the drain's folder (permissions.allow, hooks, MCP servers)
+ * are not visible here: ACCOUNTS.md install step 1 checks them.
  * Returns { ok: true } or { ok: false, reason } — reason is a fixed phrase,
  * never argument text.
+ * @param {string[]} args
+ * @returns {{ ok: boolean, reason?: string }}
  */
 export function fenceOf(args) {
   let lists = 0;
   let mode_ = false;
   let sources_ = false;
+  let strictMcp = false;
+  const no = (reason) => ({ ok: false, reason });
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
-    const eq = a.indexOf('=');
-    const flag = a.startsWith('--') && eq > 0 ? a.slice(0, eq) : a;
-    const inline = a.startsWith('--') && eq > 0 ? a.slice(eq + 1) : null;
+    if (a === '--') break; // the rest is prompt text to claude
+    if (!a.startsWith('-')) continue; // a prompt / positional
+    const eq = a.startsWith('--') ? a.indexOf('=') : -1;
+    const flag = eq > 0 ? a.slice(0, eq) : a;
+    const inline = eq > 0 ? a.slice(eq + 1) : null;
+    /** The one value of a value option; null when it is missing or looks like a flag. */
+    const takeOne = () => {
+      if (inline !== null) return inline;
+      if (i + 1 >= args.length) return null;
+      const v = String(args[++i]);
+      return v.startsWith('-') ? null : v;
+    };
     const takeList = () => {
       const vals = inline !== null ? [inline] : [];
-      if (inline === null) while (i + 1 < args.length && !String(args[i + 1]).startsWith('-')) vals.push(String(args[++i]));
+      while (i + 1 < args.length && !String(args[i + 1]).startsWith('-')) vals.push(String(args[++i]));
       return vals;
     };
+    if (UNSAFE_OPTIONS.has(flag)) return no(UNSAFE_OPTIONS.get(flag));
+    if (PLAIN_FLAGS.has(flag)) {
+      if (inline !== null) return no('unknown or unsafe option');
+      if (flag === '--strict-mcp-config') strictMcp = true;
+      continue;
+    }
+    if (VALUE_OPTIONS.has(flag)) {
+      if (takeOne() === null) return no('option value looks like a flag');
+      continue;
+    }
+    if (OPTIONAL_VALUE_OPTIONS.has(flag)) {
+      if (inline === null && i + 1 < args.length && !String(args[i + 1]).startsWith('-')) i++;
+      continue;
+    }
     switch (flag) {
       case '--allowedTools':
       case '--allowed-tools':
@@ -128,7 +201,8 @@ export function fenceOf(args) {
         lists++;
         for (const v of takeList()) {
           for (const t of toolNames(v)) {
-            if (!SAFE_TOOLS.has(t.replace(/\(.*$/s, ''))) return { ok: false, reason: 'shell, web or unknown tool allowed' };
+            const problem = toolProblem(t);
+            if (problem) return no(problem);
           }
         }
         break;
@@ -137,33 +211,38 @@ export function fenceOf(args) {
       case '--disallowed-tools':
         takeList(); // only narrows; not a fence by itself
         break;
-      case '--dangerously-skip-permissions':
-      case '--allow-dangerously-skip-permissions':
-        return { ok: false, reason: 'permission bypass' };
       case '--permission-mode': {
-        const mode = inline ?? String(args[++i] ?? '');
-        if (!SAFE_PERMISSION_MODES.has(mode)) return { ok: false, reason: 'permission bypass' };
+        const mode = takeOne();
+        if (mode === null || !SAFE_PERMISSION_MODES.has(mode)) return no('permission bypass');
         mode_ = true;
         break;
       }
       case '--setting-sources': {
-        const sources = (inline ?? String(args[++i] ?? '')).split(',').map((x) => x.trim());
-        if (sources.includes('user')) return { ok: false, reason: 'user settings loaded' };
+        const v = takeOne();
+        if (v === null) return no('option value looks like a flag');
+        if (v.split(',').map((x) => x.trim()).includes('user')) return no('user settings loaded');
         sources_ = true;
         break;
       }
-      case '--mcp-config':
-      case '--plugin-dir':
-      case '--plugin-url':
-      case '--settings':
-        return { ok: false, reason: 'MCP, plugin or settings by argument' };
       default:
-        break;
+        return no('unknown or unsafe option');
     }
   }
-  if (!lists) return { ok: false, reason: 'no tool list' };
-  if (!sources_) return { ok: false, reason: 'no --setting-sources without user' };
-  if (!mode_) return { ok: false, reason: 'no --permission-mode' };
+  if (!lists) return no('no tool list');
+  if (!sources_) return no('no --setting-sources without user');
+  if (!mode_) return no('no --permission-mode');
+  if (!strictMcp) return no('no --strict-mcp-config');
+  return { ok: true };
+}
+
+/**
+ * The drain's environment, for a run that would get a Tower key. A run whose
+ * ANTHROPIC_BASE_URL points elsewhere would send the account key to that host.
+ * @param {Record<string, string | undefined>} env
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+export function envFenceOf(env) {
+  if (env.ANTHROPIC_BASE_URL) return { ok: false, reason: 'ANTHROPIC_BASE_URL set' };
   return { ok: true };
 }
 
@@ -367,7 +446,8 @@ async function main() {
   const input = await readStdin();
 
   let cfg = null;
-  const fence = fenceOf(args);
+  const argFence = fenceOf(args);
+  const fence = argFence.ok ? envFenceOf(process.env) : argFence;
   if (process.env.CLAUDE_ACCT_OFF !== '1' && process.env.CLAUDE_ACCT_ACTIVE !== '1') {
     if (!fence.ok) {
       // Not fenced off from the shell / web: never ask for a key.

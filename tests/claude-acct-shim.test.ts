@@ -122,8 +122,8 @@ beforeEach(() => {
 });
 
 // The Box 1 fence (user settings off, dontAsk, read-only list); prompt on stdin.
-const FENCE = ['--setting-sources', 'project', '--permission-mode', 'dontAsk'];
-const ARGS = ['-p', '--model', 'sonnet', '--append-system-prompt', 'a "quoted" arg', '--output-format', 'json', ...FENCE, '--allowedTools', 'Read'];
+const FENCE = ['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config'];
+const ARGS = ['-p', '--model', 'sonnet', '--append-system-prompt', 'a "quoted" arg', '--output-format', 'json', ...FENCE, '--allowedTools', 'Read(./**)'];
 
 function lastResult(stdout: string) {
   const lines = stdout.trim().split('\n');
@@ -196,7 +196,7 @@ describe('claude-acct.mjs', () => {
     const pidFile = join(dir, 'hang.pid');
     // sh is the "drain-side" parent (like cmd.exe or claude-acct.exe on Windows);
     // "; true" stops sh from exec-ing node in its place.
-    const sh = spawn('sh', ['-c', `"${process.execPath}" "${SHIM}" -p ${FENCE.join(' ')} --allowedTools Read; true`], {
+    const sh = spawn('sh', ['-c', `"${process.execPath}" "${SHIM}" -p ${FENCE.join(' ')} --allowedTools "Read(./**)"; true`], {
       env: {
         PATH: process.env.PATH ?? '',
         CLAUDE_REAL_BIN: join(dir, 'fake-claude.mjs'),
@@ -239,16 +239,23 @@ describe('claude-acct.mjs', () => {
   }, 20_000);
 
   for (const [name, args, reason] of [
-    ['Bash allowed', ['-p', ...FENCE, '--allowedTools', 'Read,Bash(git *)'], 'shell, web or unknown tool allowed'],
-    ['PowerShell allowed', ['-p', ...FENCE, '--allowedTools', 'Read', 'PowerShell'], 'shell, web or unknown tool allowed'],
+    ['Bash allowed', ['-p', ...FENCE, '--allowedTools', 'Read(./**),Bash(git *)'], 'shell, web or unknown tool allowed'],
+    ['PowerShell allowed', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', 'PowerShell'], 'shell, web or unknown tool allowed'],
     ['WebFetch allowed', ['-p', ...FENCE, '--allowed-tools=WebFetch'], 'shell, web or unknown tool allowed'],
-    ['WebSearch in --tools', ['-p', ...FENCE, '--tools', 'Read,WebSearch', '--allowedTools', 'Read'], 'shell, web or unknown tool allowed'],
-    ['Write allowed', ['-p', ...FENCE, '--allowedTools', 'Read,Write'], 'shell, web or unknown tool allowed'],
-    ['permissions bypassed', ['-p', ...FENCE, '--allowedTools', 'Read', '--dangerously-skip-permissions'], 'permission bypass'],
-    ['MCP config', ['-p', ...FENCE, '--allowedTools', 'Read', '--mcp-config', 'm.json'], 'MCP, plugin or settings by argument'],
-    ['allow list alone (Box 1 user settings bypass)', ['-p', '--allowedTools', 'Read'], 'no --setting-sources without user'],
-    ['user settings loaded', ['-p', '--setting-sources', 'user,project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read'], 'user settings loaded'],
-    ['no permission mode', ['-p', '--setting-sources', 'project', '--allowedTools', 'Read'], 'no --permission-mode']
+    ['WebSearch in --tools', ['-p', ...FENCE, '--tools', 'Read(./**),WebSearch', '--allowedTools', 'Read(./**)'], 'shell, web or unknown tool allowed'],
+    ['Write allowed', ['-p', ...FENCE, '--allowedTools', 'Read(./**),Write'], 'shell, web or unknown tool allowed'],
+    ['bare Read (reaches any folder)', ['-p', ...FENCE, '--allowedTools', 'Read'], 'file tool not scoped to ./'],
+    ['Read of an absolute path', ['-p', ...FENCE, '--allowedTools', 'Read(C:/jicate-ai/**)'], 'file tool not scoped to ./'],
+    ['permissions bypassed', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', '--dangerously-skip-permissions'], 'permission bypass'],
+    ['a permission prompt tool', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', '--permission-prompt-tool', 'mcp__x__ok'], 'permission bypass'],
+    ['an extra folder', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', '--add-dir', 'C:/jicate-ai'], 'extra folders by argument'],
+    ['MCP config', ['-p', ...FENCE, '--allowedTools', 'Read(./**)', '--mcp-config', 'm.json'], 'MCP, plugin or settings by argument'],
+    ['allow list alone (Box 1 user settings bypass)', ['-p', '--allowedTools', 'Read(./**)'], 'no --setting-sources without user'],
+    ['user settings loaded', ['-p', '--setting-sources', 'user,project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(./**)'], 'user settings loaded'],
+    ['no permission mode', ['-p', '--setting-sources', 'project', '--allowedTools', 'Read(./**)'], 'no --permission-mode'],
+    ['no --strict-mcp-config', ['-p', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(./**)'], 'no --strict-mcp-config'],
+    ['the fence hidden as an option value', ['-p', '--system-prompt', '--setting-sources=project', '--permission-mode=dontAsk', '--strict-mcp-config', '--allowedTools=Read(./**)'], 'option value looks like a flag'],
+    ['the fence after "--"', ['-p', '--', ...FENCE, '--allowedTools', 'Read(./**)'], 'no tool list']
   ] as [string, string[], string][]) {
     it(`hands no Tower key when ${name}`, async () => {
       const r = await runShim(args, 'p');
@@ -257,6 +264,13 @@ describe('claude-acct.mjs', () => {
       expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain(`fence: no Tower key (${reason})`);
     }, 20_000);
   }
+
+  it('hands no Tower key when ANTHROPIC_BASE_URL is set', async () => {
+    const r = await runShim(ARGS, 'p', { ANTHROPIC_BASE_URL: 'https://elsewhere.example.com' });
+    expect(lastResult(r.stdout).who).toBe('own');
+    expect(asks).toHaveLength(0);
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('fence: no Tower key (ANTHROPIC_BASE_URL set)');
+  }, 20_000);
 
   it('an empty tool list (no tools at all, like the JICATE drain) still gets a Tower key', async () => {
     const r = await runShim(['-p', '--output-format', 'json', ...FENCE, '--allowedTools', ''], 'p');
@@ -282,38 +296,62 @@ describe('claude-acct.mjs', () => {
 });
 
 describe('fenceOf (which runs may get a Tower key)', async () => {
-  const { fenceOf, towerUrlOk } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+  const { fenceOf, envFenceOf, towerUrlOk } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
   const ok = (a: string[]) => fenceOf([...FENCE, ...a]).ok;
-  it('allows the Box 1 fence with read-only tool lists, including path rules and "="', () => {
-    expect(ok(['-p', '--model', 'sonnet', '--output-format', 'json', '--allowedTools', 'Read'])).toBe(true);
-    expect(ok(['--allowedTools', 'Read(./**)', 'Grep,Glob'])).toBe(true);
-    expect(ok(['--tools=Read,Grep', '-p'])).toBe(true);
+  const why = (a: string[]) => fenceOf([...FENCE, ...a]).reason;
+  it('allows the Box 1 fence with ./-scoped read-only tools, and "=" forms', () => {
+    expect(ok(['-p', '--model', 'sonnet', '--output-format', 'json', '--max-turns', '5', '--allowedTools', 'Read(./**)'])).toBe(true);
+    expect(ok(['--allowedTools', 'Read(./**)', 'Grep(./**),Glob(./jobs/**)', 'TodoWrite'])).toBe(true);
+    expect(ok(['--tools=Read(./**),Grep(./**)', '-p'])).toBe(true);
     expect(ok(['--allowedTools', ''])).toBe(true);
-    expect(fenceOf(['--setting-sources=project,local', '--permission-mode=plan', '--allowedTools', 'Read']).ok).toBe(true);
-    expect(fenceOf(['--setting-sources', '', '--permission-mode', 'default', '--allowedTools', 'Read']).ok).toBe(true);
+    expect(fenceOf(['--setting-sources=project,local', '--permission-mode=plan', '--strict-mcp-config', '--allowedTools', 'Read(./**)']).ok).toBe(true);
+    expect(fenceOf(['--setting-sources', '', '--permission-mode', 'default', '--strict-mcp-config', '--allowedTools', 'Read(./**)']).ok).toBe(true);
+    expect(ok(['--allowedTools', 'Read(./**)', '--', '--dangerously-skip-permissions'])).toBe(true); // prompt text after --
   });
   it('refuses shell, web, write, MCP, agent, "default" and unknown tools', () => {
     for (const t of ['Bash', 'Bash(git *)', 'PowerShell', 'WebFetch', 'WebSearch', 'Write', 'Edit', 'NotebookEdit', 'mcp__x__y', 'Task', 'Agent', 'default', '*', 'BashOutput'])
-      expect(ok(['--allowedTools', 'Read', t]), t).toBe(false);
+      expect(ok(['--allowedTools', 'Read(./**)', t]), t).toBe(false);
+  });
+  it('refuses bare, absolute, home and ../ file-tool rules', () => {
+    for (const t of ['Read', 'Grep', 'Glob', 'Read(C:/**)', 'Read(//c/jicate-ai/**)', 'Read(/**)', 'Read(~/**)', 'Read(./../**)', 'Read(**)', 'Read(.\\**)'])
+      expect(why(['--allowedTools', t]), t).toBe('file tool not scoped to ./');
   });
   it('a prompt after the tool list reads as a tool (as claude does) and fails safe', () => {
-    expect(ok(['-p', '--allowedTools', 'Read', 'summarise this'])).toBe(false);
+    expect(ok(['-p', '--allowedTools', 'Read(./**)', 'summarise this'])).toBe(false);
   });
   it('an allow list alone is not a fence (Box 1 user settings default to bypassPermissions)', () => {
     expect(fenceOf(['-p']).reason).toBe('no tool list');
-    expect(fenceOf(['-p', '--allowedTools', 'Read']).reason).toBe('no --setting-sources without user');
-    expect(fenceOf(['--setting-sources', 'project', '--allowedTools', 'Read']).reason).toBe('no --permission-mode');
-    expect(fenceOf(['--setting-sources', 'project,user', '--permission-mode', 'dontAsk', '--allowedTools', 'Read']).reason).toBe('user settings loaded');
+    expect(fenceOf(['-p', '--allowedTools', 'Read(./**)']).reason).toBe('no --setting-sources without user');
+    expect(fenceOf(['--setting-sources', 'project', '--allowedTools', 'Read(./**)']).reason).toBe('no --permission-mode');
+    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(./**)']).reason).toBe('no --strict-mcp-config');
+    expect(fenceOf(['--setting-sources', 'project,user', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--allowedTools', 'Read(./**)']).reason).toBe('user settings loaded');
   });
-  it('refuses bypass modes, settings / plugins / MCP by argument', () => {
-    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'bypassPermissions', '--allowedTools', 'Read']).ok).toBe(false);
-    expect(fenceOf(['--setting-sources', 'project', '--permission-mode=auto', '--allowedTools', 'Read']).ok).toBe(false);
-    expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'acceptEdits', '--allowedTools', 'Read']).ok).toBe(false);
-    expect(ok(['--allowedTools', 'Read', '--allow-dangerously-skip-permissions'])).toBe(false);
-    for (const f of ['--settings', '--plugin-dir', '--plugin-url', '--mcp-config']) expect(ok(['--allowedTools', 'Read', f, 'x']), f).toBe(false);
+  it('refuses bypass modes, prompt tools, extra folders, settings / plugins / MCP by argument', () => {
+    expect(why(['--permission-mode', 'bypassPermissions', '--allowedTools', 'Read(./**)'])).toBe('permission bypass');
+    expect(why(['--permission-mode=auto', '--allowedTools', 'Read(./**)'])).toBe('permission bypass');
+    expect(why(['--permission-mode', 'acceptEdits', '--allowedTools', 'Read(./**)'])).toBe('permission bypass');
+    expect(why(['--allowedTools', 'Read(./**)', '--allow-dangerously-skip-permissions'])).toBe('permission bypass');
+    expect(why(['--allowedTools', 'Read(./**)', '--permission-prompt-tool', 'mcp__x'])).toBe('permission bypass');
+    expect(why(['--allowedTools', 'Read(./**)', '--add-dir', 'C:/'])).toBe('extra folders by argument');
+    for (const f of ['--settings', '--plugin-dir', '--plugin-url', '--mcp-config']) expect(ok(['--allowedTools', 'Read(./**)', f, 'x']), f).toBe(false);
+  });
+  it('parses like claude: a flag hidden as a value, after "--", or unknown fails safe', () => {
+    const hidden = ['--setting-sources=project', '--permission-mode=dontAsk', '--strict-mcp-config', '--allowedTools=Read(./**)'];
+    expect(fenceOf(['-p', '--system-prompt', ...hidden]).ok).toBe(false);
+    expect(fenceOf(['-p', '--append-system-prompt', ...hidden]).ok).toBe(false);
+    expect(fenceOf(['-p', '--model', ...hidden]).ok).toBe(false);
+    expect(fenceOf(['-p', '--', ...hidden]).ok).toBe(false);
+    expect(why(['--allowedTools', 'Read(./**)', '--frobnicate'])).toBe('unknown or unsafe option');
+    expect(why(['--allowedTools', 'Read(./**)', '-pc'])).toBe('unknown or unsafe option');
+    expect(why(['--allowedTools', 'Read(./**)', '--chrome'])).toBe('unknown or unsafe option');
   });
   it('the reason never carries argument text', () => {
     expect(JSON.stringify(fenceOf([...FENCE, '--allowedTools', 'SECRET_TOOL_NAME']))).not.toContain('SECRET');
+    expect(JSON.stringify(fenceOf([...FENCE, '--SECRET-flag']))).not.toContain('SECRET');
+  });
+  it('refuses a key when ANTHROPIC_BASE_URL is set', () => {
+    expect(envFenceOf({ ANTHROPIC_BASE_URL: 'https://x.example.com' })).toEqual({ ok: false, reason: 'ANTHROPIC_BASE_URL set' });
+    expect(envFenceOf({}).ok).toBe(true);
   });
   it('accepts https, and plain http only for localhost', () => {
     expect(towerUrlOk('https://tower.example.com')).toBe(true);

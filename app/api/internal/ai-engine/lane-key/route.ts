@@ -123,35 +123,8 @@ export async function GET(request: NextRequest) {
     return fail('RATE_LIMIT_UNAVAILABLE', 'Could not check the rate limit.', 503);
   }
 
-  // What this lane was handed in the last hour: for the refusal check and the
-  // per-token account cap below. Unreadable → fail closed.
   const now = Date.now();
-  const grants = await admin
-    .from('ai_account_key_fetches')
-    .select('label, fetched_at')
-    .eq('runner', runner)
-    .eq('granted', true)
-    .gte('fetched_at', new Date(now - LANE_CAP_WINDOW_MS).toISOString());
-  if (grants.error) {
-    console.error('[ai-engine/lane-key] could not read the key log:', grants.error.message);
-    return fail('LOG_UNAVAILABLE', 'Could not read the key log.', 503);
-  }
-  const grantRows = (grants.data ?? []) as { label: string; fetched_at: string }[];
-
-  // A lane may only report a refusal of an account the Tower handed THIS lane
-  // in the last 30 minutes. Otherwise one leaked token could jump straight to a
-  // chosen account, or bench every account for every lane (W12 review, PR #93).
-  if (refused.length) {
-    const ok = new Set(
-      grantRows.filter((r) => new Date(r.fetched_at).getTime() >= now - LANE_REFUSAL_MS).map((r) => r.label)
-    );
-    if (refused.some((l) => !ok.has(l))) {
-      await log('-', false, 'lane: refused label not handed to this lane');
-      return fail('REFUSED_NOT_HANDED', 'A refused account was not handed to this lane in the last 30 minutes.', 400);
-    }
-  }
-
-  const since = new Date(Date.now() - LANE_REFUSAL_MS).toISOString();
+  const since = new Date(now - LANE_REFUSAL_MS).toISOString();
   const [sec, acc, recent] = await Promise.all([
     admin.from('ai_account_secrets').select('label'),
     admin
@@ -169,6 +142,45 @@ export async function GET(request: NextRequest) {
     return fail('ACCOUNTS_UNAVAILABLE', 'Could not read the accounts.', 503);
   }
   const labels = ((sec.data ?? []) as { label: string }[]).map((x) => x.label);
+
+  // When this lane was LAST handed each stored account in the last hour: one
+  // small query per account (latest row only), so no row cap or row order can
+  // hide an account. A plain read of every grant row was cut at PostgREST's
+  // max_rows, and ~1000 re-hands of one account then hid the others from the
+  // cap (W12 re-review, PR #93). Unreadable → fail closed.
+  const capSince = new Date(now - LANE_CAP_WINDOW_MS).toISOString();
+  const latest = await Promise.all(
+    labels.map((l) =>
+      admin
+        .from('ai_account_key_fetches')
+        .select('label, fetched_at')
+        .eq('runner', runner)
+        .eq('granted', true)
+        .eq('label', l)
+        .gte('fetched_at', capSince)
+        .order('fetched_at', { ascending: false })
+        .limit(1)
+    )
+  );
+  if (latest.some((r) => r.error)) {
+    console.error('[ai-engine/lane-key] could not read the key log');
+    return fail('LOG_UNAVAILABLE', 'Could not read the key log.', 503);
+  }
+  /** label → time this lane was last handed it, within the last hour. */
+  const handedAt = new Map<string, number>();
+  for (const r of latest) {
+    const row = ((r.data ?? []) as { label: string; fetched_at: string }[])[0];
+    if (row) handedAt.set(row.label, new Date(row.fetched_at).getTime());
+  }
+
+  // A lane may only report a refusal of an account the Tower handed THIS lane
+  // in the last 30 minutes. Otherwise one leaked token could jump straight to a
+  // chosen account, or bench every account for every lane (W12 review, PR #93).
+  if (refused.some((l) => (handedAt.get(l) ?? 0) < now - LANE_REFUSAL_MS)) {
+    await log('-', false, 'lane: refused label not handed to this lane');
+    return fail('REFUSED_NOT_HANDED', 'A refused account was not handed to this lane in the last 30 minutes.', 400);
+  }
+
   const refusedAt = new Map<string, number>();
   for (const r of (recent.data ?? []) as { label: string; fetched_at: string }[]) {
     const t = new Date(r.fetched_at).getTime();
@@ -181,10 +193,13 @@ export async function GET(request: NextRequest) {
   // handed to one lane token per rolling hour. A new account past the cap →
   // 429, and this request's refusals are NOT written (nothing benched). An
   // account already handed this hour may be handed again.
-  const handedThisHour = new Set(grantRows.map((r) => r.label));
-  if (choice.label !== null && !handedThisHour.has(choice.label) && handedThisHour.size >= LANE_MAX_ACCOUNTS) {
-    const oldest = Math.min(...grantRows.map((r) => new Date(r.fetched_at).getTime()));
+  if (choice.label !== null && !handedAt.has(choice.label) && handedAt.size >= LANE_MAX_ACCOUNTS) {
+    // Free again when the account handed longest ago has not been re-handed for an hour.
+    const oldest = Math.min(...handedAt.values());
     const wait = Math.max(1, Math.ceil((oldest + LANE_CAP_WINDOW_MS - now) / 1000));
+    // An ALERT line for the logs, besides the row on AI Routines: a lane at the
+    // cap is either a very bad hour for the accounts or a leaked token.
+    console.warn(`[ai-engine/lane-key] ALERT account cap reached: runner=${runner} handed=${handedAt.size} in the last hour`);
     await log('-', false, 'lane: account cap reached');
     return fail('ACCOUNT_CAP_REACHED', `This lane was handed ${LANE_MAX_ACCOUNTS} accounts in the last hour.`, 429,
       { retry_after_seconds: wait }, { 'Retry-After': String(wait) });

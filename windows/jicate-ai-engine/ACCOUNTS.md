@@ -62,35 +62,64 @@ Install (after the PR is merged and live; only on the Director's yes):
    - EVERY drain reads CLAUDE_BIN from its environment. Some older drains
      hardcode C:\Users\Admin\.local\bin\claude.exe; those need a one-line
      MyJKKN change first, or they will simply keep running as today.
-   - THE TOOL FENCE (W12 review, PR #93). A Tower key is handed ONLY to a run
-     whose arguments carry ALL of:
+   - THE TOOL FENCE (W12 reviews, PR #93). A Tower key is handed ONLY to a
+     run whose arguments carry ALL of:
        --setting-sources without "user" (e.g. project): Box 1's
          C:\Users\Admin\.claude\settings.json defaults to bypassPermissions,
          so an allow list alone is NOT a fence there;
        --permission-mode dontAsk (or default / plan);
+       --strict-mcp-config (no MCP servers from the user's config: they would
+         start with the key in their environment);
        --allowedTools / --allowed-tools / --tools with read-only tools only
          (Read, Glob, Grep, LS, NotebookRead, TodoWrite; "" = no tools is
-         fine; Read(./**) is the Box 1 form);
-     and no --dangerously-skip-permissions, no --mcp-config / --plugin-dir /
-     --plugin-url / --settings. Any other run (Bash, PowerShell, WebFetch,
-     WebSearch, Edit, Write, Task, mcp__*, a missing piece) runs on the box's
-     own sign-in, logged "fence: no Tower key (<reason>)". So a prompt-injected
-     job that can shell out, reach the web or plant settings never holds an
-     account key. A drain logging "fence: ..." needs its fence fixed in
-     MyJKKN before it can use the Tower's accounts. List every drain BEFORE install and fill this table (the
-     drains are not in any repo, so this has NOT been checked yet):
+         fine), and every file tool scoped to the run's own folder with a
+         relative ./ path: Read(./**), Grep(./**). A bare "Read" or an absolute
+         path like Read(C:/...) gets NO key: it can reach the lane-token file;
+     and none of: --dangerously-skip-permissions, --permission-prompt-tool,
+     --add-dir, --mcp-config, --plugin-dir, --plugin-url, --settings, an
+     option the shim does not know, or an option value starting with "-"
+     (a flag hidden as a value). Anything after "--" is prompt text, not
+     options. The drain's environment must not set ANTHROPIC_BASE_URL.
+     Any other run (Bash, PowerShell, WebFetch, WebSearch, Edit, Write, Task,
+     mcp__*, a missing piece) runs on the box's own sign-in, logged
+     "fence: no Tower key (<reason>)". So a prompt-injected job that can shell
+     out, reach the web, plant settings or read outside its folder never holds
+     an account key. A drain logging "fence: ..." needs its fence fixed in
+     MyJKKN before it can use the Tower's accounts.
+     Fill this table on the box BEFORE install. The drain scripts are not in
+     any repo, so NOTHING below is verified yet; names come from MyJKKN docs
+     and the desk's notes, and Box 1 has ~14 drains, so list the rest too:
 
-       | drain (task name) | claude arguments (tool list, permission mode) | box/project settings permissions.allow, hooks, MCP servers | gets a Tower key? |
-       |-------------------|-----------------------------------------------|-------------------------------------------------------------|-------------------|
-       | (fill on the box) |                                               |                                                             |                   |
+       | drain script (C:\Users\Admin\jkkn-max-lane\) | claude arguments (tools, --setting-sources, --permission-mode, --strict-mcp-config) | drain folder .claude\settings*.json / .mcp.json (allow, hooks, MCP, env) | gets a Tower key? |
+       |-----------------------------|----------------------|----------------------|------------------|
+       | ai-chat-drain.mjs           | to verify on box     | to verify on box     | to verify on box |
+       | ai-jobs-drain.mjs           | to verify on box     | to verify on box     | to verify on box |
+       | ai-jobs-drain-pde.mjs       | to verify on box     | to verify on box     | to verify on box |
+       | poller.mjs (AI routines)    | to verify on box     | to verify on box     | to verify on box |
+       | campus-classify.mjs         | to verify on box (bare --allowedTools Read as of 8 Nov: would get NO key) | to verify on box | to verify on box |
+       | card-extract.mjs            | to verify on box     | to verify on box     | to verify on box |
+       | regscan-read.mjs            | to verify on box     | to verify on box     | to verify on box |
+       | procurement-pdf-extract.mjs | to verify on box     | to verify on box     | to verify on box |
+       | referral-check.mjs          | to verify on box     | to verify on box     | to verify on box |
+       | work-pulse-analyze.mjs      | to verify on box     | to verify on box     | to verify on box |
+       | skillphoto drain            | to verify on box     | to verify on box     | to verify on box |
+       | (any other drain found)     | to verify on box     | to verify on box     | to verify on box |
 
-     To fill it: Get-CimInstance Win32_Process -Filter "name='claude.exe'" |
-     Select CommandLine  (while the drains run), and read each drain
-     folder's .claude\settings*.json and .mcp.json. The shim cannot see
-     settings FILES: a drain whose project settings allow Bash / PowerShell /
-     WebFetch / WebSearch, or start MCP servers or hooks, must not be pointed
-     at the shim (leave its CLAUDE_BIN as the real claude.exe) until that is
-     removed.
+     Check commands (PowerShell, as Admin, read only):
+       # every drain script and the claude arguments it builds
+       Get-ChildItem C:\Users\Admin\jkkn-max-lane\*.mjs | Select-String -Pattern 'allowedTools|allowed-tools|--tools|setting-sources|permission-mode|strict-mcp-config|add-dir|mcp-config|dangerously|ANTHROPIC_BASE_URL' | Format-Table Filename, LineNumber, Line -AutoSize
+       # the claude command lines actually running right now
+       Get-CimInstance Win32_Process -Filter "name='claude.exe'" | Select-Object -ExpandProperty CommandLine
+       # each drain's project settings and MCP files (allow rules, hooks, MCP servers, env)
+       Get-ChildItem C:\Users\Admin\jkkn-max-lane, C:\jkkn-* -Recurse -Include settings.json, settings.local.json, .mcp.json -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName; Get-Content $_.FullName }
+       # the scheduled tasks behind them
+       Get-ScheduledTask | Where-Object TaskName -like 'ai.jkkn.*' | Select-Object TaskName, State
+     Or simply: point ONE drain at the shim and read logs\claude-acct.log; a
+     "fence: no Tower key (<reason>)" line names what is missing.
+     The shim cannot see settings FILES: a drain whose project settings allow
+     Bash / PowerShell / WebFetch / WebSearch, set ANTHROPIC_BASE_URL, or start
+     MCP servers or hooks, must not be pointed at the shim (leave its
+     CLAUDE_BIN as the real claude.exe) until that is removed.
    - maxlane-biometric.env stays in C:\jicate-ai\, OUTSIDE every drain's
      working folder (a run allowed Read must not be able to reach it).
 2. Lane token, made ON the box (prints only a hash; secret stays in the file):
@@ -115,7 +144,7 @@ Install (after the PR is merged and live; only on the Director's yes):
 5. Dry run, as the drains' Windows user (Admin), with CLAUDE_REAL_BIN set,
    from an empty folder outside C:\Users (the fence flags are needed: an
    unfenced run never gets a Tower key):
-     echo say OK | <SHIM> -p --model haiku --setting-sources project --permission-mode dontAsk --allowedTools "Read(./**)"
+     echo say OK | <SHIM> -p --model haiku --setting-sources project --permission-mode dontAsk --strict-mcp-config --allowedTools "Read(./**)"
    GATE: C:\jicate-ai\logs\claude-acct.log must show
      attempt=1 account=<a label, NOT own-sign-in> exit=0
    and AI Routines a "lane: ok" key fetch for maxlane-biometric. "own-sign-in"
@@ -160,8 +189,14 @@ Risks to know:
   refused label not handed to this lane"), so a holder cannot jump to a chosen
   account or bench accounts it never got. And it hands one lane token at most
   3 distinct accounts per rolling hour (else 429 ACCOUNT_CAP_REACHED, logged
-  "lane: account cap reached", nothing benched); handing an account it already
-  got this hour again is fine. Each roll it does take benches that account for
+  "lane: account cap reached" plus an "ALERT account cap reached" line in the
+  Vercel logs, nothing benched); handing an account it already got this hour
+  again is fine. The cap reads, per stored account, only the LATEST time this
+  lane was handed it (one small query per account), so no database row limit
+  or flood of re-hands can hide an account from it. It is a speed limit, not a
+  wall: a patient holder still gets every key in about (accounts / 3) hours,
+  so a "lane: account cap reached" row on AI Routines is worth a look.
+  Follow-up: an email to the Director on those rows (lib/ai-engine/watch.ts). Each roll it does take benches that account for
   every lane for 30 min. Rate limit (120/min, 60 rolls per 10 min), the log on
   AI Routines and revoking the token are the other limits. Keep
   maxlane-biometric.env readable by the box user only (new-runner-token.ps1
