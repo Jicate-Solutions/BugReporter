@@ -56,7 +56,10 @@ const MAX_ATTEMPTS = 6;
 // state; another account would not help).
 // Claude's real wording varies: "You've hit your limit", "You've hit your weekly limit · resets ...",
 // "5-hour limit", "session limit" (Box 1, 15 Nov 2026: the weekly wording did not match before).
-export const LIMIT_RE = /rate.?limit|usage limit|hit your limit|hit your [a-z0-9 -]{0,20}limit|weekly limit|session limit|5-hour limit|limit reached|too many requests|\b429\b/i;
+// The weekly / session / 5-hour words count only in a limit message ("hit your ... limit",
+// "... limit reached", "... limit · resets"), never alone: a run that failed for another
+// reason and merely mentions "weekly limit" must not roll to the next account (W12, #94).
+export const LIMIT_RE = /rate.?limit|usage limit|hit your [a-z0-9 -]{0,20}limit|limit reached|(?:weekly|session|5-hour) limit\W{0,3}resets|too many requests|\b429\b/i;
 export const AUTH_RE = /failed to authenticate|oauth access token|invalid api key|not logged in|\b401\b/i;
 
 /**
