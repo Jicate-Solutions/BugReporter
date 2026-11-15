@@ -435,3 +435,23 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
     expect(towerUrlOk('not a url')).toBe(false);
   });
 });
+
+describe('refusalOf (which failed runs count as the account refused)', async () => {
+  const { refusalOf } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+  const failed = (result: string) =>
+    refusalOf({ code: 1, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({ type: 'result', is_error: true, result })) });
+  it('matches every "hit your ... limit" wording Claude uses', () => {
+    expect(failed("You've hit your limit · resets 3pm")).toBe('limit');
+    expect(failed("You've hit your weekly limit · resets Nov 18, 5:30am")).toBe('limit');
+    expect(failed("You've hit your 5-hour limit · resets 3pm")).toBe('limit');
+    expect(failed('Session limit reached ∙ resets 3pm')).toBe('limit');
+    expect(failed('Claude AI usage limit reached|1763200000')).toBe('limit');
+  });
+  it('a good answer that says "weekly limit" is never a refusal', () => {
+    const ok = { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'You hit your weekly limit of coffee' })) };
+    expect(refusalOf(ok)).toBe(null);
+  });
+  it('an unrelated failure is not a refusal', () => {
+    expect(failed('max turns reached')).toBe(null);
+  });
+});
