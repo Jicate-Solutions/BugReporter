@@ -42,12 +42,13 @@ process.stdin.on('end', () => {
     return;
   }
   if (process.env.FAKE_OTHER_FAIL) {
+    if (process.env.FAKE_STDERR) process.stderr.write(process.env.FAKE_STDERR + '\\n');
     console.log(JSON.stringify({ type: 'assistant', text: 'the API said 429 rate limit earlier, then a tool broke' }));
     console.log(JSON.stringify({ type: 'result', is_error: true, subtype: 'error_max_turns', result: 'max turns reached' }));
     process.exit(1);
   }
   if (limited.includes(who)) {
-    console.log(JSON.stringify({ type: 'result', is_error: true, result: "You've hit your limit · resets 3pm" }));
+    console.log(JSON.stringify({ type: 'result', is_error: true, result: "You've hit your weekly limit · resets Nov 19, 2:30pm (Asia/Kolkata)" }));
     process.stderr.write('limit for ' + who + '\\n');
     process.exit(1);
   }
@@ -152,7 +153,7 @@ describe('claude-acct.mjs', () => {
     const r = await runShim(ARGS, 'p', { FAKE_LIMITED: 'aimech' });
     expect(r.code).toBe(0);
     expect(lastResult(r.stdout).who).toBe('ainursing');
-    expect(r.stdout).not.toContain('hit your limit');
+    expect(r.stdout).not.toContain('hit your weekly limit');
     expect(r.stderr).not.toContain('limit for aimech');
     expect(asks.map((a) => a.refused)).toEqual([null, 'aimech']);
   }, 20_000);
@@ -161,7 +162,7 @@ describe('claude-acct.mjs', () => {
     const r = await runShim(ARGS, 'p', { FAKE_LIMITED: 'aimech,ainursing,aiahs,own' });
     expect(r.code).toBe(1);
     expect(asks.map((a) => a.refused)).toEqual([null, 'aimech', 'aimech,ainursing', 'aimech,ainursing,aiahs']);
-    expect(r.stdout).toContain('hit your limit');
+    expect(r.stdout).toContain('hit your weekly limit');
     expect(r.stderr).toContain('limit for own');
     const log = readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8');
     expect(log).toMatch(/attempt=4 account=own-sign-in exit=1 refused=limit/);
@@ -189,6 +190,14 @@ describe('claude-acct.mjs', () => {
   it('a run that failed for another reason does not roll, even if its transcript mentions 429', async () => {
     const r = await runShim(ARGS, 'p', { FAKE_OTHER_FAIL: '1' });
     expect(r.code).toBe(1);
+    expect(asks).toHaveLength(1);
+    expect(lastResult(r.stdout).subtype).toBe('error_max_turns');
+  }, 20_000);
+
+  it('a run that failed for another reason does not roll when its stderr merely mentions "weekly limit"', async () => {
+    const r = await runShim(ARGS, 'p', { FAKE_OTHER_FAIL: '1', FAKE_STDERR: 'note: the weekly limit and session limit panels could not be drawn' });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('weekly limit');
     expect(asks).toHaveLength(1);
     expect(lastResult(r.stdout).subtype).toBe('error_max_turns');
   }, 20_000);
@@ -446,6 +455,9 @@ describe('refusalOf (which failed runs count as the account refused)', async () 
     expect(failed("You've hit your 5-hour limit · resets 3pm")).toBe('limit');
     expect(failed('Session limit reached ∙ resets 3pm')).toBe('limit');
     expect(failed('Claude AI usage limit reached|1763200000')).toBe('limit');
+    expect(failed("You've hit your weekly limit · resets Nov 19, 2:30pm (Asia/Kolkata)")).toBe('limit');
+    expect(failed('5-hour limit reached ∙ resets 3pm')).toBe('limit');
+    expect(failed('API Error: 429 rate limit')).toBe('limit');
   });
   it('a good answer that says "weekly limit" is never a refusal', () => {
     const ok = { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'You hit your weekly limit of coffee' })) };
