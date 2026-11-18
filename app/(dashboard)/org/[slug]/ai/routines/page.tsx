@@ -44,6 +44,7 @@ import { BoxAccountEditor } from './_components/box-account-editor';
 import { AccountPriorityEditor } from './_components/account-priority-editor';
 import { AddAccountForm } from './_components/add-account-form';
 import { RemoveKeyButton } from './_components/remove-key-button';
+import { readingStatus, windowState } from '@/lib/ai-engine/accounts';
 
 export const dynamic = 'force-dynamic';
 
@@ -90,15 +91,29 @@ function istTime(iso: string | null) {
   });
 }
 
-function UsageBar({ label, value, resets }: { label: string; value: number | null; resets: string | null }) {
-  const p = pct(value);
+function UsageBar({
+  label,
+  value,
+  resets,
+  now
+}: {
+  label: string;
+  value: number | null;
+  resets: string | null;
+  now: number;
+}) {
+  // A reading taken before its window renewed no longer counts: show it as empty, not as current.
+  const renewed = windowState(value, resets, now) === 'renewed';
+  const p = renewed ? null : pct(value);
   const color = p == null ? 'bg-muted' : p >= 90 ? 'bg-red-500' : p >= 75 ? 'bg-amber-500' : 'bg-green-500';
   return (
     <div className="space-y-1">
       <div className="flex justify-between text-xs">
         <span>{label}</span>
         <span className="text-muted-foreground">
-          {p == null ? 'no reading yet' : `${p}% used`} · resets {istTime(resets)}
+          {renewed
+            ? 'Renewed since last reading, no new reading yet'
+            : `${p == null ? 'no reading yet' : `${p}% used`} · resets ${istTime(resets)}`}
         </span>
       </div>
       <div className="bg-muted h-2 overflow-hidden rounded">
@@ -273,13 +288,20 @@ export default async function AiRoutinesPage({
             {accounts.length === 0 && (
               <p className="text-muted-foreground text-sm">No readings yet. They appear after the next job.</p>
             )}
-            {accounts.map((a: AccountRow) => (
+            {accounts.map((a: AccountRow) => {
+              const status = readingStatus(a, now);
+              return (
               <div key={a.label} className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{a.label}</span>
                   <span className="text-muted-foreground text-xs">
-                    {a.updated_at ? `read ${ago(a.updated_at, now)}` : 'not used yet'}
+                    {status.kind === 'full-until'
+                      ? `Full until ${istTime(status.until)}. Checked again automatically right after it resets.`
+                      : a.updated_at
+                        ? `read ${ago(a.updated_at, now)}`
+                        : 'not used yet'}
                     {a.reported_by ? ` by ${a.reported_by}` : ''}
+                    {status.kind === 'own-signin' ? " · each box's own sign-in, not checked automatically" : ''}
                   </span>
                   {storedKeys.has(a.label) && (
                     <span className="text-muted-foreground text-xs">· key in Control Tower</span>
@@ -289,10 +311,11 @@ export default async function AiRoutinesPage({
                     {storedKeys.has(a.label) && <RemoveKeyButton label={a.label} />}
                   </div>
                 </div>
-                <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} />
-                <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} />
+                <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} now={now} />
+                <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} now={now} />
               </div>
-            ))}
+              );
+            })}
             <AddAccountForm />
             <p className="text-muted-foreground text-xs">
               Other keys a box needs in its own files (for example the build worker&apos;s GitHub

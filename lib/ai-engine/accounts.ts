@@ -68,6 +68,42 @@ export function chooseAccount(readings: AccountReading[], labels: string[], now:
 }
 
 /**
+ * What one usage window's stored reading honestly says right now, for the
+ * accounts card. 'renewed' = its reset time has passed, so the old percentage
+ * no longer counts and there is no new reading yet.
+ */
+export type WindowState = 'none' | 'renewed' | 'full' | 'used';
+
+export function windowState(util: number | null, resets: string | null, now: number): WindowState {
+  if (util == null) return 'none';
+  if (resets && new Date(resets).getTime() <= now) return 'renewed';
+  return Number(util) >= FULL ? 'full' : 'used';
+}
+
+/**
+ * How the accounts card should describe a reading's age.
+ * - 'own-signin': the "default" row, each box's own sign-in, never checked automatically.
+ * - 'full-until': full, so the watch cron skips it on purpose until `until`
+ *   (the latest reset among the full windows); checked again right after.
+ * - 'normal': show the usual "read N ago".
+ */
+export function readingStatus(
+  r: Pick<AccountReading, 'label' | 'five_hour_util' | 'seven_day_util' | 'five_hour_resets_at' | 'seven_day_resets_at'>,
+  now: number
+): { kind: 'own-signin' } | { kind: 'full-until'; until: string } | { kind: 'normal' } {
+  if (r.label === 'default') return { kind: 'own-signin' };
+  const fullResets = [
+    [r.five_hour_util, r.five_hour_resets_at],
+    [r.seven_day_util, r.seven_day_resets_at]
+  ] as const;
+  const until = fullResets
+    .filter(([u, t]) => windowState(u, t, now) === 'full' && t)
+    .map(([, t]) => t as string)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+  return until ? { kind: 'full-until', until } : { kind: 'normal' };
+}
+
+/**
  * Stored accounts whose reading is old enough to check again. An account read
  * as full whose window has not renewed yet is skipped: checking it would only
  * hit the limit and make a worker pause.
