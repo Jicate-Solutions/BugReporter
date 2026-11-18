@@ -246,6 +246,8 @@ export type PayVsUseData = {
   boxes: BoxCost[];
   month: ReturnType<typeof istMonth>;
   ledgerCapped: boolean;
+  /** true = the box reports could not be read (not the same as "no report"). */
+  boxesError: boolean;
 };
 
 const PAGE = 1000;
@@ -256,6 +258,8 @@ export async function readPayVsUse(admin: SupabaseClient, now: number): Promise<
   const since = dayMinus(istDay(now), 7 * HISTORY_WEEKS);
 
   const readLedger = async () => {
+    // Stop only on an empty page and move on by the rows actually received,
+    // so a server row cap below PAGE can never end the count early.
     const rows: LedgerRow[] = [];
     for (let p = 0; p < MAX_PAGES; p++) {
       const { data, error } = await admin
@@ -263,10 +267,10 @@ export async function readPayVsUse(admin: SupabaseClient, now: number): Promise<
         .select('account, app_slug, job_type, api_cost_usd')
         .gte('invoked_at', month.startIso)
         .order('id')
-        .range(p * PAGE, p * PAGE + PAGE - 1);
+        .range(rows.length, rows.length + PAGE - 1);
       if (error) throw new Error(`ai_usage: ${error.message}`);
-      rows.push(...((data ?? []) as LedgerRow[]));
-      if (!data || data.length < PAGE) return { rows, capped: false };
+      if (!data?.length) return { rows, capped: false };
+      rows.push(...(data as LedgerRow[]));
     }
     return { rows, capped: true };
   };
@@ -279,6 +283,8 @@ export async function readPayVsUse(admin: SupabaseClient, now: number): Promise<
     readLedger()
   ]);
 
+  // A failed read must not look like "never read": stop and let the page error out.
+  if (accountsRes.error) throw new Error(`ai_accounts: ${accountsRes.error.message}`);
   const idleBelowPct = parseIdleBelowPct(settingsRes.data?.value ?? null);
   const historyReady = !historyRes.error;
   const history = historyReady ? ((historyRes.data ?? []) as HistoryRow[]) : [];
@@ -305,6 +311,7 @@ export async function readPayVsUse(admin: SupabaseClient, now: number): Promise<
       .map((b) => parseBoxCost(b.host, b.api_cost_7d, b.report_at))
       .filter((b): b is BoxCost => b != null),
     month,
-    ledgerCapped: ledger.capped
+    ledgerCapped: ledger.capped,
+    boxesError: Boolean(boxesRes.error)
   };
 }

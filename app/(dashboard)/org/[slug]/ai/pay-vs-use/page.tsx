@@ -170,6 +170,8 @@ export default async function PayVsUsePage({ params }: { params: Promise<{ slug:
                 {rs((usdToInr(box1.usd) * d.month.daysInMonth) / box1.days)} a month, an estimate).
                 {box1.reportAt ? ` Reported ${ago(box1.reportAt, now)}.` : ''}
               </p>
+            ) : d.boxesError ? (
+              <p className="text-red-700 dark:text-red-400">Could not read the box reports just now. Reload in a minute.</p>
             ) : (
               <p>Box 1 has not sent a 7-day price yet.</p>
             )}
