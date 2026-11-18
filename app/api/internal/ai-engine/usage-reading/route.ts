@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { macReadingRow, macReadingSchema } from '@/lib/ai-engine/mac-usage';
+import { recordUsageDay } from '@/lib/ai-engine/usage-history';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,5 +72,6 @@ export async function POST(request: NextRequest) {
     console.error('[ai-engine/usage-reading] write failed:', writeError.message);
     return fail('WRITE_FAILED', 'Could not store the reading.', 500);
   }
+  if (updated) await recordUsageDay(admin, reading.label, row.seven_day_util, row.five_hour_util);
   return NextResponse.json({ status: updated ? 'stored' : 'kept_newer' }, { status: 200 });
 }

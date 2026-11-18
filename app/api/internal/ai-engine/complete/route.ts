@@ -26,6 +26,7 @@ import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { readSpecForJob, shapeResult } from '@/lib/ai-engine/engine';
 import { PROBE_JOB_TYPE } from '@/lib/ai-engine/accounts';
 import { legacyUsageParams, usageParams, usageSchema } from '@/lib/ai-engine/usage';
+import { recordUsageDay } from '@/lib/ai-engine/usage-history';
 
 export const dynamic = 'force-dynamic';
 
@@ -174,6 +175,7 @@ async function recordAccountUsage(
     updated_at: new Date().toISOString()
   });
   if (error) console.error('[ai-engine/complete] account usage not stored:', error.message);
+  else await recordUsageDay(admin, label, l.seven_day, l.five_hour);
 }
 
 /**
