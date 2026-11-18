@@ -28,22 +28,33 @@ export const MAC_READING_MAX_AGE_MS = 20 * 60_000;
 /** Clock slack between the Mac and the server. */
 export const MAC_CLOCK_SLACK_MS = 2 * 60_000;
 
-const util = z.number().min(0).max(10);
-const epoch = z.number().int().positive();
+/** Furthest ahead a reset time may be: the weekly window is 7 days, plus slack. */
+export const MAC_RESET_MAX_AHEAD_MS = 8 * 24 * 60 * 60_000;
 
-export const macReadingSchema = z.object({
-  label: z
-    .string()
-    .regex(ACCOUNT_LABEL)
-    .refine((l) => l !== 'default' && l !== 'auto', 'reserved'),
-  seven_day_util: util,
-  seven_day_resets_at: epoch,
-  five_hour_util: util.nullable().optional(),
-  five_hour_resets_at: epoch.nullable().optional(),
-  /** When the Mac read the usage (epoch seconds). Missing = now. */
-  read_at: epoch.optional(),
-  source: z.literal('mac')
-});
+/** Utilisation is a share of the allowance: 0-1. */
+const util = z.number().min(0).max(1);
+const epoch = z.number().int().positive();
+/** A reset time no more than 8 days ahead (checked against the server clock). */
+const resetEpoch = epoch.refine((s) => s * 1000 <= Date.now() + MAC_RESET_MAX_AHEAD_MS, 'reset too far ahead');
+
+export const macReadingSchema = z
+  .object({
+    label: z
+      .string()
+      .regex(ACCOUNT_LABEL)
+      .refine((l) => l !== 'default' && l !== 'auto', 'reserved'),
+    seven_day_util: util,
+    seven_day_resets_at: resetEpoch,
+    five_hour_util: util.nullable().optional(),
+    five_hour_resets_at: resetEpoch.nullable().optional(),
+    /** When the Mac read the usage (epoch seconds). Required: it drives the 20-minute age check. */
+    read_at: epoch,
+    source: z.literal('mac')
+  })
+  .refine((r) => (r.five_hour_util == null) === (r.five_hour_resets_at == null), {
+    message: 'five_hour_util and five_hour_resets_at come together or not at all',
+    path: ['five_hour_util']
+  });
 
 export type MacReading = z.infer<typeof macReadingSchema>;
 
@@ -67,7 +78,7 @@ export function macReadingRow(
   runner: string,
   now: number
 ): { ok: true; row: MacRow } | { ok: false; reason: 'stale' | 'future' } {
-  const readMs = r.read_at != null ? r.read_at * 1000 : now;
+  const readMs = r.read_at * 1000;
   if (readMs > now + MAC_CLOCK_SLACK_MS) return { ok: false, reason: 'future' };
   if (now - readMs > MAC_READING_MAX_AGE_MS) return { ok: false, reason: 'stale' };
   const row: MacRow = {
@@ -76,7 +87,9 @@ export function macReadingRow(
     reported_by: runner,
     updated_at: new Date(readMs).toISOString()
   };
-  if (r.five_hour_util != null) row.five_hour_util = r.five_hour_util;
-  if (r.five_hour_resets_at != null) row.five_hour_resets_at = iso(r.five_hour_resets_at);
+  if (r.five_hour_util != null && r.five_hour_resets_at != null) {
+    row.five_hour_util = r.five_hour_util;
+    row.five_hour_resets_at = iso(r.five_hour_resets_at);
+  }
   return { ok: true, row };
 }

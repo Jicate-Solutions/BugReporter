@@ -6,8 +6,8 @@
  * "macusage-*" (see lib/ai-engine/runner-auth.ts). Worker and lane tokens are
  * refused (403), and this token is refused on every other engine route.
  *
- * Body: { label, seven_day_util (0-1), seven_day_resets_at (epoch s),
- *         five_hour_util?, five_hour_resets_at?, read_at? (epoch s), source: 'mac' }
+ * Body: { label, seven_day_util (0-1), seven_day_resets_at (epoch s, at most 8 days ahead),
+ *         five_hour_util? + five_hour_resets_at? (both or neither), read_at (epoch s), source: 'mac' }
  *
  * 200 { status: 'stored' }      the reading is now the account's latest
  * 200 { status: 'kept_newer' }  a newer reading was already stored; nothing changed

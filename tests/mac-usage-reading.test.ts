@@ -220,6 +220,46 @@ describe('what it writes', () => {
   });
 });
 
+describe('review fixes (W12, PR #97)', () => {
+  const status = async (body: unknown) => (await POST(req(body))).status;
+
+  it('1. a reading without read_at is refused with 400, not treated as fresh', async () => {
+    const body: Row = reading();
+    delete body.read_at;
+    const res = await POST(req(body));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe('BAD_REQUEST');
+    expect(await status(reading({ read_at: null }))).toBe(400);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('2. a reset time more than 8 days ahead is a 400, never a 500', async () => {
+    expect(await status(reading({ seven_day_resets_at: 1e15 }))).toBe(400);
+    expect(await status(reading({ seven_day_resets_at: Number.MAX_SAFE_INTEGER }))).toBe(400);
+    expect(await status(reading({ seven_day_resets_at: NOW_S() + 9 * 86400 }))).toBe(400);
+    expect(await status(reading({ five_hour_util: 0.1, five_hour_resets_at: 1e15 }))).toBe(400);
+    expect(db.writes).toEqual([]);
+    expect(await status(reading({ seven_day_resets_at: NOW_S() + 7 * 86400 + 3600 }))).toBe(200);
+  });
+
+  it('3. the 5-hour number and its reset time come together or not at all', async () => {
+    expect(await status(reading({ five_hour_util: 0.2 }))).toBe(400);
+    expect(await status(reading({ five_hour_resets_at: NOW_S() + 3600 }))).toBe(400);
+    expect(await status(reading({ five_hour_util: 0.2, five_hour_resets_at: null }))).toBe(400);
+    expect(db.writes).toEqual([]);
+    expect(await status(reading({ five_hour_util: null, five_hour_resets_at: null }))).toBe(200);
+    expect(account('ainursing').five_hour_util).toBe(0.3);
+  });
+
+  it('4. utilisation is capped at 1 (the scale is 0-1)', async () => {
+    expect(await status(reading({ seven_day_util: 1.01 }))).toBe(400);
+    expect(await status(reading({ seven_day_util: 10 }))).toBe(400);
+    expect(await status(reading({ five_hour_util: 1.5, five_hour_resets_at: NOW_S() + 3600 }))).toBe(400);
+    expect(db.writes).toEqual([]);
+    expect(await status(reading({ seven_day_util: 1 }))).toBe(200);
+  });
+});
+
 describe('a Mac reading stops the paid probe', () => {
   it('a full account with a fresh Mac reading is not probed; without one it is not probed either, but stays stale', async () => {
     const now = Date.now();
@@ -237,11 +277,17 @@ describe('a Mac reading stops the paid probe', () => {
 
 describe('macReadingRow', () => {
   const now = Date.parse('2026-11-18T07:30:00Z');
-  const base = { label: 'aimech', seven_day_util: 0.85, seven_day_resets_at: 1_800_000_000, source: 'mac' as const };
+  const base = {
+    label: 'aimech',
+    seven_day_util: 0.85,
+    seven_day_resets_at: 1_800_000_000,
+    read_at: Math.floor(now / 1000) - 60,
+    source: 'mac' as const
+  };
 
-  it('uses now when read_at is missing', () => {
+  it('stamps updated_at with read_at', () => {
     const out = macReadingRow(base, 'macusage-mac', now);
-    expect(out.ok && out.row.updated_at).toBe('2026-11-18T07:30:00.000Z');
+    expect(out.ok && out.row.updated_at).toBe('2026-11-18T07:29:00.000Z');
   });
 
   it('accepts a reading exactly 20 minutes old, refuses one a second older', () => {

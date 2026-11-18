@@ -112,7 +112,8 @@ export function buildReadings(cache, now) {
   return { send, skipped };
 }
 
-const round = (x) => Math.round(x * 10_000) / 10_000;
+/** Share of the allowance, 0-1 (the Tower refuses anything above 1). */
+const round = (x) => Math.min(1, Math.max(0, Math.round(x * 10_000) / 10_000));
 
 function token() {
   if (process.env.TOWER_USAGE_TOKEN) return process.env.TOWER_USAGE_TOKEN.trim();

@@ -94,6 +94,23 @@ describe('buildReadings', () => {
     expect(nurse.five_hour_resets_at).toBe(Math.ceil((NOW - 19 * 60_000) / 1000) + 57 * 60);
   });
 
+  it('always sends read_at, keeps the 5-hour pair together, and never sends more than 1', () => {
+    const over = mod.buildReadings(
+      {
+        accounts: {
+          'aiece@jkkn.ac.in': { seven_day_pct: 103, five_hour_pct: 120, sd_reset: 'in 2d 7h', fh_reset: 'in 3h 2m', fetched_at: minsAgo(2) },
+          'aimech@jkkn.ac.in': { seven_day_pct: 50, five_hour_pct: 20, sd_reset: 'in 2d 7h', fh_reset: '', fetched_at: minsAgo(2) }
+        }
+      },
+      NOW
+    ).send;
+    expect(over[0].seven_day_util).toBe(1);
+    expect(over[0].five_hour_util).toBe(1);
+    expect(over[1].five_hour_util).toBeUndefined();
+    expect(over[1].five_hour_resets_at).toBeUndefined();
+    for (const b of [...over, ...out.send]) expect(b.read_at).toBeGreaterThan(0);
+  });
+
   it('says why each other account was skipped', () => {
     expect(out.skipped).toEqual([
       { label: 'aiahs', why: 'too old (21 min)' },
