@@ -29,6 +29,15 @@
  * Revoke by setting revoked_at; keys already fetched stay valid until each
  * account is signed out at claude.ai.
  *
+ * MAC USAGE tokens (2026-11-18): a runner whose name starts with "macusage-"
+ * is the Director's Mac pushing the free usage readings it already caches
+ * (scripts/mac-push-usage.mjs). It opens ONLY /usage-reading, which updates
+ * the reading of an account that already exists — it can never claim a job,
+ * answer one, or fetch any key. The job routes and /lane-key refuse it (403),
+ * and /usage-reading refuses every other token (403). If it leaks, the holder
+ * can at worst write wrong usage numbers for existing accounts (the next probe
+ * or Mac reading overwrites them). Revoke by setting revoked_at.
+ *
  * - an X-API-Key header → 401. Application keys never drive the engine.
  * - missing or short token → 401. Unknown or revoked hash → 401.
  * - the runner name comes from the token's row, never from the request body.
@@ -53,14 +62,34 @@ export function isLaneRunner(runner: string): boolean {
   return runner.startsWith(LANE_PREFIX);
 }
 
+/** Runner names with this prefix are Mac usage-reading tokens (see above). */
+export const USAGE_PREFIX = 'macusage-';
+
+export function isUsageRunner(runner: string): boolean {
+  return runner.startsWith(USAGE_PREFIX);
+}
+
+type RunnerKind = 'worker' | 'lane' | 'usage';
+
+function kindOf(runner: string): RunnerKind {
+  return isLaneRunner(runner) ? 'lane' : isUsageRunner(runner) ? 'usage' : 'worker';
+}
+
+const WRONG_KIND: Record<RunnerKind, { code: string; message: string }> = {
+  worker: { code: 'LANE_TOKEN_NOT_ACCEPTED', message: 'A max-lane token cannot use the job routes.' },
+  lane: { code: 'NOT_A_LANE_TOKEN', message: 'Only a max-lane token may use this route.' },
+  usage: { code: 'NOT_A_USAGE_TOKEN', message: 'Only a Mac usage token may use this route.' }
+};
+
 /**
- * opts.lane: true only on /lane-key. Without it a lane token is refused, so
- * it can never claim, answer or fetch a key through the job routes.
+ * opts.lane: true only on /lane-key. opts.usage: true only on /usage-reading.
+ * Without either, only a worker token passes, so a lane or Mac usage token can
+ * never claim, answer or fetch a key through the job routes.
  */
 export async function checkEngineRunnerAuth(
   request: Request,
   admin: SupabaseClient,
-  opts: { lane?: boolean } = {}
+  opts: { lane?: boolean; usage?: boolean } = {}
 ): Promise<RunnerAuth> {
   if (request.headers.get('x-api-key')) {
     return {
@@ -98,13 +127,14 @@ export async function checkEngineRunnerAuth(
   }
   if (!data) return { ok: false, response: fail('UNAUTHORIZED', 'Unauthorized.', 401) };
   const runner = (data as { runner: string }).runner;
-  if (Boolean(opts.lane) !== isLaneRunner(runner)) {
-    return {
-      ok: false,
-      response: opts.lane
-        ? fail('NOT_A_LANE_TOKEN', 'Only a max-lane token may use this route.', 403)
-        : fail('LANE_TOKEN_NOT_ACCEPTED', 'A max-lane token cannot use the job routes.', 403)
-    };
+  const want: RunnerKind = opts.lane ? 'lane' : opts.usage ? 'usage' : 'worker';
+  const kind = kindOf(runner);
+  if (kind !== want) {
+    const why =
+      want === 'worker' && kind === 'usage'
+        ? { code: 'USAGE_TOKEN_NOT_ACCEPTED', message: 'A Mac usage token cannot use the job routes.' }
+        : WRONG_KIND[want];
+    return { ok: false, response: fail(why.code, why.message, 403) };
   }
   return { ok: true, runner };
 }
