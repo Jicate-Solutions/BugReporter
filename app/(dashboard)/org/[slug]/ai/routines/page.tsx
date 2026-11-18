@@ -283,7 +283,11 @@ export default async function AiRoutinesPage({
               How much of each account&apos;s allowance is used, from the latest job that ran on it.
               &quot;default&quot; is each box&apos;s own sign-in. Switch a whole box below, or pick
               &quot;auto&quot;: workers use the account with the lowest priority number that still
-              has allowance, move to the next when it runs out, and come back when it renews.
+              has allowance, move to the next when it runs out, and come back when it renews.{' '}
+              <Link href={`/org/${slug}/ai/pay-vs-use`} className="underline">
+                What we pay vs what we use
+              </Link>
+              .
             </p>
             {accounts.length === 0 && (
               <p className="text-muted-foreground text-sm">No readings yet. They appear after the next job.</p>
