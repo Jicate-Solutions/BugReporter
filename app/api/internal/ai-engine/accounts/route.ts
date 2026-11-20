@@ -4,6 +4,10 @@
  *   POST   { label, key, priority? }  add an account, or replace its key. The key
  *                                     (from `claude setup-token`) is stored
  *                                     encrypted; it is never returned or logged.
+ *                                     A value that is not shaped like such a key
+ *                                     is refused and nothing is stored. A saved
+ *                                     key is checked at once: one check job is
+ *                                     queued, and its result shows on the card.
  *   DELETE ?label=acct1               remove the stored key (workers stop using it)
  *   PATCH  { label, priority }        set its priority (below)
  *
@@ -21,6 +25,8 @@ import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { isSuperAdmin } from '@/lib/ai-engine/admin';
 import { sealAccountKey } from '@/lib/ai-engine/account-keys';
+import { accountKeyProblem, cleanAccountKey } from '@/lib/ai-engine/account-key-shape';
+import { enqueueAccountCheck } from '@/lib/ai-engine/accounts';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,7 +57,8 @@ const addSchema = z.object({
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{0,30}$/)
     .refine((l) => l !== 'default' && l !== 'auto', 'reserved'),
-  key: z.string().trim().min(20).max(500),
+  // Only a size limit here: the key's shape is checked below, with a plain sentence for the form.
+  key: z.string().max(2000),
   priority: z.number().int().min(1).max(99).nullable().optional()
 });
 
@@ -64,7 +71,10 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) {
     return fail('BAD_REQUEST', 'Give a short name (a-z, 0-9, -; not "default" or "auto") and the full key.', 400);
   }
-  const { label, key, priority } = parsed.data;
+  const { label, priority } = parsed.data;
+  const key = cleanAccountKey(parsed.data.key);
+  const problem = accountKeyProblem(key);
+  if (problem) return fail('BAD_KEY', problem, 400);
 
   let sealed: string;
   try {
@@ -81,7 +91,14 @@ export async function POST(request: NextRequest) {
     .from('ai_account_secrets')
     .upsert({ label, ciphertext: sealed, added_at: new Date().toISOString(), added_by: user.id });
   if (e2) return fail('SAVE_FAILED', 'Could not save the key.', 500);
-  return NextResponse.json({ account: { label, priority: priority ?? null, key_stored: true } }, { status: 201 });
+  // Check the new key now instead of at the next round, so a wrong one shows within about a minute.
+  // false = no new check was queued (one was already waiting or running, or the queue refused):
+  // the watch round then checks the key 10 to 20 minutes after this save.
+  const check_queued = await enqueueAccountCheck(admin, label);
+  return NextResponse.json(
+    { account: { label, priority: priority ?? null, key_stored: true }, check_queued },
+    { status: 201 }
+  );
 }
 
 export async function DELETE(request: NextRequest) {

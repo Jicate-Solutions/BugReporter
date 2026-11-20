@@ -8,7 +8,16 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-export function AccountPriorityEditor({ label, priority }: { label: string; priority: number | null }) {
+export function AccountPriorityEditor({
+  label,
+  name = label,
+  priority
+}: {
+  label: string;
+  /** What the page calls it, when that is not the stored label (the box's own sign-in is stored as "default"). */
+  name?: string;
+  priority: number | null;
+}) {
   const router = useRouter();
   const [value, setValue] = useState(priority == null ? '' : String(priority));
   const [saving, setSaving] = useState(false);
@@ -32,7 +41,7 @@ export function AccountPriorityEditor({ label, priority }: { label: string; prio
         toast.error(json?.error?.message ?? 'Could not save the change.');
         return;
       }
-      toast.success(n == null ? `${label}: no priority (used last).` : `${label}: priority ${n}.`);
+      toast.success(n == null ? `${name}: no priority (used last).` : `${name}: priority ${n}.`);
       router.refresh();
     } finally {
       setSaving(false);
@@ -45,7 +54,7 @@ export function AccountPriorityEditor({ label, priority }: { label: string; prio
       <Input
         className="h-7 w-14 text-center"
         inputMode="numeric"
-        aria-label={`Priority for ${label}`}
+        aria-label={`Priority for ${name}`}
         value={value}
         onChange={(e) => setValue(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
       />

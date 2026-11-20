@@ -44,7 +44,19 @@ import { BoxAccountEditor } from './_components/box-account-editor';
 import { AccountPriorityEditor } from './_components/account-priority-editor';
 import { AddAccountForm } from './_components/add-account-form';
 import { RemoveKeyButton } from './_components/remove-key-button';
-import { readingStatus, windowState } from '@/lib/ai-engine/accounts';
+import { CardRefresher } from './_components/card-refresher';
+import { pickAuto, readAccountChecks, windowState, type CheckResult } from '@/lib/ai-engine/accounts';
+import {
+  accountViews,
+  boxLines,
+  cardIsSettling,
+  istTime,
+  needsAutoPick,
+  OWN,
+  OWN_SIGNIN_NOTE,
+  OWN_SIGNIN_PRIORITY_NOTE,
+  type BoxRow
+} from '@/lib/ai-engine/accounts-card';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,39 +68,8 @@ function statusBadge(status: string) {
   return <Badge variant="secondary">waiting</Badge>;
 }
 
-/** Workers grouped by Windows computer, with the account they share (or null). */
-function boxesOf(runners: RunnerRow[]) {
-  const map = new Map<string, RunnerRow[]>();
-  for (const r of runners) {
-    const host = r.host ?? 'unknown box';
-    map.set(host, [...(map.get(host) ?? []), r]);
-  }
-  return [...map.entries()].map(([host, rs]) => {
-    const accounts = new Set(rs.map((r) => r.account ?? 'default'));
-    const common = rs
-      .map((r) => r.accounts_available ?? [])
-      .reduce((a, b) => a.filter((x) => b.includes(x)));
-    return {
-      host,
-      workers: rs.map((r) => r.name),
-      current: accounts.size === 1 ? [...accounts][0] : null,
-      labels: common
-    };
-  });
-}
-
 function pct(v: number | null) {
   return v == null ? null : Math.round(v * 100);
-}
-
-function istTime(iso: string | null) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    weekday: 'short',
-    hour: 'numeric',
-    minute: '2-digit'
-  });
 }
 
 function UsageBar({
@@ -191,7 +172,7 @@ export default async function AiRoutinesPage({
       .eq('organization_id', org.id)
       .order('routine_kind'),
     user ? isSuperAdmin(admin, user.id) : Promise.resolve(false),
-    admin.from('ai_account_secrets').select('label'),
+    admin.from('ai_account_secrets').select('label, added_at').order('label'),
     admin
       .from('ai_account_key_fetches')
       .select('id, runner, label, host, granted, reason, fetched_at')
@@ -199,16 +180,7 @@ export default async function AiRoutinesPage({
       .limit(15),
     admin.from('ai_boxes').select('host, account, chosen_label, applied_label, applied_at, agent_seen_at')
   ]);
-  const boxRows = new Map(
-    ((boxesRes.data ?? []) as {
-      host: string;
-      account: string | null;
-      chosen_label: string | null;
-      applied_label: string | null;
-      applied_at: string | null;
-      agent_seen_at: string | null;
-    }[]).map((b) => [b.host.toLowerCase(), b])
-  );
+  const boxRows = (boxesRes.data ?? []) as BoxRow[];
   const keyFetches = (fetchesRes.data ?? []) as {
     id: number;
     runner: string;
@@ -218,7 +190,9 @@ export default async function AiRoutinesPage({
     reason: string | null;
     fetched_at: string;
   }[];
-  const storedKeys = new Set(((secretsRes.data ?? []) as { label: string }[]).map((x) => x.label));
+  const keys = (secretsRes.data ?? []) as { label: string; added_at: string | null }[];
+  const keyLabels = keys.map((k) => k.label);
+  const storedKeys = new Set(keyLabels);
   const scheduled = (scheduledRes.data ?? []) as ScheduledRoutine[];
 
   const { now, aliveCount, waiting, running, oldestWait, errors24h } = queueStats(
@@ -226,6 +200,16 @@ export default async function AiRoutinesPage({
     live,
     recent
   );
+
+  // The accounts card (platform admins only): what each key's latest check
+  // said, which box and worker is on which account, and one line per box.
+  const checks = canEdit ? await readAccountChecks(admin, keys, now) : new Map<string, CheckResult>();
+  // A worker set to "auto" on a box with no choice of its own: ask the chooser what that gives now (a read only).
+  const autoPick = canEdit && needsAutoPick(boxRows, runners) ? await pickAuto(admin, [OWN, ...keyLabels]) : undefined;
+  const boxes = boxLines(boxRows, runners, now, autoPick);
+  const views = accountViews(accounts, checks, boxes, now);
+  const readingOf = new Map(accounts.map((a: AccountRow) => [a.label, a]));
+  const ownSignin = readingOf.get(OWN);
 
   return (
     <div className="space-y-6">
@@ -279,43 +263,74 @@ export default async function AiRoutinesPage({
             <CardTitle className="text-base">Claude accounts</CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
+            {cardIsSettling(keys, checks, now) && <CardRefresher />}
             <p className="text-muted-foreground text-sm">
-              How much of each account&apos;s allowance is used, from the latest job that ran on it.
-              &quot;default&quot; is each box&apos;s own sign-in. Switch a whole box below, or pick
-              &quot;auto&quot;: workers use the account with the lowest priority number that still
-              has allowance, move to the next when it runs out, and come back when it renews.
+              For each account: who is using it now, what its last check said, and how much of its
+              allowance is used. Switch a whole box below, or pick &quot;auto&quot;: workers use the
+              account with the lowest priority number that still has allowance, move to the next
+              when it runs out, and come back when it renews. {OWN_SIGNIN_NOTE}
             </p>
-            {accounts.length === 0 && (
-              <p className="text-muted-foreground text-sm">No readings yet. They appear after the next job.</p>
+            {views.length === 0 && (
+              <p className="text-muted-foreground text-sm">No accounts yet. Add one below.</p>
             )}
-            {accounts.map((a: AccountRow) => {
-              const status = readingStatus(a, now);
+            {views.map((v) => {
+              const a = readingOf.get(v.label) as AccountRow;
               return (
-              <div key={a.label} className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">{a.label}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {status.kind === 'full-until'
-                      ? `Full until ${istTime(status.until)}. Checked again automatically right after it resets.`
-                      : a.updated_at
-                        ? `read ${ago(a.updated_at, now)}`
-                        : 'not used yet'}
-                    {a.reported_by ? ` by ${a.reported_by}` : ''}
-                    {status.kind === 'own-signin' ? " · each box's own sign-in, not checked automatically" : ''}
-                  </span>
-                  {storedKeys.has(a.label) && (
-                    <span className="text-muted-foreground text-xs">· key in Control Tower</span>
-                  )}
-                  <div className="ml-auto flex items-center gap-1">
-                    <AccountPriorityEditor label={a.label} priority={a.priority} />
-                    {storedKeys.has(a.label) && <RemoveKeyButton label={a.label} />}
+                <div key={v.label} className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{v.label}</span>
+                    {v.badges.map((b) => (
+                      <Badge
+                        key={b.text}
+                        className={
+                          b.tone === 'green'
+                            ? 'bg-green-100 text-green-800 hover:bg-green-100'
+                            : b.tone === 'red'
+                              ? 'bg-red-100 text-red-800 hover:bg-red-100'
+                              : 'bg-amber-100 text-amber-800 hover:bg-amber-100'
+                        }
+                      >
+                        {b.text}
+                      </Badge>
+                    ))}
+                    <div className="ml-auto flex items-center gap-1">
+                      <AccountPriorityEditor label={a.label} priority={a.priority} />
+                      {storedKeys.has(a.label) && <RemoveKeyButton label={a.label} />}
+                    </div>
                   </div>
+                  <p className={v.inUse ? 'text-xs font-medium' : 'text-muted-foreground text-xs'}>{v.usedBy}</p>
+                  <p
+                    className={
+                      v.status.tone === 'bad'
+                        ? 'text-xs text-red-600'
+                        : v.status.tone === 'ok'
+                          ? 'text-xs text-green-700 dark:text-green-400'
+                          : 'text-muted-foreground text-xs'
+                    }
+                  >
+                    {v.status.text}
+                  </p>
+                  {v.showBars && (
+                    <>
+                      {a.updated_at && (
+                        <p className="text-muted-foreground text-xs">
+                          Usage read {ago(a.updated_at, now)}
+                          {a.reported_by ? ` by ${a.reported_by}` : ''}
+                        </p>
+                      )}
+                      <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} now={now} />
+                      <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} now={now} />
+                    </>
+                  )}
                 </div>
-                <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} now={now} />
-                <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} now={now} />
-              </div>
               );
             })}
+            {ownSignin && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-muted-foreground text-xs">{OWN_SIGNIN_PRIORITY_NOTE}</span>
+                <AccountPriorityEditor label={ownSignin.label} name="Own sign-in" priority={ownSignin.priority} />
+              </div>
+            )}
             <AddAccountForm />
             <p className="text-muted-foreground text-xs">
               Other keys a box needs in its own files (for example the build worker&apos;s GitHub
@@ -339,35 +354,27 @@ export default async function AiRoutinesPage({
                 ))
               )}
             </div>
-            {boxesOf(runners).map((b) => {
-              const row = boxRows.get(b.host.toLowerCase());
-              const agentAlive = row?.agent_seen_at && now - new Date(row.agent_seen_at).getTime() < 180_000;
-              return (
-                <div key={b.host} className="space-y-1 border-t pt-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-sm">
-                      <span className="font-medium">{b.host}</span>
-                      <span className="text-muted-foreground"> · {b.workers.join(', ')}</span>
-                    </div>
-                    <BoxAccountEditor
-                      host={b.host}
-                      workers={b.workers}
-                      current={row?.account ?? b.current}
-                      labels={b.labels}
-                    />
+            {boxes.map((b) => (
+              <div key={b.host} className="space-y-1 border-t pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm">
+                    <span className="font-medium">{b.name}</span>
+                    <span className="text-muted-foreground">
+                      {b.name === b.host ? '' : ` · ${b.host}`} ·{' '}
+                      {b.workers.length ? b.workers.join(', ') : 'no JICATE workers on it'}
+                    </span>
                   </div>
-                  <p className="text-muted-foreground text-xs">
-                    {!row?.agent_seen_at
-                      ? 'Whole-box switching: account agent not installed on this box yet (only the JICATE workers follow the choice).'
-                      : `Whole box ${agentAlive ? 'is on' : 'was last on'} ${row.applied_label ?? 'its own sign-in'}` +
-                        (row.account === 'auto' ? ` · auto picks ${row.chosen_label ?? 'its own sign-in'}` : '') +
-                        ` · agent seen ${ago(row.agent_seen_at, now)}` +
-                        (row.applied_at ? ` · switched ${ago(row.applied_at, now)}` : '') +
-                        '. Claude tabs pick up a switch when reopened.'}
-                  </p>
+                  <BoxAccountEditor
+                    host={b.host}
+                    name={b.name}
+                    workers={b.workers}
+                    current={b.setting}
+                    labels={keyLabels}
+                  />
                 </div>
-              );
-            })}
+                <p className="text-muted-foreground text-xs">{b.sentence}</p>
+              </div>
+            ))}
           </CardContent>
         </Card>
       )}

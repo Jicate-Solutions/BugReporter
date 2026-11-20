@@ -3,7 +3,9 @@
 /**
  * Add a Claude account (or replace its key) from the Control Tower. Platform
  * admins only. The key comes from `claude setup-token`; it is sent once, stored
- * encrypted, and never shown again.
+ * encrypted, and never shown again. A value that is not shaped like such a key
+ * is refused here, before anything is sent, with one plain sentence; the route
+ * applies the same rule (lib/ai-engine/account-key-shape.ts).
  */
 
 import { useState } from 'react';
@@ -12,6 +14,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { accountKeyProblem } from '@/lib/ai-engine/account-key-shape';
 import { buildAddAccountBody } from './add-account-body';
 
 export function AddAccountForm() {
@@ -20,6 +23,7 @@ export function AddAccountForm() {
   const [key, setKey] = useState('');
   const [priority, setPriority] = useState('');
   const [saving, setSaving] = useState(false);
+  const keyProblem = key.trim() ? accountKeyProblem(key) : null;
 
   async function save() {
     // An empty Priority box sends no priority at all, so re-pasting a key for an
@@ -37,7 +41,11 @@ export function AddAccountForm() {
         toast.error(json?.error?.message ?? 'Could not save the account.');
         return;
       }
-      toast.success(`${label.trim()} saved. Workers can use it from their next job.`);
+      toast.success(
+        json?.check_queued
+          ? `${label.trim()} saved. Checking the key now. The result shows on its row in about a minute.`
+          : `${label.trim()} saved. Its key is checked within about 20 minutes; the result shows on its row.`
+      );
       setLabel('');
       setKey('');
       setPriority('');
@@ -52,7 +60,7 @@ export function AddAccountForm() {
       <p className="text-sm font-medium">Add a Claude account</p>
       <p className="text-muted-foreground text-xs">
         On any computer, run <code>claude setup-token</code> in a terminal, sign in to the account,
-        and paste the key it prints here. Using an existing name replaces that account&apos;s key; leave Priority empty to keep its current priority.
+        and paste the long key it prints here (it starts with sk-ant-oat01-). Using an existing name replaces that account&apos;s key; leave Priority empty to keep its current priority.
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="space-y-1">
@@ -88,10 +96,15 @@ export function AddAccountForm() {
             onChange={(e) => setPriority(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
           />
         </div>
-        <Button size="sm" onClick={save} disabled={saving || !label || key.trim().length < 20}>
+        <Button size="sm" onClick={save} disabled={saving || !label || !key.trim() || keyProblem !== null}>
           {saving ? 'Saving…' : 'Save account'}
         </Button>
       </div>
+      {keyProblem && (
+        <p role="alert" className="text-xs text-red-600">
+          {keyProblem}
+        </p>
+      )}
     </div>
   );
 }

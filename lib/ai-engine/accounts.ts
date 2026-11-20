@@ -13,6 +13,13 @@
  * (enqueueAccountProbes), so auto never jumps onto an account it hasn't heard
  * from. If no fresh account has allowance, the old rule applies, so a box is
  * never left without an account.
+ *
+ * A check that fails stores no reading, so the choice also looks at the check
+ * itself (2026-11-20): auto never moves onto an account whose latest check
+ * said its key is refused or its organisation blocks Claude Code
+ * (checkSaysUnusable), until a check of it succeeds or its key is replaced.
+ * Only those two: a check that was slow, hit a limit or failed for another
+ * reason says nothing about the key and leaves the account in the choice.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -107,31 +114,46 @@ export function readingStatus(
  * Stored accounts whose reading is old enough to check again. An account read
  * as full whose window has not renewed yet is skipped: checking it would only
  * hit the limit and make a worker pause.
+ * `savedAt` = when each key was saved. A key saved 10 to 20 minutes ago is
+ * checked whatever the age of its reading: by then no worker still remembers
+ * the key before it (KEY_MEMORY_MS), so this check is surely of the new key.
+ * Without it, an account kept fresh by real jobs would never be checked again
+ * and its row would say "still checking" for days.
  */
-export function labelsToProbe(readings: AccountReading[], labels: string[], now: number): string[] {
+export function labelsToProbe(
+  readings: AccountReading[],
+  labels: string[],
+  now: number,
+  savedAt: Map<string, string | null> = new Map()
+): string[] {
   const byLabel = new Map(readings.map((r) => [r.label, r]));
   return labels.filter((l) => {
     if (l === 'default') return false; // a different account on each box
     const r = byLabel.get(l);
-    if (r?.updated_at && now - new Date(r.updated_at).getTime() < PROBE_AFTER_MS) return false;
     const full =
       used(r?.five_hour_util ?? null, r?.five_hour_resets_at ?? null, now) >= FULL ||
       used(r?.seven_day_util ?? null, r?.seven_day_resets_at ?? null, now) >= FULL;
-    return !full;
+    if (full) return false;
+    const saved = savedAt.get(l);
+    const sinceSave = saved ? now - new Date(saved).getTime() : null;
+    if (sinceSave != null && sinceSave >= KEY_MEMORY_MS && sinceSave < 2 * KEY_MEMORY_MS) return true;
+    return !(r?.updated_at && now - new Date(r.updated_at).getTime() < PROBE_AFTER_MS);
   });
 }
 
 /** Queue one check job per stored account that is due. Returns the labels queued. Never throws. */
 export async function enqueueAccountProbes(admin: SupabaseClient): Promise<string[]> {
   try {
-    const { data: sec } = await admin.from('ai_account_secrets').select('label');
-    const labels = ((sec ?? []) as { label: string }[]).map((x) => x.label);
+    const { data: sec } = await admin.from('ai_account_secrets').select('label, added_at');
+    const keys = (sec ?? []) as { label: string; added_at: string | null }[];
+    const labels = keys.map((x) => x.label);
     if (!labels.length) return [];
     const { data } = await admin
       .from('ai_accounts')
       .select('label, priority, five_hour_util, seven_day_util, five_hour_resets_at, seven_day_resets_at, updated_at')
       .in('label', labels);
-    const due = labelsToProbe((data ?? []) as AccountReading[], labels, Date.now());
+    const savedAt = new Map(keys.map((k) => [k.label, k.added_at]));
+    const due = labelsToProbe((data ?? []) as AccountReading[], labels, Date.now(), savedAt);
     const queued: string[] = [];
     for (const label of due) {
       const { data: out } = await admin.rpc('fn_ai_engine_enqueue', {
@@ -152,12 +174,263 @@ export async function enqueueAccountProbes(admin: SupabaseClient): Promise<strin
   }
 }
 
+/**
+ * Queue one check of one account right now, whatever its reading says: used
+ * when a key was just saved, so its result shows within about a minute instead
+ * of at the next round. Runs ahead of ordinary background jobs (they queue at
+ * 100; a person waiting still goes first). Returns true only when a NEW check
+ * was queued. False when it was merged into a check already waiting or running
+ * (a running one started before the save, so it is of the key before it), or
+ * could not be queued. Never throws: saving the key must not fail because of it.
+ */
+export async function enqueueAccountCheck(admin: SupabaseClient, label: string): Promise<boolean> {
+  try {
+    const { data } = await admin.rpc('fn_ai_engine_enqueue', {
+      p_job_type: PROBE_JOB_TYPE,
+      p_application_id: null,
+      p_app_slug: PROBE_APP_SLUG,
+      p_organization_id: null,
+      p_payload: { label },
+      p_dedupe_key: `probe:${label}`,
+      p_priority: 50
+    });
+    const out = data as { ok?: boolean; deduped?: boolean } | null;
+    return Boolean(out?.ok) && !out?.deduped;
+  } catch (e) {
+    console.error('[ai-engine/accounts] account check not queued:', e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
+// ── What the latest check of an account said ────────────────────────────────
+
+/** One check job (system.account_probe) as stored in ai_jobs. It never holds a key. */
+export type CheckJob = {
+  id?: string;
+  status: string;
+  error: string | null;
+  claimed_at: string | null;
+  completed_at: string | null;
+};
+
+/**
+ * - 'working': the check ran and Claude answered.
+ * - 'key-rejected': Claude refused the key itself.
+ * - 'blocked': the account's organisation has switched off Claude Code.
+ * - 'no-allowance': the key works, the account was at its limit.
+ * - 'too-slow' / 'failed': the check did not finish, for a reason that says nothing about the key.
+ * - 'not-checked': no check of the key stored now has finished.
+ * - 'rechecking': a result seen so soon after the key was saved that it may come from the key before it.
+ * - 'checking' / 'unknown': set by the reader (a check is waiting; the checks could not be read).
+ */
+export type CheckKind =
+  | 'working'
+  | 'key-rejected'
+  | 'blocked'
+  | 'no-allowance'
+  | 'too-slow'
+  | 'failed'
+  | 'not-checked'
+  | 'rechecking'
+  | 'checking'
+  | 'unknown';
+
+export type CheckResult = { kind: CheckKind; at: string | null };
+
+/** A worker remembers a key it fetched for this long (windows/jicate-ai-engine/jicate-ai-drain.mjs, keyFor). */
+export const KEY_MEMORY_MS = 10 * 60_000;
+
+/** The same limit wording the MyJKKN lanes match (windows/jicate-ai-engine/claude-acct.mjs, LIMIT_RE). */
+const LIMIT_WORDS =
+  /rate.?limit|usage limit|hit your [a-z0-9 -]{0,20}limit|limit reached|(?:weekly|session|5-hour) limit\W{0,3}resets|too many requests|\b429\b/;
+
+/**
+ * The class of a failed check, from Claude's own wording. The text itself is
+ * never shown or returned. "Blocked" is tested first: that message also tells
+ * the reader to use an API key. The key-rejected words are the worker's own
+ * list (windows/jicate-ai-engine/jicate-ai-drain.mjs, AUTH_FAIL_RE) plus the
+ * wording seen live on 20 Nov 2026 ("401 Invalid bearer token").
+ */
+function failureKind(error: string | null): CheckKind {
+  const t = (error ?? '').toLowerCase();
+  if (/organi[sz]ation has disabled/.test(t)) return 'blocked';
+  if (
+    /failed to authenticate|invalid bearer token|invalid api key|authentication_error|oauth access token|not logged in|\b401\b/.test(
+      t
+    )
+  ) {
+    return 'key-rejected';
+  }
+  if (LIMIT_WORDS.test(t)) return 'no-allowance';
+  if (/timed out|timeout/.test(t)) return 'too-slow';
+  return 'failed';
+}
+
+/**
+ * What a finished check says about the key stored now. Pure.
+ * `keyAddedAt` = when that key was saved (ai_account_secrets.added_at), or null
+ * to take the check as it is.
+ * `fetchedAfterSave` = the key log shows this check itself fetched the key
+ * after it was saved (checkFetchedKey), so it surely ran on the key stored now.
+ * - A check that started before the key was saved tested the key before it: it does not count.
+ * - A worker remembers a fetched key for 10 minutes and forgets it only when
+ *   Claude refuses the key. So within 10 minutes of a save, any other result,
+ *   a pass included, may still be about the old key: 'rechecking' until a
+ *   later check, unless the key log proves this check fetched the new key.
+ */
+export function classifyCheck(
+  job: CheckJob | null,
+  keyAddedAt: string | null = null,
+  fetchedAfterSave = false
+): CheckResult {
+  if (!job || (job.status !== 'done' && job.status !== 'error')) return { kind: 'not-checked', at: null };
+  const started = job.claimed_at ?? job.completed_at;
+  const at = job.completed_at ?? job.claimed_at;
+  const startedMs = started ? new Date(started).getTime() : null;
+  const savedMs = keyAddedAt ? new Date(keyAddedAt).getTime() : null;
+  if (savedMs != null && (startedMs == null || startedMs < savedMs)) return { kind: 'not-checked', at: null };
+  const kind = job.status === 'done' ? 'working' : failureKind(job.error);
+  const soon = savedMs != null && startedMs != null && startedMs - savedMs < KEY_MEMORY_MS;
+  if (soon && kind !== 'key-rejected' && !fetchedAfterSave) return { kind: 'rechecking', at };
+  return { kind, at };
+}
+
+/** A check that proves the account cannot be used at all, whatever its allowance. */
+export function checkBlocksUse(kind: CheckKind): boolean {
+  return kind === 'key-rejected' || kind === 'blocked';
+}
+
+const probeJobs = (admin: SupabaseClient, label: string) =>
+  admin
+    .from('ai_jobs')
+    .select('id, status, error, claimed_at, completed_at')
+    .eq('app_slug', PROBE_APP_SLUG)
+    .eq('job_type', PROBE_JOB_TYPE)
+    .eq('payload->>label', label);
+
+/**
+ * How far back the chooser and the card look for an account's latest check:
+ * one weekly window plus a day. One number for both, so they cannot disagree.
+ * It must be long: an account that reads full, or whose reading is kept fresh
+ * from elsewhere, is not checked again for days, and a failed check must not
+ * be forgotten in the meantime.
+ */
+const CHECK_LOOKBACK_MS = 8 * 24 * 60 * 60_000;
+
+/**
+ * Does the key log show that this check itself fetched the account's key after
+ * the key was saved? (The account-key route logs every fetch with the id of the
+ * job the worker is running.) False when there is no such row or the log cannot
+ * be read: the check then stays unproven.
+ */
+async function checkFetchedKey(admin: SupabaseClient, job: CheckJob, label: string, keyAddedAt: string): Promise<boolean> {
+  if (!job.id) return false;
+  const { data, error } = await admin
+    .from('ai_account_key_fetches')
+    .select('id')
+    .eq('job_id', job.id)
+    .eq('label', label)
+    .eq('granted', true)
+    .gte('fetched_at', keyAddedAt)
+    .limit(1);
+  if (error) {
+    console.error('[ai-engine/accounts] key log not read for a check of', label, '-', error.message);
+    return false;
+  }
+  return (data ?? []).length > 0;
+}
+
+/** classifyCheck, asking the key log only when a result falls in the first 10 minutes after a save. */
+async function classifyStoredCheck(
+  admin: SupabaseClient,
+  job: CheckJob | null,
+  label: string,
+  keyAddedAt: string | null
+): Promise<CheckResult> {
+  const result = classifyCheck(job, keyAddedAt);
+  if (result.kind !== 'rechecking' || !job || !keyAddedAt) return result;
+  return (await checkFetchedKey(admin, job, label, keyAddedAt)) ? classifyCheck(job, keyAddedAt, true) : result;
+}
+
+/**
+ * True when the latest finished check of the key stored now says the account
+ * cannot be used (key refused, or blocked by its organisation). One small read
+ * in the usual case; only when that check says "cannot be used" is the key's
+ * save time read too, so a check of the key BEFORE the one stored now does not
+ * count (the same rule the card uses). False when there is no such check or
+ * the checks cannot be read: the choice then stays as it was.
+ */
+export async function checkSaysUnusable(admin: SupabaseClient, label: string, now: number): Promise<boolean> {
+  try {
+    const { data, error } = await probeJobs(admin, label)
+      .in('status', ['done', 'error'])
+      .gte('requested_at', new Date(now - CHECK_LOOKBACK_MS).toISOString())
+      .order('requested_at', { ascending: false })
+      .limit(1);
+    if (error) throw new Error(error.message);
+    const latest = ((data ?? []) as CheckJob[])[0] ?? null;
+    if (!checkBlocksUse(classifyCheck(latest).kind)) return false;
+    const { data: sec, error: e2 } = await admin.from('ai_account_secrets').select('added_at').eq('label', label).limit(1);
+    if (e2) throw new Error(e2.message);
+    const keyAddedAt = ((sec ?? []) as { added_at: string | null }[])[0]?.added_at ?? null;
+    return checkBlocksUse((await classifyStoredCheck(admin, latest, label, keyAddedAt)).kind);
+  } catch (e) {
+    console.error('[ai-engine/accounts] last check not read for', label, '-', e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
+/**
+ * For the accounts card: what the latest check of each stored key said.
+ * `keys` = label and when its key was saved. A check still waiting shows as
+ * 'checking' only while no finished check of this key counts yet.
+ */
+export async function readAccountChecks(
+  admin: SupabaseClient,
+  keys: { label: string; added_at: string | null }[],
+  now: number
+): Promise<Map<string, CheckResult>> {
+  const since = new Date(now - CHECK_LOOKBACK_MS).toISOString();
+  const out = new Map<string, CheckResult>();
+  await Promise.all(
+    keys.map(async ({ label, added_at }) => {
+      try {
+        const { data, error } = await probeJobs(admin, label)
+          .gte('requested_at', since)
+          .order('requested_at', { ascending: false })
+          .limit(3);
+        if (error) throw new Error(error.message);
+        const rows = (data ?? []) as CheckJob[];
+        const latest = rows.find((j) => j.status === 'done' || j.status === 'error') ?? null;
+        const result = await classifyStoredCheck(admin, latest, label, added_at);
+        const waiting = rows.some((j) => j.status === 'queued' || j.status === 'running');
+        out.set(label, result.kind === 'not-checked' && waiting ? { kind: 'checking', at: null } : result);
+      } catch (e) {
+        console.error('[ai-engine/accounts] last check not read for', label, '-', e instanceof Error ? e.message : e);
+        out.set(label, { kind: 'unknown', at: null });
+      }
+    })
+  );
+  return out;
+}
+
 export async function pickAuto(admin: SupabaseClient, labels: string[]): Promise<string> {
   const { data } = await admin
     .from('ai_accounts')
     .select('label, priority, five_hour_util, seven_day_util, five_hour_resets_at, seven_day_resets_at, updated_at')
     .in('label', labels);
-  return chooseAccount((data ?? []) as AccountReading[], labels, Date.now());
+  const readings = (data ?? []) as AccountReading[];
+  const now = Date.now();
+  // A pick whose latest check says it cannot be used is dropped and the choice
+  // made again. Only the pick is looked up (one small read in the usual case:
+  // this runs on every worker poll). "default" is never dropped, and the last
+  // account standing is kept, so a box is never left without an answer.
+  let pool = labels;
+  for (;;) {
+    const pick = chooseAccount(readings, pool, now);
+    if (pick === 'default' || pool.length <= 1 || !(await checkSaysUnusable(admin, pick, now))) return pick;
+    pool = pool.filter((l) => l !== pick);
+  }
 }
 
 /**
