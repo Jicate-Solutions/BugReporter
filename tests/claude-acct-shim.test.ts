@@ -530,6 +530,15 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
       expect(fenceOf(loose)).toEqual({ ok: true, args: PROOF_ARGS });
       expect(loose[SETTINGS_AT]).toBe(PROOF_SETTINGS_LOOSE);
     });
+    it('takes the settings line proof-read.mjs really builds on Box 1 (13 deny rules, read from the box 21 Nov 2026), byte for byte', () => {
+      // C:\Users\Admin\jkkn-max-lane\proof-read.mjs lines 197-200 as they stood on the box. Eight bare tool
+      // names sit in front of the five path rules; the value above (PROOF_SETTINGS) has only the five.
+      const boxSettings = J({ permissions: { allow: ['Read(./**)'], deny: ['Bash', 'Write', 'Edit', 'WebFetch', 'WebSearch', 'Task', 'Glob', 'Grep',
+        'Read(//c/Users/**)', 'Read(C:/Users/**)', 'Read(//c/jicate-ai/**)', 'Read(C:/jicate-ai/**)', 'Read(~/**)'], defaultMode: 'dontAsk' } });
+      const boxArgs = proofArgs(boxSettings);
+      expect(strictSettings(boxSettings)).toBe(boxSettings); // claude gets the very text it gets today
+      expect(fenceOf(boxArgs)).toEqual({ ok: true, args: boxArgs });
+    });
     it('hands back the arguments unchanged when there is no --settings', () => {
       const a = [...FENCE, '-p', '--allowedTools', 'Read(./**)'];
       expect(fenceOf(a)).toEqual({ ok: true, args: a });
