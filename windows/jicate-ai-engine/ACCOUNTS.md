@@ -79,10 +79,45 @@ Install (after the PR is merged and live; only on the Director's yes):
          relative ./ path: Read(./**), Grep(./**). A bare "Read" or an absolute
          path like Read(C:/...) gets NO key: it can reach the lane-token file;
      and none of: --dangerously-skip-permissions, --permission-prompt-tool,
-     --add-dir, --mcp-config, --plugin-dir, --plugin-url, --settings, an
+     --add-dir, --mcp-config, --plugin-dir, --plugin-url, an
      option the shim does not know, or an option value starting with "-"
      (a flag hidden as a value). Anything after "--" is prompt text, not
-     options. The drain's environment must not set ANTHROPIC_BASE_URL.
+     options, except a settings option there (see --settings below). The
+     drain's environment must not set ANTHROPIC_BASE_URL.
+     --settings gets a key in ONE strict shape only, and NO key otherwise:
+       it is given once, as "--settings <value>" (never "--settings=<value>",
+         never a second --settings anywhere in the arguments);
+       no other argument anywhere, after "--" included, is "--settings",
+         "--managed-settings", or either with "=<value>". The shim does not
+         rest on claude ignoring them there; helpers pass the prompt on stdin;
+       the value is the JSON itself, written inline: a settings FILE path
+         gets NO key (the shim cannot see what a file says);
+       the JSON holds "permissions" and nothing else, and permissions holds
+         only "allow", "deny" and "defaultMode". Any other key at any level
+         gets NO key: hooks, env, apiKeyHelper, model, mcpServers,
+         enabledPlugins, additionalDirectories, permissions.ask, ...;
+       every "allow" rule passes the same check as an --allowedTools rule
+         (read-only tool, file tools scoped to ./, no ".."), one rule per
+         string; every "deny" rule is a plain tool rule, Bash or Read(C:/...)
+         (deny only narrows, so any tool name is fine); "defaultMode" is
+         dontAsk, default or plan;
+       a key written twice, a "__proto__" / "constructor" / "prototype" key,
+         or a list entry that is not text gets NO key;
+       a value longer than 16,384 characters gets NO key.
+     Anything else is logged "fence: no Tower key (settings by argument: not
+     the strict shape)"; the value itself is never logged. When the shape
+     passes, claude is NOT handed the text the helper wrote: the shim writes
+     the JSON again itself, from the values it checked (keys in the order
+     allow, deny, defaultMode), and hands claude that, so claude cannot read
+     the text differently from how the shim checked it. --settings is extra:
+     the rest of the fence above (--tools, --setting-sources,
+     --permission-mode, --strict-mcp-config) is still needed in full.
+     The proof-read shape (proof-read.mjs; the settings value is ONE argument;
+     gets a key):
+       -p --model sonnet --output-format json --setting-sources project
+       --settings {"permissions":{"allow":["Read(./**)"],"deny":["Read(//c/Users/**)","Read(C:/Users/**)","Read(//c/jicate-ai/**)","Read(C:/jicate-ai/**)","Read(~/**)"],"defaultMode":"dontAsk"}}
+       --permission-mode dontAsk --tools Read --allowedTools Read(./**)
+       --strict-mcp-config --disable-slash-commands
      Any other run (Bash, PowerShell, WebFetch, WebSearch, Edit, Write, Task,
      mcp__*, a missing piece) runs on the box's own sign-in, logged
      "fence: no Tower key (<reason>)". So a prompt-injected job that can shell
@@ -201,6 +236,28 @@ Install (after the PR is merged and live; only on the Director's yes):
    or a "tower: ..." / "fence: ..." line means the Tower was not used: stop and
    report. JICATE_AI_URL in the env file must be https:// (the shim refuses
    plain http except localhost, logged "tower: refused a non-https ...").
+   A helper that passes --settings (proof-read): BEFORE pointing it at <SHIM>,
+   push the proof-read shape through <SHIM> once, started the way the helper
+   starts it (node execFile, no shell, the settings JSON as ONE array
+   element). NOT YET PROVEN ON WINDOWS (a Mac only): the JSON's double quotes
+   must come through claude-acct.exe, node and the real claude unharmed. Save
+   as probe.mjs in the same empty folder, run "node probe.mjs" under the same
+   conditions as the dry run above:
+     import { execFile } from 'node:child_process';
+     const settings = JSON.stringify({ permissions: { allow: ['Read(./**)'], deny: ['Read(C:/Users/**)', 'Read(C:/jicate-ai/**)'], defaultMode: 'dontAsk' } });
+     const child = execFile('C:\\jicate-ai\\claude-acct.exe', ['-p', '--model', 'haiku', '--output-format', 'json',
+       '--setting-sources', 'project', '--settings', settings, '--permission-mode', 'dontAsk', '--tools', 'Read',
+       '--allowedTools', 'Read(./**)', '--strict-mcp-config', '--disable-slash-commands'],
+       (e, out) => console.log(e ? 'FAIL ' + e.code : 'OK ' + out.slice(0, 200)));
+     child.stdin.end('say OK');
+   GATE: OK, and the same log line as above (an account label, exit=0). A line
+     fence: no Tower key (settings by argument: not the strict shape)
+   here means the JSON did not arrive as it was written (most likely its
+   double quotes were lost on the way in: a shell or PowerShell 5.1 in
+   between), not that the settings are wrong. Fix how the helper starts
+   CLAUDE_BIN; do not loosen the settings. Do not use the claude-acct.cmd
+   fallback for a helper that passes --settings: cmd.exe reads the whole line
+   again, and a rule holding & or | could split it (not tried on a box).
 6. For each drain task, set (where the task gets its environment):
      CLAUDE_REAL_BIN = C:\Users\Admin\.local\bin\claude.exe   (the old CLAUDE_BIN)
      CLAUDE_BIN      = <SHIM>
@@ -212,6 +269,9 @@ Undo (fastest first):
 - Set CLAUDE_ACCT_OFF=1 for the drains (or delete maxlane-biometric.env): every
   run goes straight to the real claude on the box's own sign-in, as before.
 - Put CLAUDE_BIN back to C:\Users\Admin\.local\bin\claude.exe and restart.
+- For the fenced helpers (proof-read and the like) the environment undo above
+  (CLAUDE_ACCT_OFF) does not reach the shim: their undo is taking CLAUDE_BIN
+  off that helper's task line.
 - Revoke the token: UPDATE ai_runner_tokens SET revoked_at = now()
   WHERE runner = 'maxlane-biometric';  (the shim then falls back to own sign-in)
   Revoking does NOT rotate keys already handed out: if the token may have
@@ -222,7 +282,9 @@ How it behaves:
   A drain that never writes or closes stdin is taken as "no stdin" after 3 s.
 - Claude's output is held until the run ends; the drain sees ONLY the last
   run's output and exit code. A run counts as refused only when it FAILED
-  (non-zero exit or is_error) with a limit or bad-key message.
+  (non-zero exit or is_error) with a limit message, a bad-key message, or the
+  message "Your organization has disabled Claude subscription access for
+  Claude Code" (logged refused=limit, refused=auth, refused=org).
 - Each account is tried at most once per run; then the box's own sign-in once.
 - The Tower remembers a refusal for 30 minutes for every lane, so later jobs do
   not each spend a failed run on the same account. Order: priority list under

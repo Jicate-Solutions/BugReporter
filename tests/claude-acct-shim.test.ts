@@ -47,6 +47,11 @@ process.stdin.on('end', () => {
     console.log(JSON.stringify({ type: 'result', is_error: true, subtype: 'error_max_turns', result: 'max turns reached' }));
     process.exit(1);
   }
+  if ((process.env.FAKE_ORG_BLOCKED || '').split(',').filter(Boolean).includes(who)) {
+    console.log(JSON.stringify({ type: 'result', is_error: true, result: 'Your organization has disabled Claude subscription access for Claude Code. Ask your organization’s admin.' }));
+    process.stderr.write('org block for ' + who + '\\n');
+    process.exit(1);
+  }
   if (limited.includes(who)) {
     console.log(JSON.stringify({ type: 'result', is_error: true, result: "You've hit your weekly limit · resets Nov 19, 2:30pm (Asia/Kolkata)" }));
     process.stderr.write('limit for ' + who + '\\n');
@@ -131,6 +136,27 @@ function lastResult(stdout: string) {
   const lines = stdout.trim().split('\n');
   return JSON.parse(lines[lines.length - 1]);
 }
+
+// proof-read.mjs on Box 1: the settings value is ONE argument holding JSON text.
+const PROOF_SETTINGS =
+  '{"permissions":{"allow":["Read(./**)"],"deny":["Read(//c/Users/**)","Read(C:/Users/**)","Read(//c/jicate-ai/**)","Read(C:/jicate-ai/**)","Read(~/**)"],"defaultMode":"dontAsk"}}';
+/** proof-read's exact arguments, with this --settings value. */
+const proofArgs = (settings: string) => [
+  '-p', '--model', 'sonnet', '--output-format', 'json', '--setting-sources', 'project',
+  '--settings', settings,
+  '--permission-mode', 'dontAsk', '--tools', 'Read', '--allowedTools', 'Read(./**)', '--strict-mcp-config', '--disable-slash-commands'
+];
+const PROOF_ARGS = proofArgs(PROOF_SETTINGS);
+const SETTINGS_AT = PROOF_ARGS.indexOf('--settings') + 1;
+// The same settings, other spacing and key order: must come out as PROOF_SETTINGS.
+const PROOF_SETTINGS_LOOSE = `
+  { "permissions" : {
+      "defaultMode" : "dontAsk",
+      "deny" : [ "Read(//c/Users/**)", "Read(C:/Users/**)", "Read(//c/jicate-ai/**)", "Read(C:/jicate-ai/**)", "Read(~/**)" ],
+      "allow" : [ "Read(.\\u002f**)" ]
+  } }
+`;
+const SETTINGS_REASON = 'settings by argument: not the strict shape';
 
 describe('claude-acct.mjs', () => {
   it('runs on the Tower account with arguments and stdin unchanged', async () => {
@@ -277,6 +303,94 @@ describe('claude-acct.mjs', () => {
     }, 20_000);
   }
 
+  it("proof-read's exact arguments (strict --settings) get a Tower key, and claude gets the shim's own settings JSON", async () => {
+    const r = await runShim(PROOF_ARGS, 'check this proof');
+    expect(r.code).toBe(0);
+    const out = lastResult(r.stdout);
+    expect(out.who).toBe('aimech');
+    expect(asks).toHaveLength(1);
+    expect(out.stdin).toBe('check this proof');
+    expect(out.args[SETTINGS_AT]).toBe(JSON.stringify(JSON.parse(PROOF_SETTINGS)));
+    expect(out.args).toEqual(PROOF_ARGS); // nothing else moved
+  }, 20_000);
+
+  it('a differently spaced and ordered --settings is forwarded in the same canonical form, never as written', async () => {
+    const args = proofArgs(PROOF_SETTINGS_LOOSE);
+    const r = await runShim(args, 'p');
+    const out = lastResult(r.stdout);
+    expect(out.who).toBe('aimech');
+    expect(out.args[SETTINGS_AT]).not.toBe(PROOF_SETTINGS_LOOSE);
+    expect(out.args[SETTINGS_AT]).toBe(PROOF_SETTINGS);
+    expect(out.args).toEqual(PROOF_ARGS);
+  }, 20_000);
+
+  it('a rolled run carries the canonical --settings on every account', async () => {
+    const r = await runShim(proofArgs(PROOF_SETTINGS_LOOSE), 'p', { FAKE_LIMITED: 'aimech' });
+    const out = lastResult(r.stdout);
+    expect(out.who).toBe('ainursing');
+    expect(out.args[SETTINGS_AT]).toBe(PROOF_SETTINGS);
+  }, 20_000);
+
+  it('a fenced run that falls back to the own sign-in (Tower down) still carries the canonical --settings', async () => {
+    writeFileSync(join(dir, 'down2.env'), 'JICATE_AI_URL=http://127.0.0.1:9\nJICATE_AI_RUNNER_TOKEN=' + LANE_TOKEN + '\n');
+    const r = await runShim(proofArgs(PROOF_SETTINGS_LOOSE), 'p', { TOWER_LANE_ENV: join(dir, 'down2.env') });
+    const out = lastResult(r.stdout);
+    expect(out.who).toBe('own');
+    expect(out.args).toEqual(PROOF_ARGS);
+  }, 30_000);
+
+  for (const [name, args] of [
+    ['is a file path', proofArgs('C:/jkkn-proof/SECRET-settings.json')],
+    ['has a hooks key', proofArgs('{"permissions":{"allow":["Read(./**)"]},"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"SECRET-cmd"}]}]}}')],
+    ['allows Bash', proofArgs('{"permissions":{"allow":["Read(./**)","Bash(SECRET-cmd:*)"],"defaultMode":"dontAsk"}}')],
+    ['is given twice', [...PROOF_ARGS, '--settings', PROOF_SETTINGS]],
+    ['sits past "--", where nothing checks it', [...ARGS, '--', '--settings', 'C:/jkkn-proof/SECRET-settings.json']]
+  ] as [string, string[]][]) {
+    it(`hands no Tower key when --settings ${name}; the run goes on untouched, the value is not logged`, async () => {
+      const r = await runShim(args, 'p');
+      const out = lastResult(r.stdout);
+      expect(out.who).toBe('own');
+      expect(out.args).toEqual(args); // an unfenced run is passed on exactly as it came
+      expect(asks).toHaveLength(0);
+      const log = readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8');
+      expect(log).toContain(`fence: no Tower key (${SETTINGS_REASON})`);
+      expect(log).not.toContain('SECRET');
+    }, 20_000);
+  }
+
+  it('a valid --settings does not rescue a run the fence refuses for another reason', async () => {
+    const r = await runShim([...PROOF_ARGS, '--mcp-config', 'm.json'], 'p');
+    expect(lastResult(r.stdout).who).toBe('own');
+    expect(asks).toHaveLength(0);
+  }, 20_000);
+
+  it('CLAUDE_ACCT_OFF=1 passes --settings on exactly as written', async () => {
+    const args = proofArgs(PROOF_SETTINGS_LOOSE);
+    const r = await runShim(args, 'p', { CLAUDE_ACCT_OFF: '1' });
+    const out = lastResult(r.stdout);
+    expect(out.who).toBe('own');
+    expect(out.args).toEqual(args);
+    expect(asks).toHaveLength(0);
+  }, 20_000);
+
+  it('rolls to the next account when the organisation has disabled Claude Code for the account', async () => {
+    const r = await runShim(ARGS, 'p', { FAKE_ORG_BLOCKED: 'aimech' });
+    expect(r.code).toBe(0);
+    expect(lastResult(r.stdout).who).toBe('ainursing');
+    expect(r.stdout).not.toContain('has disabled Claude subscription access');
+    expect(r.stderr).not.toContain('org block for aimech');
+    expect(asks.map((a) => a.refused)).toEqual([null, 'aimech']);
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toMatch(/attempt=1 account=aimech exit=1 refused=org/);
+  }, 20_000);
+
+  it('a run that failed for another reason does not roll when it merely mentions "organization"', async () => {
+    const r = await runShim(ARGS, 'p', { FAKE_OTHER_FAIL: '1', FAKE_STDERR: 'note: your organization has disabled the usage panel; Claude subscription access is fine' });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('organization');
+    expect(asks).toHaveLength(1);
+    expect(lastResult(r.stdout).subtype).toBe('error_max_turns');
+  }, 20_000);
+
   it('hands no Tower key when the token file is inside the working folder', async () => {
     const r = await runShim(ARGS, 'p', {}, dir); // dir holds maxlane-test.env
     expect(lastResult(r.stdout).who).toBe('own');
@@ -402,6 +516,194 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
     expect(JSON.stringify(fenceOf([...FENCE, '--allowedTools', 'SECRET_TOOL_NAME']))).not.toContain('SECRET');
     expect(JSON.stringify(fenceOf([...FENCE, '--SECRET-flag']))).not.toContain('SECRET');
   });
+  describe('strict --settings', async () => {
+    const { strictSettings } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+    const J = (o: unknown) => JSON.stringify(o);
+    const P = (permissions: unknown) => J({ permissions });
+    const GOOD = P({ allow: ['Read(./**)'], deny: ['Read(~/**)'], defaultMode: 'dontAsk' });
+
+    it("takes proof-read's exact arguments and hands back the shim's own JSON in place of the value", () => {
+      const f = fenceOf(PROOF_ARGS);
+      expect(f).toEqual({ ok: true, args: PROOF_ARGS });
+      expect(f.args).not.toBe(PROOF_ARGS); // a copy: the drain's own list is never edited
+      const loose = proofArgs(PROOF_SETTINGS_LOOSE);
+      expect(fenceOf(loose)).toEqual({ ok: true, args: PROOF_ARGS });
+      expect(loose[SETTINGS_AT]).toBe(PROOF_SETTINGS_LOOSE);
+    });
+    it('takes the settings line proof-read.mjs really builds on Box 1 (13 deny rules, read from the box 21 Nov 2026), byte for byte', () => {
+      // C:\Users\Admin\jkkn-max-lane\proof-read.mjs lines 197-200 as they stood on the box. Eight bare tool
+      // names sit in front of the five path rules; the value above (PROOF_SETTINGS) has only the five.
+      const boxSettings = J({ permissions: { allow: ['Read(./**)'], deny: ['Bash', 'Write', 'Edit', 'WebFetch', 'WebSearch', 'Task', 'Glob', 'Grep',
+        'Read(//c/Users/**)', 'Read(C:/Users/**)', 'Read(//c/jicate-ai/**)', 'Read(C:/jicate-ai/**)', 'Read(~/**)'], defaultMode: 'dontAsk' } });
+      const boxArgs = proofArgs(boxSettings);
+      expect(strictSettings(boxSettings)).toBe(boxSettings); // claude gets the very text it gets today
+      expect(fenceOf(boxArgs)).toEqual({ ok: true, args: boxArgs });
+    });
+    it('hands back the arguments unchanged when there is no --settings', () => {
+      const a = [...FENCE, '-p', '--allowedTools', 'Read(./**)'];
+      expect(fenceOf(a)).toEqual({ ok: true, args: a });
+    });
+    it('writes the keys in one fixed order, and only the keys that were given', () => {
+      expect(strictSettings(' {"permissions":{"defaultMode":"plan","deny":["Bash","mcp__x__y","Bash(curl:*)","WebFetch(domain:x.example.com)"],"allow":[]}}\n'))
+        .toBe('{"permissions":{"allow":[],"deny":["Bash","mcp__x__y","Bash(curl:*)","WebFetch(domain:x.example.com)"],"defaultMode":"plan"}}');
+      expect(strictSettings(P({ deny: ['Read(C:/Users/**)'] }))).toBe('{"permissions":{"deny":["Read(C:/Users/**)"]}}');
+      expect(strictSettings(P({ allow: ['Read(./**)', 'Grep(./jobs/**)', 'TodoWrite'], defaultMode: 'default' })))
+        .toBe('{"permissions":{"allow":["Read(./**)","Grep(./jobs/**)","TodoWrite"],"defaultMode":"default"}}');
+      expect(strictSettings('{"permissions":{}}')).toBe('{"permissions":{}}');
+      expect(strictSettings('{}')).toBe('{}');
+    });
+
+    const refused: [string, string][] = [
+      ['a file path', 'C:/jicate-ai/settings.json'],
+      ['a relative file path', './settings.json'],
+      ['a bare file name', 'settings.json'],
+      ['an empty value', ''],
+      ['a JSON array', '[{"permissions":{}}]'],
+      ['a JSON string', '"{\\"permissions\\":{}}"'],
+      ['a JSON number', '42'],
+      ['JSON null', 'null'],
+      ['invalid JSON', '{"permissions":{"allow":["Read(./**)"],}}'],
+      ['invalid JSON (single quotes)', "{'permissions':{}}"],
+      ['JSON with a comment', '{"permissions":{} /* x */}'],
+      ['text after the object', '{"permissions":{}} {"hooks":{}}'],
+      ['top-level hooks', J({ permissions: {}, hooks: { PreToolUse: [] } })],
+      ['top-level env', J({ permissions: {}, env: { ANTHROPIC_BASE_URL: 'https://x.example.com' } })],
+      ['top-level apiKeyHelper', J({ permissions: {}, apiKeyHelper: 'x.cmd' })],
+      ['top-level additionalDirectories', J({ permissions: {}, additionalDirectories: ['C:/jicate-ai'] })],
+      ['top-level model', J({ permissions: {}, model: 'opus' })],
+      ['top-level mcpServers', J({ permissions: {}, mcpServers: {} })],
+      ['top-level enabledPlugins', J({ permissions: {}, enabledPlugins: {} })],
+      ['only another key', J({ hooks: {} })],
+      ['permissions.additionalDirectories', P({ allow: ['Read(./**)'], additionalDirectories: ['C:/jicate-ai'] })],
+      ['permissions.ask', P({ allow: ['Read(./**)'], ask: ['Bash'] })],
+      ['permissions.disableBypassPermissionsMode', P({ disableBypassPermissionsMode: 'disable' })],
+      ['permissions as an array', J({ permissions: [] })],
+      ['permissions as null', J({ permissions: null })],
+      ['permissions as a string', J({ permissions: 'allow' })],
+      ['allow not an array', P({ allow: 'Read(./**)' })],
+      ['allow: Bash', P({ allow: ['Read(./**)', 'Bash'] })],
+      ['allow: Bash(curl:*)', P({ allow: ['Bash(curl:*)'] })],
+      ['allow: WebFetch', P({ allow: ['WebFetch'] })],
+      ['allow: Write', P({ allow: ['Write(./**)'] })],
+      ['allow: mcp tool', P({ allow: ['mcp__x__y'] })],
+      ['allow: absolute path', P({ allow: ['Read(C:/x)'] })],
+      ['allow: ../ path', P({ allow: ['Read(../x)'] })],
+      ['allow: ./../ path', P({ allow: ['Read(./../x)'] })],
+      ['allow: ".." hidden by escapes', '{"permissions":{"allow":["Read(./\\u002e\\u002e/x)"]}}'],
+      ['allow: Bash hidden by escapes', '{"permissions":{"allow":["\\u0042ash"]}}'],
+      ['allow: bare Read', P({ allow: ['Read'] })],
+      ['allow: home path', P({ allow: ['Read(~/**)'] })],
+      ['allow: two rules in one string (space)', P({ allow: ['Read(./a) Bash'] })],
+      ['allow: two rules in one string (comma)', P({ allow: ['Read(./a),Bash'] })],
+      ['allow: an empty rule', P({ allow: [''] })],
+      ['allow: a number', P({ allow: ['Read(./**)', 7] })],
+      ['allow: null', P({ allow: [null] })],
+      ['allow: a nested array', P({ allow: [['Read(./**)']] })],
+      ['allow: an object', P({ allow: [{ tool: 'Read' }] })],
+      ['deny not an array', P({ deny: 'Bash' })],
+      ['deny: a number', P({ deny: ['Bash', 1] })],
+      ['deny: an object', P({ deny: [{}] })],
+      ['deny: an empty rule', P({ deny: [''] })],
+      ['deny: not rule-shaped', P({ deny: ['*'] })],
+      ['deny: two rules in one string', P({ deny: ['Bash Read'] })],
+      ['defaultMode bypassPermissions', P({ allow: ['Read(./**)'], defaultMode: 'bypassPermissions' })],
+      ['defaultMode acceptEdits', P({ allow: ['Read(./**)'], defaultMode: 'acceptEdits' })],
+      ['defaultMode auto', P({ defaultMode: 'auto' })],
+      ['defaultMode not a string', P({ defaultMode: ['dontAsk'] })],
+      ['"permissions" twice', '{"permissions":{"allow":["Read(./**)"]},"permissions":{"allow":["Read(./**)"]}}'],
+      ['"permissions" twice, one spelled with an escape', '{"permissions":{},"permi\\u0073sions":{}}'],
+      ['"allow" twice', '{"permissions":{"allow":["Read(./**)"],"allow":["Read(./**)"]}}'],
+      ['"defaultMode" twice', '{"permissions":{"defaultMode":"bypassPermissions","defaultMode":"dontAsk"}}'],
+      ['a "__proto__" key', '{"__proto__":{"permissions":{}}}'],
+      ['a "__proto__" key beside permissions', '{"permissions":{},"__proto__":{}}'],
+      ['a "__proto__" key in permissions', '{"permissions":{"__proto__":{"allow":["Bash"]}}}'],
+      ['a "constructor" key', '{"permissions":{"constructor":{}}}'],
+      ['a "prototype" key', '{"prototype":{}}'],
+      ['a value far too long', P({ deny: Array.from({ length: 2000 }, () => 'Read(C:/Users/**)') })],
+      // what is left of the JSON when a shell or PowerShell 5.1 strips its double quotes on the way in
+      ['JSON that lost its double quotes', '{permissions:{allow:[Read(./**)],deny:[Read(C:/Users/**)],defaultMode:dontAsk}}']
+    ];
+    it('refuses everything outside the strict shape, with one fixed reason', () => {
+      for (const [name, value] of refused) {
+        expect(strictSettings(value), name).toBe(null);
+        expect(fenceOf(proofArgs(value)), name).toEqual({ ok: false, reason: SETTINGS_REASON });
+      }
+    });
+    it('refuses the --settings=value form, a second --settings anywhere, and a missing value', () => {
+      const base = PROOF_ARGS.filter((_, i) => i !== SETTINGS_AT - 1 && i !== SETTINGS_AT);
+      expect(fenceOf(base).ok).toBe(true);
+      expect(fenceOf([...base, '--settings', GOOD]).ok).toBe(true);
+      expect(fenceOf([...base, `--settings=${GOOD}`]).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf([...base, '--settings', GOOD, '--settings', GOOD]).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf(['--settings', GOOD, ...base, '--settings', GOOD]).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf([...base, '--settings', GOOD, `--settings=${GOOD}`]).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf([`--settings=${GOOD}`, ...base, '--settings', GOOD]).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf([...base, '--settings', GOOD, '--', '--settings', J({ hooks: {} })]).reason).toBe(SETTINGS_REASON); // also past "--"
+      expect(fenceOf([...base, '--settings']).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf(['--settings', ...base]).reason).toBe(SETTINGS_REASON); // the value would be "-p"
+    });
+    it('refuses a --settings or --managed-settings token past "--", where it is never checked (with or without a real --settings)', () => {
+      const base = PROOF_ARGS.filter((_, i) => i !== SETTINGS_AT - 1 && i !== SETTINGS_AT);
+      const HOOKS = J({ hooks: { SessionStart: [] } });
+      for (const tail of [
+        ['--settings', 'C:/x/evil.json'],
+        ['--settings', HOOKS],
+        ['--settings', GOOD],
+        [`--settings=${HOOKS}`],
+        ['--settings='],
+        ['--managed-settings', HOOKS],
+        [`--managed-settings=${HOOKS}`],
+        ['read the proof', '--settings', 'C:/x/evil.json']
+      ]) {
+        expect(fenceOf([...base, '--', ...tail]), tail.join(' ')).toEqual({ ok: false, reason: SETTINGS_REASON });
+        expect(fenceOf([...base, '--settings', GOOD, '--', ...tail]), tail.join(' ')).toEqual({ ok: false, reason: SETTINGS_REASON });
+      }
+      // the whole argument only: prompt text that merely mentions the option, or a look-alike, still passes
+      for (const tail of [['explain --settings to me'], ['--settings-notes'], ['--setting-sources', 'user'], ['--managed-settings-in-initialize'], ['settings', '{}']]) {
+        expect(fenceOf([...base, '--', ...tail]).ok, tail.join(' ')).toBe(true);
+        expect(fenceOf([...base, '--settings', GOOD, '--', ...tail]).ok, tail.join(' ')).toBe(true);
+      }
+      // before "--" --managed-settings is refused as before, as an option the shim does not know
+      expect(fenceOf([...base, '--managed-settings', HOOKS]).reason).toBe('unknown or unsafe option');
+      expect(fenceOf([...base, `--managed-settings=${HOOKS}`]).reason).toBe('unknown or unsafe option');
+      // another refusal keeps its own reason
+      expect(fenceOf(['-p', '--', '--settings', GOOD]).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf([...base, '--mcp-config', 'm.json', '--', '--settings', GOOD]).reason).toBe('MCP, plugin or settings by argument');
+    });
+    it('takes a value of up to 16,384 characters and refuses a longer one', () => {
+      const head = '{"permissions":{"deny":["Read(./';
+      const tail = '**)"]}}';
+      const sized = (n: number) => head + 'a'.repeat(n - head.length - tail.length) + tail;
+      expect(sized(16_384)).toHaveLength(16_384);
+      expect(strictSettings(sized(16_384))).toBe(sized(16_384));
+      expect(strictSettings(sized(16_385))).toBe(null);
+      expect(fenceOf(proofArgs(sized(16_385))).reason).toBe(SETTINGS_REASON);
+    });
+    it('a valid --settings never rescues a run refused for another reason', () => {
+      const S = ['--settings', GOOD];
+      expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--allowedTools', 'Read(./**)', ...S]).reason).toBe('no --tools list');
+      expect(why(['--allowedTools', 'Read(./**)', ...S, '--mcp-config', 'm.json'])).toBe('MCP, plugin or settings by argument');
+      expect(why(['--allowedTools', 'Read(./**)', '--plugin-dir', 'p', ...S])).toBe('MCP, plugin or settings by argument');
+      expect(why([...S, '--add-dir', 'C:/jicate-ai'])).toBe('extra folders by argument');
+      expect(why([...S, '--dangerously-skip-permissions'])).toBe('permission bypass');
+      expect(why([...S, '--permission-mode', 'bypassPermissions'])).toBe('permission bypass');
+      expect(why([...S, '--allowedTools', 'Read(./**),Bash'])).toBe('shell, web or unknown tool allowed');
+      expect(why([...S, '--allowedTools', 'Read'])).toBe('file tool not scoped to ./');
+      expect(why([...S, '--tools', 'Read,Bash'])).toBe('shell, web or unknown tool allowed');
+      expect(fenceOf(['--setting-sources', 'user,project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--tools', 'Read', ...S]).reason).toBe('user settings loaded');
+      expect(fenceOf(['--tools', 'Read', '--permission-mode', 'dontAsk', '--strict-mcp-config', ...S]).reason).toBe('no --setting-sources without user');
+      expect(fenceOf(['--setting-sources', 'project', '--tools', 'Read', '--strict-mcp-config', ...S]).reason).toBe('no --permission-mode');
+      expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--tools', 'Read', ...S]).reason).toBe('no --strict-mcp-config');
+      // defaultMode inside the settings is not a --permission-mode
+      expect(fenceOf(['--setting-sources', 'project', '--strict-mcp-config', '--tools', 'Read', '--settings', P({ defaultMode: 'dontAsk' })]).reason).toBe('no --permission-mode');
+    });
+    it('the reason never carries the settings text', () => {
+      expect(JSON.stringify(fenceOf(proofArgs('C:/SECRET/settings.json')))).not.toContain('SECRET');
+      expect(JSON.stringify(fenceOf(proofArgs(J({ SECRET_KEY: 'SECRET' }))))).not.toContain('SECRET');
+      expect(JSON.stringify(fenceOf(proofArgs(P({ allow: ['Bash(SECRET)'] }))))).not.toContain('SECRET');
+    });
+  });
+
   it('spots the token file inside (or equal to) the working folder, case-insensitive on Windows', async () => {
     const { tokenInsideFolder } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
     const env = 'C:\\jicate-ai\\maxlane-biometric.env';
@@ -465,5 +767,29 @@ describe('refusalOf (which failed runs count as the account refused)', async () 
   });
   it('an unrelated failure is not a refusal', () => {
     expect(failed('max turns reached')).toBe(null);
+  });
+  it('a bad key still counts as auth', () => {
+    expect(failed('Failed to authenticate. API Error: 401')).toBe('auth');
+    expect(failed('Invalid API key · Please run /login')).toBe('auth');
+  });
+  it('the organisation block counts as a refusal: the whole phrase, any case, in the result or on stderr', () => {
+    const phrase = 'Your organization has disabled Claude subscription access for Claude Code';
+    expect(failed(phrase)).toBe('org');
+    expect(failed(`${phrase}. Ask your organization’s admin, or use your team's API key.`)).toBe('org');
+    expect(failed(`API Error: ${phrase.toUpperCase()}`)).toBe('org');
+    expect(failed('your  organization has disabled claude subscription access for claude code')).toBe('org');
+    expect(refusalOf({ code: 1, stdout: Buffer.alloc(0), stderr: Buffer.from(`${phrase}\n`) })).toBe('org');
+    // plain-text output wrapped over two lines
+    expect(refusalOf({ code: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('Your organization has disabled\nClaude subscription access for Claude Code\n') })).toBe('org');
+  });
+  it('the word "organization", or half the phrase, is not a refusal', () => {
+    expect(failed('your organization could not be loaded')).toBe(null);
+    expect(failed('Your organization has disabled Claude subscription access')).toBe(null);
+    expect(failed('Your organization has disabled web search for Claude Code')).toBe(null);
+    expect(failed('organization')).toBe(null);
+  });
+  it('a good answer that quotes the organisation phrase is never a refusal', () => {
+    const ok = { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'Your organization has disabled Claude subscription access for Claude Code' })) };
+    expect(refusalOf(ok)).toBe(null);
   });
 });
