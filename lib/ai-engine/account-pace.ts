@@ -28,6 +28,12 @@
  *   "full by tonight". With less than that the card says there are not enough
  *   readings yet. This holds for the first 2 hours after the history starts
  *   and after each weekly reset.
+ * - "The readings disagree": a fall of 5 points or more between two readings
+ *   that carry the same weekly reset time. A real reset moves the reset time
+ *   a week on, so such a fall is not a reset: one of the two readings is
+ *   wrong and the card cannot tell which (seen 21 Nov 2026: 71%, then 29%
+ *   forty minutes later, same reset time). For 24 hours after it the card
+ *   says so and gives no pace and no forecast.
  *
  * The functions down to `paceLines` are pure. The two at the end touch the
  * database and never throw.
@@ -44,6 +50,12 @@ const HOUR = 60 * MIN;
 const FULL = 0.95;
 /** A fall of this much or more between two readings means the week reset. */
 const RESET_FALL = 0.015;
+/** A fall of this much or more with the weekly reset time unchanged: the readings disagree. */
+const DISAGREE_FALL = 0.05;
+/** Two weekly reset times this close are the same reset. */
+const SAME_RESET_MS = 10 * MIN;
+/** How long after such a fall the card gives no pace and no forecast. */
+const DISAGREE_HOLD_MS = 24 * HOUR;
 /** Two readings closer than this say nothing about the pace. */
 const MIN_SPAN_MS = 30 * MIN;
 /** The latest reading must be this recent for a pace to be about "now". */
@@ -128,6 +140,41 @@ export function weekPace(points: Point[], now: number): { last3h: Pace | null; l
 
 const pct = (u: number) => Math.round(u * 100);
 
+/** A fall between two readings of the same week (see "The readings disagree" at the top). */
+export type Fall = { from: number; to: number; at: number };
+
+/**
+ * The newest fall of 5 points or more, in the last 24 hours, between two
+ * readings in a row that carry the same weekly reset time (still ahead).
+ * Null when there is none. A reading with no reset time proves nothing here.
+ */
+export function unexplainedFall(rows: WeekReading[], now: number): Fall | null {
+  const points = rows
+    .filter((r) => r.seven_day_util != null && r.seven_day_resets_at)
+    .map((r) => ({
+      t: new Date(r.read_at).getTime(),
+      u: Number(r.seven_day_util),
+      resets: new Date(r.seven_day_resets_at as string).getTime()
+    }))
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.u) && Number.isFinite(p.resets))
+    .filter((p) => p.resets > now && p.t <= now)
+    .sort((a, b) => a.t - b.t);
+  let found: Fall | null = null;
+  for (let i = 1; i < points.length; i++) {
+    const before = points[i - 1];
+    const after = points[i];
+    const fell = before.u - after.u >= DISAGREE_FALL - 1e-9;
+    const sameReset = Math.abs(before.resets - after.resets) <= SAME_RESET_MS;
+    if (fell && sameReset && now - after.t <= DISAGREE_HOLD_MS) found = { from: before.u, to: after.u, at: after.t };
+  }
+  return found;
+}
+
+/** "The readings fell from 71% to 29% with no weekly reset, so the pace is not known today." */
+export function disagreeLine(fall: Fall): string {
+  return `The readings fell from ${pct(fall.from)}% to ${pct(fall.to)}% with no weekly reset, so the pace is not known today.`;
+}
+
 /** "Week: 72% a day ago, 74% now." Only when this week has a reading a day old. */
 export function dayAgoLine(points: Point[], now: number): string | null {
   const last = points[points.length - 1];
@@ -193,6 +240,8 @@ export function forecast(points: Point[], weekResetsAt: string | null, now: numb
  * key is rejected or blocked shows no bars, so the page never asks for it.)
  * `history` = the stored readings of the last 26 hours, in any order; the
  * account's own latest reading is added, so "now" is the number on the bar.
+ * When the readings disagree (see the top of the file) that one sentence is
+ * all it says.
  */
 export function paceLines(account: CurrentReading, history: WeekReading[], now: number): string[] {
   const full =
@@ -208,6 +257,8 @@ export function paceLines(account: CurrentReading, history: WeekReading[], now: 
         }
       ]
     : [];
+  const fall = unexplainedFall([...history, ...latest], now);
+  if (fall) return [disagreeLine(fall)];
   const points = thisWeek([...history, ...latest], now);
   const day = dayAgoLine(points, now);
   return [...(day ? [day] : []), forecast(points, account.seven_day_resets_at, now)];

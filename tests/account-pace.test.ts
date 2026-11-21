@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   dayAgoLine,
+  disagreeLine,
   forecast,
   paceLines,
   paceOver,
@@ -9,6 +10,7 @@ import {
   recordReadingHistory,
   repeatsLastReading,
   thisWeek,
+  unexplainedFall,
   weekPace,
   HISTORY_WINDOW_MS,
   FULL_WITHIN_THE_HOUR,
@@ -290,6 +292,86 @@ describe('paceLines: what the card shows under the bars', () => {
   it('never names who used the allowance', () => {
     const text = paceLines(account(0.74), [row(24 * HOUR + 30 * MIN, 0.5), row(12 * HOUR, 0.62)], NOW).join(' ');
     expect(text).not.toMatch(/unexplained|used by|worker|box|lane|desk|token|api|util|probe/i);
+  });
+});
+
+/**
+ * Seen on 21 Nov 2026: one account read 71% of its week at 7:40 am and 29% at
+ * 8:20 am, with the same weekly reset time on both readings. A real reset
+ * moves the reset time a week on, so this was no reset: one of the two
+ * readings was wrong. The card must say so, not turn it into a pace.
+ */
+describe('the readings disagree: a big fall with no weekly reset', () => {
+  const SENTENCE = 'The readings fell from 71% to 29% with no weekly reset, so the pace is not known today.';
+
+  it('finds the fall of 21 Nov and says it in one plain sentence', () => {
+    const history = [row(3 * HOUR, 0.71), row(2 * HOUR + 20 * MIN, 0.29)];
+    const fall = unexplainedFall(history, NOW);
+    expect(fall).toEqual({ from: 0.71, to: 0.29, at: NOW - (2 * HOUR + 20 * MIN) });
+    expect(disagreeLine(fall!)).toBe(SENTENCE);
+  });
+
+  it('the card then shows that sentence alone: no day-ago line, no pace, no forecast', () => {
+    const history = [row(25 * HOUR, 0.6), row(3 * HOUR, 0.71), row(2 * HOUR + 20 * MIN, 0.29), row(HOUR, 0.31)];
+    expect(paceLines(account(0.33), history, NOW)).toEqual([SENTENCE]);
+    // In any order, as the page hands it over.
+    expect(paceLines(account(0.33), [...history].reverse(), NOW)).toEqual([SENTENCE]);
+  });
+
+  it('does not turn the number climbing back into "full within the hour"', () => {
+    const history = [row(3 * HOUR, 0.71), row(2 * HOUR + 20 * MIN, 0.29), row(HOUR, 0.7)];
+    const lines = paceLines(account(0.72), history, NOW);
+    expect(lines).toEqual([SENTENCE]);
+    expect(lines.join(' ')).not.toContain('At this pace');
+  });
+
+  it('sees the fall when the newest reading is the low one (the reading on the bar)', () => {
+    expect(paceLines(account(0.29, 5 * MIN), [row(45 * MIN, 0.71)], NOW)).toEqual([SENTENCE]);
+  });
+
+  it('a real weekly reset is not a disagreement: the reset time moved on', () => {
+    // The old week's reset time has passed; the new reading carries next week's.
+    const passed = new Date(NOW - HOUR).toISOString();
+    expect(unexplainedFall([row(2 * HOUR, 0.9, passed), row(30 * MIN, 0.02)], NOW)).toBeNull();
+    // Reset early by Claude: both times are still ahead, but they differ.
+    expect(unexplainedFall([row(2 * HOUR, 0.9, '2026-11-22T12:00:00Z'), row(30 * MIN, 0.02)], NOW)).toBeNull();
+    expect(paceLines(account(0.02, 30 * MIN), [row(2 * HOUR, 0.9, '2026-11-22T12:00:00Z')], NOW)).toEqual([NOT_ENOUGH]);
+  });
+
+  it('reset times a few seconds apart are the same reset', () => {
+    const nearly = '2026-11-25T12:00:05Z';
+    expect(unexplainedFall([row(2 * HOUR, 0.71, nearly), row(HOUR, 0.29)], NOW)).not.toBeNull();
+  });
+
+  it('needs a fall of 5 points: 4 points is left to the usual rule', () => {
+    expect(unexplainedFall([row(2 * HOUR, 0.5), row(HOUR, 0.46)], NOW)).toBeNull();
+    expect(unexplainedFall([row(2 * HOUR, 0.5), row(HOUR, 0.45)], NOW)).toEqual({ from: 0.5, to: 0.45, at: NOW - HOUR });
+  });
+
+  it('holds for 24 hours after the fall, then the usual lines come back', () => {
+    expect(unexplainedFall([row(24 * HOUR - MIN, 0.71), row(23 * HOUR + 50 * MIN, 0.29)], NOW)).not.toBeNull();
+    const old = [row(25 * HOUR + 30 * MIN, 0.71), row(24 * HOUR + 30 * MIN, 0.29), row(12 * HOUR, 0.31)];
+    expect(unexplainedFall(old, NOW)).toBeNull();
+    expect(paceLines(account(0.33), old, NOW).join(' ')).not.toContain('The readings fell');
+  });
+
+  it('names the newest fall when there are two', () => {
+    const history = [row(6 * HOUR, 0.8), row(5 * HOUR, 0.6), row(3 * HOUR, 0.71), row(2 * HOUR, 0.29)];
+    expect(unexplainedFall(history, NOW)).toEqual({ from: 0.71, to: 0.29, at: NOW - 2 * HOUR });
+  });
+
+  it('a reading with no reset time, or no weekly number, proves nothing', () => {
+    expect(unexplainedFall([row(2 * HOUR, 0.71, null), row(HOUR, 0.29, null)], NOW)).toBeNull();
+    expect(unexplainedFall([row(2 * HOUR, 0.71), row(HOUR, null)], NOW)).toBeNull();
+    expect(unexplainedFall([], NOW)).toBeNull();
+  });
+
+  it('a full account still shows nothing', () => {
+    expect(paceLines(account(0.96), [row(2 * HOUR, 0.99), row(HOUR, 0.5)], NOW)).toEqual([]);
+  });
+
+  it('the sentence names no user', () => {
+    expect(SENTENCE).not.toMatch(/unexplained|used by|worker|box|lane|desk|token|api|util|probe/i);
   });
 });
 
