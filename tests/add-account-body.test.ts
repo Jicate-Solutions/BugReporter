@@ -19,6 +19,12 @@ describe('buildAddAccountBody', () => {
     expect(body).toEqual({ label: 'aimech', key: 'key' });
   });
 
+  it('takes spaces and line breaks out of a key pasted wrapped onto two lines', () => {
+    const key = 'k'.repeat(40);
+    const body = buildAddAccountBody('aimech', ` ${key.slice(0, 25)}\n  ${key.slice(25)} `, '');
+    expect(body.key).toBe(key);
+  });
+
   it('sends the number when the Priority box has one', () => {
     expect(buildAddAccountBody('aimech', 'key', ' 3 ')).toEqual({ label: 'aimech', key: 'key', priority: 3 });
   });
