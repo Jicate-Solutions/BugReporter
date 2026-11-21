@@ -9,6 +9,7 @@ import {
   labelsToProbe,
   pickAuto,
   readAccountChecks,
+  tellingCheck,
   KEY_MEMORY_MS,
   type CheckJob
 } from '@/lib/ai-engine/accounts';
@@ -312,6 +313,178 @@ describe('pickAuto and the latest check', () => {
     });
     expect(await pickAuto(fakeAdmin(f), ['default', 'aiahs', 'aieee'])).toBe('aiahs');
     expect(f.jobReads).toEqual(['aiahs']);
+  });
+});
+
+describe('a slow or failed check after a verdict (review of #99)', () => {
+  const SLOW = 'claude timed out after 60s';
+  const OTHER = 'claude returned empty output';
+
+  it('tellingCheck goes by the newest finished check that says something about the key', () => {
+    const rejected = job('error', REJECTED, -30 * MIN);
+    const passed = job('done', null, -30 * MIN);
+    const slow = job('error', SLOW, -10 * MIN);
+    const other = job('error', OTHER, -5 * MIN);
+    expect(tellingCheck([job('queued', null, 0), other, slow, rejected])).toBe(rejected);
+    expect(tellingCheck([slow, passed])).toBe(passed);
+    // A limit is a verdict too: the key works.
+    const limit = job('error', "claude error: You've hit your usage limit", -8 * MIN);
+    expect(tellingCheck([slow, limit, rejected])).toBe(limit);
+    // Nothing but slow or failed checks: the newest of them, as before.
+    expect(tellingCheck([other, slow])).toBe(other);
+    expect(tellingCheck([job('running', null, 0)])).toBeNull();
+    expect(tellingCheck([])).toBeNull();
+  });
+
+  it('tellingCheck leaves out checks of the key before the one stored now', () => {
+    const oldRejection = job('error', REJECTED, -60 * MIN);
+    const slowOnNewKey = job('error', SLOW, 15 * MIN);
+    // The key was saved at T0: the rejection is of the key before it.
+    expect(tellingCheck([slowOnNewKey, oldRejection], at(0))).toBe(slowOnNewKey);
+    expect(tellingCheck([slowOnNewKey, oldRejection])).toBe(oldRejection);
+  });
+
+  it('one slow check does not put a rejected account back into "auto"', async () => {
+    // Before: the slow check was the latest finished one, it says nothing about the key,
+    // so the rejected priority-1 account was picked again until its next check.
+    const f = db({
+      accounts: [reading('aieee', 1, null, false), reading('aiece', 2, null, false)],
+      jobs: [check('aieee', 'error', SLOW, 2 * MIN), check('aieee', 'error', REJECTED, 17 * MIN)]
+    });
+    expect(await checkSaysUnusable(fakeAdmin(f), 'aieee', now)).toBe(true);
+    expect(await pickAuto(fakeAdmin(f), ['aieee', 'aiece'])).toBe('aiece');
+  });
+
+  it('nor does a check that failed for another reason, nor one still running on top of it', async () => {
+    const f = db({
+      accounts: [reading('ainursing', 1, null, false), reading('aiece', 2, null, false)],
+      jobs: [
+        check('ainursing', 'running', null, 0),
+        check('ainursing', 'error', OTHER, 2 * MIN),
+        check('ainursing', 'error', SLOW, 17 * MIN),
+        check('ainursing', 'error', BLOCKED, 32 * MIN)
+      ]
+    });
+    expect(await pickAuto(fakeAdmin(f), ['ainursing', 'aiece'])).toBe('aiece');
+  });
+
+  it('a later check that passes still takes the account back', async () => {
+    const f = db({
+      accounts: [reading('aieee', 1, 0.1), reading('aiece', 2, 0.1)],
+      jobs: [
+        check('aieee', 'error', SLOW, 1 * MIN),
+        check('aieee', 'done', null, 16 * MIN),
+        check('aieee', 'error', REJECTED, 31 * MIN)
+      ]
+    });
+    expect(await checkSaysUnusable(fakeAdmin(f), 'aieee', now)).toBe(false);
+    expect(await pickAuto(fakeAdmin(f), ['aieee', 'aiece'])).toBe('aieee');
+  });
+
+  it('a slow check of a NEW key does not bring back the rejection of the key before it', async () => {
+    const f = db({
+      accounts: [reading('aieee', 1, null, false), reading('aiece', 2, null, false)],
+      jobs: [check('aieee', 'error', SLOW, 2 * MIN), check('aieee', 'error', REJECTED, 60 * MIN)],
+      secrets: [{ label: 'aieee', added_at: iso(20 * MIN) }]
+    });
+    expect(await checkSaysUnusable(fakeAdmin(f), 'aieee', now)).toBe(false);
+    expect(await pickAuto(fakeAdmin(f), ['aieee', 'aiece'])).toBe('aieee');
+    // The card says the same: the new key's own check was slow, no verdict yet.
+    const card = await readAccountChecks(fakeAdmin(f), [{ label: 'aieee', added_at: iso(20 * MIN) }], now);
+    expect(card.get('aieee')?.kind).toBe('too-slow');
+  });
+
+  it('the card agrees with the chooser: it keeps saying "key rejected" after a slow check', async () => {
+    const f = db({ jobs: [check('aieee', 'error', SLOW, 2 * MIN), check('aieee', 'error', REJECTED, 17 * MIN)] });
+    const card = await readAccountChecks(fakeAdmin(f), [{ label: 'aieee', added_at: iso(20 * DAY) }], now);
+    expect(card.get('aieee')).toEqual({ kind: 'key-rejected', at: f.jobs[1].completed_at });
+  });
+
+  it('still reads the checks once in the usual case', async () => {
+    const f = db({
+      accounts: [reading('aiahs', 1, 0.5)],
+      jobs: [check('aiahs', 'error', SLOW, 2 * MIN), check('aiahs', 'done', null, 17 * MIN)]
+    });
+    expect(await pickAuto(fakeAdmin(f), ['default', 'aiahs'])).toBe('aiahs');
+    expect(f.jobReads).toEqual(['aiahs']);
+  });
+
+  it('the card does not look past failing checks to an older "key works"', async () => {
+    // Before (second review): the card showed a green "Key works, checked 47 min ago"
+    // while the three newest checks had failed or were slow. Only a verdict that
+    // blocks use outlives a slow or failed check; a pass does not.
+    const f = db({
+      jobs: [
+        check('aiahs', 'error', OTHER, 2 * MIN),
+        check('aiahs', 'error', SLOW, 17 * MIN),
+        check('aiahs', 'error', OTHER, 32 * MIN),
+        check('aiahs', 'done', null, 47 * MIN)
+      ]
+    });
+    const keys = [{ label: 'aiahs', added_at: iso(20 * DAY) }];
+    expect((await readAccountChecks(fakeAdmin(f), keys, now)).get('aiahs')).toEqual({
+      kind: 'failed',
+      at: f.jobs[0].completed_at
+    });
+    // A slow newest check shows as slow, and a limit under it stays hidden the same way.
+    const g = db({
+      jobs: [
+        check('aiahs', 'error', SLOW, 2 * MIN),
+        check('aiahs', 'error', "claude error: You've hit your usage limit", 17 * MIN)
+      ]
+    });
+    expect((await readAccountChecks(fakeAdmin(g), keys, now)).get('aiahs')?.kind).toBe('too-slow');
+    // "auto" is not affected: the account is still in the choice.
+    expect(await checkSaysUnusable(fakeAdmin(f), 'aiahs', now)).toBe(false);
+  });
+
+  it('the card and "auto" read the same finished checks, also while one is waiting', async () => {
+    // One check waiting, seven slow ones, and the rejection as the 8th finished check:
+    // "auto" passes the account over, so the card must still say "key rejected".
+    const slowRun = (n: number) => Array.from({ length: n }, (_, i) => check('aieee', 'error', SLOW, (2 + 15 * i) * MIN));
+    const eighth = db({
+      jobs: [check('aieee', 'queued', null, 0), ...slowRun(7), check('aieee', 'error', REJECTED, 120 * MIN)]
+    });
+    const keys = [{ label: 'aieee', added_at: iso(20 * DAY) }];
+    expect(await checkSaysUnusable(fakeAdmin(eighth), 'aieee', now)).toBe(true);
+    expect((await readAccountChecks(fakeAdmin(eighth), keys, now)).get('aieee')?.kind).toBe('key-rejected');
+    // As the 9th finished check it is out of reach for both: a known limit, the same on each side.
+    const ninth = db({
+      jobs: [check('aieee', 'queued', null, 0), ...slowRun(8), check('aieee', 'error', REJECTED, 135 * MIN)]
+    });
+    expect(await checkSaysUnusable(fakeAdmin(ninth), 'aieee', now)).toBe(false);
+    expect((await readAccountChecks(fakeAdmin(ninth), keys, now)).get('aieee')?.kind).toBe('too-slow');
+  });
+});
+
+describe('"default" plus every keyed account rejected (review of #99)', () => {
+  const allRejected = (over: Partial<Fake> = {}) =>
+    db({
+      accounts: [reading('aieee', 1, null, false), reading('aiece', 2, null, false), reading('ainursing', 3, null, false)],
+      jobs: [
+        check('aieee', 'error', REJECTED, 4 * MIN),
+        check('aiece', 'error', REJECTED, 4 * MIN),
+        check('ainursing', 'error', BLOCKED, 4 * MIN)
+      ],
+      ...over
+    });
+
+  it('falls back to the box\'s own sign-in and never throws', async () => {
+    const f = allRejected();
+    await expect(pickAuto(fakeAdmin(f), ['default', 'aieee', 'aiece', 'ainursing'])).resolves.toBe('default');
+    // Each rejected account was looked at once, in priority order, before giving up on it.
+    expect(f.jobReads).toEqual(['aieee', 'aiece', 'ainursing']);
+  });
+
+  it('also when the own sign-in reads full: it is the only one left, so it is the answer', async () => {
+    const f = allRejected();
+    f.accounts.push({ ...reading('default', 9, 0.99) });
+    await expect(pickAuto(fakeAdmin(f), ['default', 'aieee', 'aiece', 'ainursing'])).resolves.toBe('default');
+  });
+
+  it('also when "default" is listed last, or is the only label', async () => {
+    await expect(pickAuto(fakeAdmin(allRejected()), ['aieee', 'aiece', 'ainursing', 'default'])).resolves.toBe('default');
+    await expect(pickAuto(fakeAdmin(db()), ['default'])).resolves.toBe('default');
   });
 });
 
