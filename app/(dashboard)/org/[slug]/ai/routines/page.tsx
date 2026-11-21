@@ -57,6 +57,7 @@ import {
   OWN_SIGNIN_PRIORITY_NOTE,
   type BoxRow
 } from '@/lib/ai-engine/accounts-card';
+import { paceLines, readAccountHistory, type WeekReading } from '@/lib/ai-engine/account-pace';
 
 export const dynamic = 'force-dynamic';
 
@@ -211,6 +212,17 @@ export default async function AiRoutinesPage({
   const readingOf = new Map(accounts.map((a: AccountRow) => [a.label, a]));
   const ownSignin = readingOf.get(OWN);
 
+  // Pace (platform admins only). The read stands on its own and never throws:
+  // until the history table exists, the card shows "not enough readings yet"
+  // and everything else on it works as before.
+  const history = canEdit
+    ? await readAccountHistory(
+        admin,
+        views.filter((v) => v.showBars).map((v) => v.label),
+        now
+      )
+    : new Map<string, WeekReading[]>();
+
   return (
     <div className="space-y-6">
       <div>
@@ -265,8 +277,8 @@ export default async function AiRoutinesPage({
           <CardContent className="space-y-5">
             {cardIsSettling(keys, checks, now) && <CardRefresher />}
             <p className="text-muted-foreground text-sm">
-              For each account: who is using it now, what its last check said, and how much of its
-              allowance is used. Switch a whole box below, or pick &quot;auto&quot;: workers use the
+              For each account: who is using it now, what its last check said, how much of its
+              allowance is used and how fast. Switch a whole box below, or pick &quot;auto&quot;: workers use the
               account with the lowest priority number that still has allowance, move to the next
               when it runs out, and come back when it renews. {OWN_SIGNIN_NOTE}
             </p>
@@ -320,6 +332,11 @@ export default async function AiRoutinesPage({
                       )}
                       <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} now={now} />
                       <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} now={now} />
+                      {paceLines(a, history.get(v.label) ?? [], now).map((line) => (
+                        <p key={line} className="text-muted-foreground text-xs">
+                          {line}
+                        </p>
+                      ))}
                     </>
                   )}
                 </div>

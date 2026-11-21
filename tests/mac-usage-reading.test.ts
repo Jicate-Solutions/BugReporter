@@ -11,6 +11,8 @@ import { macReadingRow, MAC_READING_MAX_AGE_MS } from '@/lib/ai-engine/mac-usage
  * updates an existing account only (404 otherwise, nothing created), writes
  * only the fields given, never touches ai_account_secrets, keeps a newer
  * reading, and a stored reading stops the watch cron probing that account.
+ * A stored reading is also added to the history (21 Nov 2026), and a history
+ * failure never fails the reading.
  */
 
 const MAC = 'M'.repeat(64);
@@ -22,7 +24,9 @@ type Row = Record<string, unknown>;
 const db = vi.hoisted(() => ({
   tables: {} as Record<string, Row[]>,
   touched: [] as string[],
-  writes: [] as { table: string; op: string; row: Row }[]
+  writes: [] as { table: string; op: string; row: Row }[],
+  /** How the history table (ai_account_readings) misbehaves: null = it works. */
+  history: null as null | 'missing' | 'down' | 'throws'
 }));
 
 vi.mock('@/lib/supabase/admin', () => ({
@@ -33,13 +37,35 @@ vi.mock('@/lib/supabase/admin', () => ({
       const filters: ((r: Row) => boolean)[] = [];
       let patch: Row | null = null;
       const rows = () => (db.tables[table] ?? []).filter((r) => filters.every((f) => f(r)));
+      const historyError = () => {
+        if (table !== 'ai_account_readings' || !db.history) return null;
+        if (db.history === 'throws') throw new Error('connection lost');
+        return db.history === 'missing'
+          ? { code: 'PGRST205', message: "Could not find the table 'public.ai_account_readings' in the schema cache" }
+          : { code: '57014', message: 'down' };
+      };
       const b: Record<string, unknown> = {
         select: () => b,
         eq: (c: string, v: unknown) => (filters.push((r) => r[c] === v), b),
         is: (c: string, v: unknown) => (filters.push((r) => (r[c] ?? null) === v), b),
         update: (row: Row) => ((patch = row), b),
         upsert: async (row: Row) => (db.writes.push({ table, op: 'upsert', row }), { error: null }),
-        insert: async (row: Row) => (db.writes.push({ table, op: 'insert', row }), { error: null }),
+        insert: async (row: Row) => {
+          const error = historyError();
+          if (error) return { error };
+          db.writes.push({ table, op: 'insert', row });
+          (db.tables[table] ??= []).push({ ...row });
+          return { error: null };
+        },
+        // The history's "newest row of this account" read: newest first.
+        order: () => b,
+        limit: () => b,
+        then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+          new Promise((ok) => {
+            const error = historyError();
+            const newestFirst = [...rows()].sort((x, y) => (String(x.read_at) < String(y.read_at) ? 1 : -1));
+            ok(error ? { data: null, error } : { data: newestFirst, error: null });
+          }).then(res, rej),
         maybeSingle: async () => {
           const hit = rows()[0] ?? null;
           if (patch && hit) {
@@ -78,6 +104,7 @@ beforeEach(() => {
   FH_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
   db.touched = [];
   db.writes = [];
+  db.history = null;
   db.tables = {
     ai_runner_tokens: [
       { runner: 'macusage-mac', token_sha256: sha(MAC), revoked_at: null },
@@ -181,7 +208,8 @@ describe('what it writes', () => {
     expect(db.writes).toEqual([]);
     await POST(req(reading()));
     expect(db.touched).not.toContain('ai_account_secrets');
-    expect(db.writes.every((w) => w.op === 'update' && w.table === 'ai_accounts')).toBe(true);
+    // The reading itself is an update of the account; the only other write is its history row.
+    expect(db.writes.map((w) => `${w.op} ${w.table}`)).toEqual(['update ai_accounts', 'insert ai_account_readings']);
   });
 
   it('keeps a newer stored reading', async () => {
@@ -217,6 +245,68 @@ describe('what it writes', () => {
       expect((await POST(req(bad))).status).toBe(400);
     }
     expect(db.writes).toEqual([]);
+  });
+});
+
+describe('the history of readings (21 Nov 2026)', () => {
+  const history = () => db.writes.filter((w) => w.table === 'ai_account_readings');
+
+  it('adds a stored reading to the history, stamped with when the Mac read it', async () => {
+    const body = reading();
+    expect(await (await POST(req(body))).json()).toEqual({ status: 'stored' });
+    expect(history()).toHaveLength(1);
+    expect(history()[0].row).toEqual({
+      label: 'ainursing',
+      five_hour_util: null,
+      seven_day_util: 1,
+      five_hour_resets_at: null,
+      seven_day_resets_at: new Date(body.seven_day_resets_at * 1000).toISOString(),
+      reported_by: 'macusage-mac',
+      read_at: new Date(body.read_at * 1000).toISOString()
+    });
+  });
+
+  it('keeps the 5-hour number in the history when the Mac gave one', async () => {
+    const at = NOW_S() + 3600;
+    await POST(req(reading({ five_hour_util: 0.11, five_hour_resets_at: at })));
+    expect(history()[0].row).toMatchObject({ five_hour_util: 0.11, five_hour_resets_at: new Date(at * 1000).toISOString() });
+  });
+
+  it('adds nothing for a reading that was not stored', async () => {
+    account('ainursing').updated_at = new Date().toISOString();
+    expect(await (await POST(req(reading()))).json()).toEqual({ status: 'kept_newer' });
+    await POST(req(reading({ label: 'director' })));
+    await POST(req(reading({ read_at: NOW_S() - 21 * 60 })));
+    expect(history()).toEqual([]);
+  });
+
+  it('does not add the same values twice within 10 minutes, and does add a changed value', async () => {
+    await POST(req(reading({ seven_day_util: 0.5, read_at: NOW_S() - 300 })));
+    await POST(req(reading({ seven_day_util: 0.5, read_at: NOW_S() - 120 })));
+    expect(history()).toHaveLength(1);
+    await POST(req(reading({ seven_day_util: 0.51, read_at: NOW_S() - 60 })));
+    expect(history().map((w) => w.row.seven_day_util)).toEqual([0.5, 0.51]);
+    // Both later readings were still stored as the account's latest.
+    expect(account('ainursing').seven_day_util).toBe(0.51);
+  });
+
+  it('still stores the reading when the history table does not exist yet, cannot be reached, or throws', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const state of ['missing', 'down', 'throws'] as const) {
+        db.history = state;
+        account('ainursing').updated_at = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+        const res = await POST(req(reading({ seven_day_util: 0.7 })));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ status: 'stored' });
+        expect(account('ainursing').seven_day_util).toBe(0.7);
+      }
+      expect(history()).toEqual([]);
+      // A table that is simply not there yet is not worth a log line; the other two are.
+      expect(logged).toHaveBeenCalledTimes(2);
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 

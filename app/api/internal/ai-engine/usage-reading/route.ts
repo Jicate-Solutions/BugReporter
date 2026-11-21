@@ -9,7 +9,9 @@
  * Body: { label, seven_day_util (0-1), seven_day_resets_at (epoch s, at most 8 days ahead),
  *         five_hour_util? + five_hour_resets_at? (both or neither), read_at (epoch s), source: 'mac' }
  *
- * 200 { status: 'stored' }      the reading is now the account's latest
+ * 200 { status: 'stored' }      the reading is now the account's latest, and is
+ *                               added to the history the card works its pace
+ *                               out from (a history failure never fails this)
  * 200 { status: 'kept_newer' }  a newer reading was already stored; nothing changed
  * 400 bad body · 404 no account with that label (never created here)
  * 422 the reading is older than 20 minutes, or from the future
@@ -21,6 +23,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { macReadingRow, macReadingSchema } from '@/lib/ai-engine/mac-usage';
+import { recordReadingHistory } from '@/lib/ai-engine/account-pace';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,5 +74,17 @@ export async function POST(request: NextRequest) {
     console.error('[ai-engine/usage-reading] write failed:', writeError.message);
     return fail('WRITE_FAILED', 'Could not store the reading.', 500);
   }
-  return NextResponse.json({ status: updated ? 'stored' : 'kept_newer' }, { status: 200 });
+  if (!updated) return NextResponse.json({ status: 'kept_newer' }, { status: 200 });
+  // Only a reading that was stored goes into the history, stamped with when the Mac read it.
+  // The values are exactly what the Mac gave: no 5-hour number here means it gave none.
+  await recordReadingHistory(admin, {
+    label: reading.label,
+    five_hour_util: row.five_hour_util ?? null,
+    seven_day_util: row.seven_day_util,
+    five_hour_resets_at: row.five_hour_resets_at ?? null,
+    seven_day_resets_at: row.seven_day_resets_at,
+    reported_by: row.reported_by,
+    read_at: row.updated_at
+  });
+  return NextResponse.json({ status: 'stored' }, { status: 200 });
 }
