@@ -45,6 +45,7 @@ import { AccountPriorityEditor } from './_components/account-priority-editor';
 import { AddAccountForm } from './_components/add-account-form';
 import { RemoveKeyButton } from './_components/remove-key-button';
 import { CardRefresher } from './_components/card-refresher';
+import { AccountSubscriptionEditor } from './_components/account-subscription-editor';
 import { pickAuto, readAccountChecks, windowState, type CheckResult } from '@/lib/ai-engine/accounts';
 import {
   accountViews,
@@ -57,6 +58,17 @@ import {
   OWN_SIGNIN_PRIORITY_NOTE,
   type BoxRow
 } from '@/lib/ai-engine/accounts-card';
+import { paceLines, readAccountHistory, type WeekReading } from '@/lib/ai-engine/account-pace';
+import {
+  PAID_BUT_UNUSABLE,
+  paidButUnusable,
+  readSubscriptions,
+  renewalLine,
+  renewalsDue,
+  renewalsTotalLine,
+  subscriptionLine
+} from '@/lib/ai-engine/account-billing';
+import { istToday } from '@/lib/ai-engine/india-time';
 
 export const dynamic = 'force-dynamic';
 
@@ -211,6 +223,29 @@ export default async function AiRoutinesPage({
   const readingOf = new Map(accounts.map((a: AccountRow) => [a.label, a]));
   const ownSignin = readingOf.get(OWN);
 
+  // Pace and subscription details (platform admins only). Both reads stand on
+  // their own and never throw: until the history table and the subscription
+  // columns exist, the card shows "not enough readings yet" and no subscription
+  // line, and everything else on it works as before.
+  const [history, subscriptions] = canEdit
+    ? await Promise.all([
+        readAccountHistory(
+          admin,
+          views.filter((v) => v.showBars).map((v) => v.label),
+          now
+        ),
+        readSubscriptions(admin)
+      ])
+    : [new Map<string, WeekReading[]>(), null];
+  const today = istToday(now);
+  const due = renewalsDue(
+    views.flatMap((v) => {
+      const sub = subscriptions?.get(v.label);
+      return sub ? [{ label: v.label, ...sub }] : [];
+    }),
+    today
+  );
+
   return (
     <div className="space-y-6">
       <div>
@@ -265,8 +300,8 @@ export default async function AiRoutinesPage({
           <CardContent className="space-y-5">
             {cardIsSettling(keys, checks, now) && <CardRefresher />}
             <p className="text-muted-foreground text-sm">
-              For each account: who is using it now, what its last check said, and how much of its
-              allowance is used. Switch a whole box below, or pick &quot;auto&quot;: workers use the
+              For each account: who is using it now, what its last check said, how much of its
+              allowance is used and how fast, and what its subscription costs. Switch a whole box below, or pick &quot;auto&quot;: workers use the
               account with the lowest priority number that still has allowance, move to the next
               when it runs out, and come back when it renews. {OWN_SIGNIN_NOTE}
             </p>
@@ -275,6 +310,7 @@ export default async function AiRoutinesPage({
             )}
             {views.map((v) => {
               const a = readingOf.get(v.label) as AccountRow;
+              const sub = subscriptions?.get(v.label);
               return (
                 <div key={v.label} className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
@@ -320,11 +356,49 @@ export default async function AiRoutinesPage({
                       )}
                       <UsageBar label="This 5 hours" value={a.five_hour_util} resets={a.five_hour_resets_at} now={now} />
                       <UsageBar label="This week" value={a.seven_day_util} resets={a.seven_day_resets_at} now={now} />
+                      {paceLines(a, history.get(v.label) ?? [], now).map((line) => (
+                        <p key={line} className="text-muted-foreground text-xs">
+                          {line}
+                        </p>
+                      ))}
+                    </>
+                  )}
+                  {sub && (
+                    <>
+                      <p className="text-muted-foreground text-xs">{subscriptionLine(sub, today)}</p>
+                      {paidButUnusable(checks.get(v.label)?.kind, sub) && (
+                        <p className="text-xs text-red-600">{PAID_BUT_UNUSABLE}</p>
+                      )}
+                      <AccountSubscriptionEditor
+                        label={v.label}
+                        today={today}
+                        planName={sub.plan_name}
+                        startedOn={sub.subscription_started_on}
+                        billingDay={sub.billing_day}
+                        monthlyFee={sub.monthly_fee_inr}
+                        note={sub.billing_note}
+                      />
                     </>
                   )}
                 </div>
               );
             })}
+            {due.items.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Renewals in the next 30 days</p>
+                {due.items.map((r) => (
+                  <p key={r.label} className="text-xs">
+                    {renewalLine(r, today)}
+                  </p>
+                ))}
+                <p className="text-muted-foreground text-xs">
+                  {renewalsTotalLine(due)}
+                  {due.items.some((r) => !r.confirmed)
+                    ? ' A date marked estimated goes by the start date, as no billing day is entered.'
+                    : ''}
+                </p>
+              </div>
+            )}
             {ownSignin && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-muted-foreground text-xs">{OWN_SIGNIN_PRIORITY_NOTE}</span>

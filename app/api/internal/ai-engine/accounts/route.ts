@@ -10,6 +10,10 @@
  *                                     queued, and its result shows on the card.
  *   DELETE ?label=acct1               remove the stored key (workers stop using it)
  *   PATCH  { label, priority }        set its priority (below)
+ *   PATCH  { label, subscription }    set its subscription details: plan name,
+ *                                     start date, billing day, monthly fee, note
+ *                                     (each one null = not known). Typed in by
+ *                                     hand; this never reads or changes the key.
  *
  * PATCH — set a Claude account's priority.
  *
@@ -27,6 +31,8 @@ import { isSuperAdmin } from '@/lib/ai-engine/admin';
 import { sealAccountKey } from '@/lib/ai-engine/account-keys';
 import { accountKeyProblem, cleanAccountKey } from '@/lib/ai-engine/account-key-shape';
 import { enqueueAccountCheck } from '@/lib/ai-engine/accounts';
+import { subscriptionSchema } from '@/lib/ai-engine/account-billing';
+import { istToday } from '@/lib/ai-engine/india-time';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +57,17 @@ async function requireAdmin() {
   }
   return { admin, user };
 }
+
+/** "default" is a box's own sign-in and "auto" a setting: neither is a subscription. */
+const subscriptionBodySchema = z
+  .object({
+    label: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,30}$/)
+      .refine((l) => l !== 'default' && l !== 'auto', 'reserved'),
+    subscription: subscriptionSchema
+  })
+  .strict();
 
 const addSchema = z.object({
   label: z
@@ -123,7 +140,10 @@ export async function PATCH(request: NextRequest) {
     return fail('FORBIDDEN', 'Only platform admins can change account priorities.', 403);
   }
 
-  const parsed = bodySchema.safeParse(await request.json().catch(() => null));
+  const body: unknown = await request.json().catch(() => null);
+  if (body && typeof body === 'object' && 'subscription' in body) return saveSubscription(admin, body);
+
+  const parsed = bodySchema.safeParse(body);
   if (!parsed.success) return fail('BAD_REQUEST', 'Priority must be a whole number from 1 to 99.', 400);
 
   const { data, error } = await admin
@@ -135,4 +155,44 @@ export async function PATCH(request: NextRequest) {
   if (error) return fail('UPDATE_FAILED', 'Could not save the change.', 500);
   if (!data) return fail('NOT_FOUND', 'No account with that label yet.', 404);
   return NextResponse.json({ account: data });
+}
+
+/**
+ * Save one account's subscription details (the caller has passed the admin
+ * check above). Only these five columns of ai_accounts are written: the key,
+ * the priority and the readings are not touched.
+ */
+async function saveSubscription(admin: ReturnType<typeof createAdminClient>, body: unknown) {
+  const parsed = subscriptionBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return fail(
+      'BAD_REQUEST',
+      'Check the details: a real start date, a billing day from 1 to 31, and a monthly fee in rupees (numbers only).',
+      400
+    );
+  }
+  const { label, subscription } = parsed.data;
+  if (subscription.subscription_started_on && subscription.subscription_started_on > istToday(Date.now())) {
+    return fail('BAD_REQUEST', 'The start date cannot be in the future.', 400);
+  }
+
+  const { data, error } = await admin
+    .from('ai_accounts')
+    .update(subscription)
+    .eq('label', label)
+    .select('label')
+    .maybeSingle();
+  if (error) {
+    // PGRST204 / 42703: the subscription columns are not in the database yet.
+    const notReady = error.code === 'PGRST204' || error.code === '42703';
+    return fail(
+      notReady ? 'NOT_READY' : 'UPDATE_FAILED',
+      notReady
+        ? 'Subscription details cannot be saved yet: the Control Tower needs a small database update first.'
+        : 'Could not save the change.',
+      notReady ? 503 : 500
+    );
+  }
+  if (!data) return fail('NOT_FOUND', 'No account with that label yet.', 404);
+  return NextResponse.json({ account: { label, subscription } });
 }

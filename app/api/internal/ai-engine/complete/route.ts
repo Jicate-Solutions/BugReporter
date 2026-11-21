@@ -26,6 +26,7 @@ import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
 import { readSpecForJob, shapeResult } from '@/lib/ai-engine/engine';
 import { PROBE_JOB_TYPE } from '@/lib/ai-engine/accounts';
 import { legacyUsageParams, usageParams, usageSchema } from '@/lib/ai-engine/usage';
+import { recordReadingHistory } from '@/lib/ai-engine/account-pace';
 
 export const dynamic = 'force-dynamic';
 
@@ -149,7 +150,11 @@ async function refundAttempt(
     .eq('attempts', attempts);
 }
 
-/** Store the latest 5-hour / 7-day usage reading for one account label. */
+/**
+ * Store the latest 5-hour / 7-day usage reading for one account label, and add
+ * it to the history the accounts card works its pace out from. The history is
+ * an extra: recordReadingHistory never throws, so it cannot fail this job.
+ */
 async function recordAccountUsage(
   admin: ReturnType<typeof createAdminClient>,
   label: string,
@@ -163,17 +168,23 @@ async function recordAccountUsage(
   runner: string
 ) {
   const at = (s?: number | null) => (s ? new Date(s * 1000).toISOString() : null);
-  const { error } = await admin.from('ai_accounts').upsert({
+  const reading = {
     label,
     five_hour_util: l.five_hour ?? null,
     seven_day_util: l.seven_day ?? null,
     five_hour_resets_at: at(l.five_hour_resets_at),
     seven_day_resets_at: at(l.seven_day_resets_at),
-    overage_enabled: l.overage_enabled ?? null,
-    reported_by: runner,
-    updated_at: new Date().toISOString()
-  });
-  if (error) console.error('[ai-engine/complete] account usage not stored:', error.message);
+    reported_by: runner
+  };
+  const readAt = new Date().toISOString();
+  const { error } = await admin
+    .from('ai_accounts')
+    .upsert({ ...reading, overage_enabled: l.overage_enabled ?? null, updated_at: readAt });
+  if (error) {
+    console.error('[ai-engine/complete] account usage not stored:', error.message);
+    return;
+  }
+  await recordReadingHistory(admin, { ...reading, read_at: readAt });
 }
 
 /**

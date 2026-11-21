@@ -49,6 +49,23 @@ describe('accountKeyProblem', () => {
     expect(accountKeyProblem(ACCOUNT_KEY_PREFIX + 'A'.repeat(600))).toContain('too long');
   });
 
+  // Pinned on purpose (review of #99), not a rule to copy. Every space is taken out before the
+  // check, because a long key wraps onto two lines. So plain words pasted AFTER the key are
+  // joined onto it, and when they are only letters and the total stays under the top length the
+  // result still looks like a key and is accepted. Claude then rejects it and the card says
+  // "Key rejected" within about a minute. Words with a full stop, a comma or a colon are caught.
+  it('today: plain words pasted after the key are joined onto it and accepted (pinned, see the comment)', () => {
+    const pasted = `${GOOD} thanks that is the key`;
+    expect(cleanAccountKey(pasted)).toBe(`${GOOD}thanksthatisthekey`);
+    expect(accountKeyProblem(pasted)).toBeNull();
+  });
+
+  it('today: trailing words with any punctuation, or long enough to pass the top length, are refused', () => {
+    expect(accountKeyProblem(`${GOOD} thanks.`)).toContain('extra characters');
+    expect(accountKeyProblem(`${GOOD} (copied from the terminal)`)).toContain('extra characters');
+    expect(accountKeyProblem(`${GOOD} ${'word '.repeat(100)}`)).toContain('too long');
+  });
+
   it('asks for a key when nothing was pasted', () => {
     expect(accountKeyProblem('   ')).toBe('Paste the key first.');
   });
