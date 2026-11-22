@@ -170,10 +170,17 @@ Install (after the PR is merged and live; only on the Director's yes):
      NOT run, and NOT read in the claude.exe on Box 1, whose version may
      differ. So fence check (3) below is the proof on the box. If (3) FAILS
      (the canary prints through <SHIM>), the box's claude does not honour the
-     variable: point no fenced helper other than proof-read and regscan-read
-     at the shim until file mentions are fenced. (Those two are the exception
-     because their own deny rules cover C:\jicate-ai and C:\Users in both
-     spellings.) Run (3) again after every claude update on the box: the variable is claude's own
+     variable: point NO fenced helper at the shim, proof-read and
+     regscan-read included, until file mentions are fenced. There is no
+     exception for those two. PROVEN ON BOX 1 ON 22 NOV 2026 (canary file
+     only): the 13 deny rules do NOT cover an 8.3 short name of a folder on
+     an @ mention. The Read tool refused every spelling tried; an @ mention
+     that named the denied folder by its 8.3 short name was attached and the
+     canary printed. With the variable set to 1 the same mention was not
+     attached. Since 22 Nov 2026 both helpers also set the variable in their
+     own fenceEnv, so they are covered on every path, the shim's or not.
+     When testing (3), try the 8.3 short name as well as the plain path
+     (cmd: for %I in (C:\jicate-ai) do @echo %~sI). Run (3) again after every claude update on the box: the variable is claude's own
      and a later version could drop or rename it.
    - THE TOKEN FILE IS NOT PROTECTED FROM OTHER RUNS ON THE BOX. Plainly:
      maxlane-biometric.env is readable by the Windows user Admin, and Admin is
@@ -281,8 +288,9 @@ Install (after the PR is merged and live; only on the Director's yes):
      own-sign-in does have the switch, but then (2) through <SHIM> is not
      proven, so get an account label). True on the last line = the box's
      claude ignores CLAUDE_CODE_DISABLE_FILE_MENTIONS: stop, and point no
-     fenced helper other than proof-read and regscan-read (same deny rules)
-     at the shim.
+     fenced helper at the shim, proof-read and regscan-read included (their
+     deny rules do not cover an 8.3 short name on an @ mention; see "FILE
+     MENTIONS IN THE PROMPT").
      REPEAT (3) WHERE THE HELPER REALLY RUNS. C:\fence-test is an empty
      folder with no .claude\settings*.json, so (3) run there alone does NOT
      see the settings-file gap above. For each helper on the shim (today
@@ -366,6 +374,11 @@ Install (after the PR is merged and live; only on the Director's yes):
 Undo (fastest first):
 - Set CLAUDE_ACCT_OFF=1 for the drains (or delete maxlane-biometric.env): every
   run goes straight to the real claude on the box's own sign-in, as before.
+  THIS TURNS FILE MENTIONS BACK ON for every run that relied on the shim for
+  the switch: under CLAUDE_ACCT_OFF=1 the shim sets nothing. A helper that
+  sets CLAUDE_CODE_DISABLE_FILE_MENTIONS=1 in its own environment (proof-read
+  and regscan-read since 22 Nov 2026) keeps it; any other fenced helper does
+  not, so stop those helpers rather than run them this way.
 - Put CLAUDE_BIN back to C:\Users\Admin\.local\bin\claude.exe and restart.
 - For the fenced helpers (proof-read and the like) the environment undo above
   (CLAUDE_ACCT_OFF) does not reach the shim: their undo is taking CLAUDE_BIN
