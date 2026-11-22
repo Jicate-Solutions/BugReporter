@@ -18,7 +18,11 @@
  *      The one argument a fenced run does NOT get back unchanged is the value
  *      of --settings: the fence takes it only in one strict shape
  *      (strictSettings below) and hands claude the shim's OWN re-written JSON
- *      for it, so claude never reads text the shim did not check;
+ *      for it, so claude never reads text the shim did not check.
+ *      A run that holds a Tower key also gets CLAUDE_CODE_DISABLE_FILE_MENTIONS=1
+ *      in its environment (keyedEnv below): claude then no longer attaches a
+ *      file named in the prompt as "@<path>", which the tool fence does not
+ *      cover (W12 review, PR #100);
  *   4. if Claude refuses the account (usage limit, bad key, or the account's
  *      organisation has switched Claude Code off), asks again with
  *      refused=<label> and runs on the next account — at most once per account;
@@ -29,7 +33,9 @@
  * ahead exactly as before this shim (the box's own sign-in / whatever
  * environment the drain already had). One exception: a run that PASSED the
  * fence keeps the shim's re-written --settings value on every attempt, the
- * own sign-in included (same settings, the shim's spelling).
+ * own sign-in included (same settings, the shim's spelling). The own sign-in
+ * never gets CLAUDE_CODE_DISABLE_FILE_MENTIONS from the shim: its environment
+ * is the drain's own, untouched.
  *
  * The key is held in memory only: never written to disk, never logged, never
  * put on a command line. The log line per run (logs\claude-acct.log next to
@@ -292,12 +298,25 @@ export function strictSettings(raw) {
 /**
  * How many arguments, in the WHOLE list ("--" and what follows included), are
  * a settings option: "--settings", "--managed-settings", or either with
- * "=<value>". The whole argument only: prompt text that merely mentions one,
- * or "--setting-sources", does not count.
+ * "=<value>". The whole argument only: prompt text that merely mentions one
+ * does not count ("--setting-sources" is counted by sourcesTokens).
  * @param {string[]} args
  */
 function settingsTokens(args) {
   return args.filter((a) => /^--(?:managed-)?settings(?:=|$)/.test(a)).length;
+}
+
+/** Why a "--setting-sources" token past "--" got no key. Fixed words. */
+const SOURCES_REASON = '--setting-sources after "--"';
+
+/**
+ * How many arguments, in the WHOLE list ("--" and what follows included), are
+ * "--setting-sources" or "--setting-sources=<value>". The whole argument only:
+ * a longer argument that merely contains the words does not count.
+ * @param {string[]} args
+ */
+function sourcesTokens(args) {
+  return args.filter((a) => /^--setting-sources(?:=|$)/.test(a)).length;
 }
 
 /**
@@ -326,16 +345,19 @@ function settingsTokens(args) {
  *     defaultMode and nothing else). A file path gets no key;
  *   - no other argument anywhere, past "--" included, that is "--settings",
  *     "--managed-settings", or either with "=<value>" (settingsTokens);
+ *   - no argument past "--" that is "--setting-sources" or
+ *     "--setting-sources=<value>" (sourcesTokens): there it could name "user";
  *   - no option value that starts with "-" (a flag hidden as a value).
  * A tool list takes every following argument up to the next one starting with
  * "-", as claude does, so a prompt passed after the list reads as an unknown
  * tool and the run gets no key (fails safe; the drains pass the prompt on stdin).
  * Everything after "--" is prompt text to claude and is not read as options,
- * with the one exception above: a settings token there still means no key.
- * commander stops at "--", but claude also looks for its settings options in
- * a scan of its own before commander runs, and the fence does not rest on
- * that scan stopping at "--" in every claude version. The fenced helpers pass
- * the prompt on stdin, so nothing real is lost.
+ * with the exceptions above: a settings token or a "--setting-sources" token
+ * there still means no key. commander stops at "--", but claude also looks
+ * for its settings options in a scan of its own before commander runs, and
+ * the fence does not rest on that scan stopping at "--" in every claude
+ * version. The fenced helpers pass the prompt on stdin, so nothing real is
+ * lost.
  * Settings FILES in the drain's folder (permissions.allow, hooks, MCP servers)
  * are not visible here: ACCOUNTS.md install step 1 checks them.
  * Returns { ok: true, args } or { ok: false, reason } — reason is a fixed
@@ -348,7 +370,9 @@ function settingsTokens(args) {
 export function fenceOf(args) {
   const checked = args.map(String);
   const settingsCount = settingsTokens(checked);
+  const sourcesCount = sourcesTokens(checked);
   let settingsSeen = false;
+  let sourcesSeen = 0;
   let toolSet = false;
   let mode_ = false;
   let sources_ = false;
@@ -430,6 +454,7 @@ export function fenceOf(args) {
         break;
       }
       case '--setting-sources': {
+        sourcesSeen++;
         const v = takeOne();
         if (v === null) return no('option value looks like a flag');
         if (v.split(',').map((x) => x.trim()).includes('user')) return no('user settings loaded');
@@ -457,6 +482,10 @@ export function fenceOf(args) {
   if (!sources_) return no('no --setting-sources without user');
   if (!mode_) return no('no --permission-mode');
   if (!strictMcp) return no('no --strict-mcp-config');
+  // A "--setting-sources" token the loop never read: it sits past "--" (before
+  // "--" the loop has either read it or refused the run already). Checked last,
+  // so a run refused for any other reason keeps that reason.
+  if (sourcesCount !== sourcesSeen) return no(SOURCES_REASON);
   return { ok: true, args: checked };
 }
 
@@ -469,6 +498,39 @@ export function fenceOf(args) {
 export function envFenceOf(env) {
   if (env.ANTHROPIC_BASE_URL) return { ok: false, reason: 'ANTHROPIC_BASE_URL set' };
   return { ok: true };
+}
+
+/**
+ * claude's own switch for "@<path>" in the prompt. Read in the claude 2.1.329
+ * program text (also 2.1.326 - 2.1.328): with it truthy ("1", "true", "yes",
+ * "on") claude no longer opens a file the prompt names as @<path>; it only
+ * notes "Referenced <path> (not read)". Without it claude ATTACHES that file
+ * unless a deny rule covers the path, and "./" allow rules, --tools and
+ * dontAsk do not stop it: the tool fence is about tools, and this is not a
+ * tool call. The helpers put staff-typed text and text from uploads into the
+ * prompt, so a keyed run without the switch could be handed
+ * @C:\jicate-ai\maxlane-biometric.env.
+ */
+export const NO_FILE_MENTIONS = 'CLAUDE_CODE_DISABLE_FILE_MENTIONS';
+
+/**
+ * The environment of a run that holds a Tower key: the drain's environment,
+ * the key, and the file-mention switch ON. Built in ONE place so the switch
+ * can never be left off a keyed run. Any other spelling of the switch's name
+ * in the drain's environment is dropped first (Windows variable names ignore
+ * case, so "claude_code_disable_file_mentions=0" would be the same variable).
+ * @param {Record<string, string | undefined>} baseEnv
+ * @param {string} key
+ * @returns {Record<string, string | undefined>}
+ */
+export function keyedEnv(baseEnv, key) {
+  const env = {};
+  for (const [name, value] of Object.entries(baseEnv)) {
+    if (name.toUpperCase() !== NO_FILE_MENTIONS) env[name] = value;
+  }
+  env.CLAUDE_CODE_OAUTH_TOKEN = key;
+  env[NO_FILE_MENTIONS] = '1';
+  return env;
 }
 
 /**
@@ -733,7 +795,7 @@ async function main() {
     if (pick.key && !tried.has(pick.label)) {
       label = pick.label;
       tried.add(label);
-      env = { ...baseEnv, CLAUDE_CODE_OAUTH_TOKEN: pick.key };
+      env = keyedEnv(baseEnv, pick.key); // the key, and file mentions off
     } else {
       if (ownTried) break; // the floor ran already: hand back what we have
       ownTried = true;
