@@ -7,7 +7,13 @@
  * refused (403), and this token is refused on every other engine route.
  *
  * Body: { label, seven_day_util (0-1), seven_day_resets_at (epoch s, at most 8 days ahead),
- *         five_hour_util? + five_hour_resets_at? (both or neither), read_at (epoch s), source: 'mac' }
+ *         five_hour_util? + five_hour_resets_at? (both or neither), read_at (epoch s), source: 'mac',
+ *         subscription?: { plan?, started_on? (YYYY-MM-DD), extra_use? } }
+ *
+ * subscription (the account signed in on the Mac only) fills the account's
+ * EMPTY plan, start date and paid-extra-use fields; a value already there is
+ * never changed. It is applied whenever the account exists, for 'stored' and
+ * 'kept_newer' alike, and a failure there never fails the reading.
  *
  * 200 { status: 'stored' }      the reading is now the account's latest, and is
  *                               added to the history the card works its pace
@@ -22,7 +28,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
-import { macReadingRow, macReadingSchema } from '@/lib/ai-engine/mac-usage';
+import { fillSubscriptionFromMac, macReadingRow, macReadingSchema } from '@/lib/ai-engine/mac-usage';
 import { recordReadingHistory } from '@/lib/ai-engine/account-pace';
 
 export const dynamic = 'force-dynamic';
@@ -61,9 +67,16 @@ export async function POST(request: NextRequest) {
   }
   if (!current) return fail('NOT_FOUND', 'No Control Tower account with that label.', 404);
 
+  // The account exists, so every answer from here also fills its empty subscription fields.
+  // That runs AFTER the reading is settled, so it can never get in the way of the guard below.
+  const done = async (status: 'stored' | 'kept_newer') => {
+    await fillSubscriptionFromMac(admin, reading.label, reading.subscription, Date.now());
+    return NextResponse.json({ status }, { status: 200 });
+  };
+
   const stored = (current as { updated_at: string | null }).updated_at;
   if (stored && Date.parse(stored) >= Date.parse(row.updated_at)) {
-    return NextResponse.json({ status: 'kept_newer' }, { status: 200 });
+    return done('kept_newer');
   }
 
   // Guarded on the value just read, so a probe reading that lands in between is never overwritten.
@@ -74,7 +87,7 @@ export async function POST(request: NextRequest) {
     console.error('[ai-engine/usage-reading] write failed:', writeError.message);
     return fail('WRITE_FAILED', 'Could not store the reading.', 500);
   }
-  if (!updated) return NextResponse.json({ status: 'kept_newer' }, { status: 200 });
+  if (!updated) return done('kept_newer');
   // Only a reading that was stored goes into the history, stamped with when the Mac read it.
   // The values are exactly what the Mac gave: no 5-hour number here means it gave none.
   await recordReadingHistory(admin, {
@@ -86,5 +99,5 @@ export async function POST(request: NextRequest) {
     reported_by: row.reported_by,
     read_at: row.updated_at
   });
-  return NextResponse.json({ status: 'stored' }, { status: 200 });
+  return done('stored');
 }

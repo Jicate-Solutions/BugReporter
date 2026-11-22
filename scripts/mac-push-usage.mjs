@@ -26,8 +26,18 @@
  * Skipped: a reading older than 20 minutes (its fetched_at), no weekly %, or no
  * weekly reset time ('' or 'due').
  *
+ * Subscription details (22 Nov 2026): ~/.claude.json knows the plan, the start
+ * date and whether paid extra use is on, for the account signed in on this Mac
+ * right now only. That account's reading carries them as
+ *   subscription = { plan, started_on (the India calendar day), extra_use }
+ * with only the parts that are known. The Tower fills its own empty fields from
+ * it and never changes one an admin typed. There is no fee and no billing day
+ * in that file. The other accounts get theirs when the Mac switches to them.
+ * A missing or unreadable file means no subscription key; the usage push goes on.
+ *
  * Settings (environment):
  *   QC_PATH            the cache (default ~/.config/obsidian/v5-quota-cache.json)
+ *   CLAUDE_JSON_PATH   Claude's own settings file (default ~/.claude.json)
  *   TOWER_URL          default https://jkkn-centralized-bug-reporter.vercel.app
  *   TOWER_USAGE_TOKEN  the Mac usage token (runner "macusage-mac"); if unset it is read
  *                      from the login Keychain item "jicate-tower-macusage". Never printed.
@@ -81,8 +91,59 @@ export function resetEpoch(iso, relative, fetchedMs) {
   return secs == null ? null : Math.ceil(fetchedMs / 1000) + secs;
 }
 
-/** The bodies to send, and what was skipped and why. Pure. */
-export function buildReadings(cache, now) {
+const IST_OFFSET_MS = 5.5 * 60 * 60_000;
+
+/** "Max 20x" / "Max 5x" from the rate-limit tier, else the plan's own name (40 characters at most). '' = not known. */
+export function planText(o) {
+  const tier = typeof o?.organizationRateLimitTier === 'string' ? o.organizationRateLimitTier : '';
+  if (tier.includes('max_20x')) return 'Max 20x';
+  if (tier.includes('max_5x')) return 'Max 5x';
+  for (const v of [o?.planDisplayName, o?.organizationType]) {
+    if (typeof v === 'string' && v.trim()) return v.trim().slice(0, 40).trim();
+  }
+  return '';
+}
+
+/** An ISO moment → the calendar day in India, "YYYY-MM-DD". null when it is not a sane moment. */
+export function indiaDay(isoText) {
+  const t = typeof isoText === 'string' ? Date.parse(isoText) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const day = new Date(t + IST_OFFSET_MS).toISOString().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) && day >= '2000-01-01' ? day : null;
+}
+
+/**
+ * What ~/.claude.json says about the signed-in account: its email (lower case)
+ * and the subscription parts that are known. null when there is no account or
+ * nothing is known. Pure: it is given the parsed file.
+ */
+export function subscriptionOf(claudeJson) {
+  const o = claudeJson?.oauthAccount;
+  if (!o || typeof o !== 'object' || typeof o.emailAddress !== 'string') return null;
+  const subscription = {};
+  const plan = planText(o);
+  if (plan) subscription.plan = plan;
+  const startedOn = indiaDay(o.subscriptionCreatedAt);
+  if (startedOn) subscription.started_on = startedOn;
+  if (typeof o.hasExtraUsageEnabled === 'boolean') subscription.extra_use = o.hasExtraUsageEnabled;
+  if (!Object.keys(subscription).length) return null;
+  return { email: o.emailAddress.trim().toLowerCase(), subscription };
+}
+
+/** Read the signed-in account's subscription. Any trouble (no file, not JSON, no account) = null, silently. */
+export function readSubscription(path) {
+  try {
+    return subscriptionOf(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The bodies to send, and what was skipped and why. Pure. `signedIn` (from
+ * subscriptionOf) adds the subscription to the reading of that account only.
+ */
+export function buildReadings(cache, now, signedIn = null) {
   const send = [];
   const skipped = [];
   for (const [email, a] of Object.entries(cache?.accounts ?? {})) {
@@ -107,6 +168,7 @@ export function buildReadings(cache, now) {
       body.five_hour_util = round(a.five_hour_pct / 100);
       body.five_hour_resets_at = fhReset;
     }
+    if (signedIn && signedIn.email === String(email).trim().toLowerCase()) body.subscription = signedIn.subscription;
     send.push(body);
   }
   return { send, skipped };
@@ -132,7 +194,11 @@ const iso = (s) => new Date(s * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 function describe(b) {
   const fh = b.five_hour_util != null ? ` · 5h ${b.five_hour_util} (resets ${iso(b.five_hour_resets_at)})` : '';
-  return `${b.label}: week ${b.seven_day_util} (resets ${iso(b.seven_day_resets_at)}) · read ${iso(b.read_at)}${fh}`;
+  const s = b.subscription;
+  const sub = s
+    ? ` · subscription: plan ${s.plan ?? '-'}, started ${s.started_on ?? '-'}, extra use ${s.extra_use == null ? '-' : s.extra_use ? 'on' : 'off'}`
+    : '';
+  return `${b.label}: week ${b.seven_day_util} (resets ${iso(b.seven_day_resets_at)}) · read ${iso(b.read_at)}${fh}${sub}`;
 }
 
 async function main(argv) {
@@ -145,7 +211,8 @@ async function main(argv) {
     console.error(`cannot read the cache ${path}: ${e instanceof Error ? e.message : e}`);
     return 1;
   }
-  const { send, skipped } = buildReadings(cache, Date.now());
+  const signedIn = readSubscription(process.env.CLAUDE_JSON_PATH || join(homedir(), '.claude.json'));
+  const { send, skipped } = buildReadings(cache, Date.now(), signedIn);
   for (const s of skipped) console.log(`skip ${s.label ?? s.email}: ${s.why}`);
   if (dry) {
     for (const b of send) console.log(`would send ${describe(b)}`);

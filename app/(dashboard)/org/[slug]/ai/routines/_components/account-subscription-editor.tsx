@@ -3,7 +3,9 @@
 /**
  * Subscription details for one Claude account: plan name, start date, the day
  * of the month it renews, the monthly fee and a note. Platform admins only.
- * Claude does not report these, so they are typed in here. Folded away behind
+ * The Mac's feed fills the plan and the start date when they are empty; the
+ * rest Claude does not report, so it is typed in here. What is typed here is
+ * never changed by the feed. Folded away behind
  * "edit subscription" so the card stays short on a phone. Saves through the
  * accounts PATCH route, which never touches the key.
  */

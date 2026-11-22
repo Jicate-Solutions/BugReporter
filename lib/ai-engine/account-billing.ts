@@ -5,7 +5,9 @@
  * every month on the day it started, and Claude does not report the next
  * payment date or the amount. So a platform admin types the details in on the
  * card (plan, start date, the day it renews when known, the monthly fee, a
- * note) and the card works the dates out.
+ * note) and the card works the dates out. Since 22 Nov 2026 the Mac's feed
+ * fills the plan, the start date and paid extra use when they are empty
+ * (lib/ai-engine/mac-usage.ts); the fee and the billing day are still typed.
  *
  * Dates here are calendar days in India, "YYYY-MM-DD". They are never run
  * through a clock: the caller says what "today" is (istToday).
@@ -124,11 +126,14 @@ function shortDate(date: string, today: string): string {
 }
 
 export const NO_SUBSCRIPTION_DETAILS = 'Subscription details not entered yet.';
+export const MONTHLY_FEE_NOT_ENTERED = 'monthly fee not entered';
 
 /**
  * One line for an account row, with only the parts that are known:
  * "Max 20x · started 5 Mar 2024 · renews on the 5th (estimated from the start
  * date) · next 5 Dec · Rs 24,000 a month · paid extra use off".
+ * When the plan or the start date is known and the fee is not, it says
+ * "monthly fee not entered" where the fee would be.
  */
 export function subscriptionLine(sub: Subscription, today: string): string {
   const parts: string[] = [];
@@ -140,6 +145,8 @@ export function subscriptionLine(sub: Subscription, today: string): string {
     parts.push(renewal.date === today ? 'renews today' : `next ${shortDate(renewal.date, today)}`);
   }
   if (sub.monthly_fee_inr != null) parts.push(`${rupees(sub.monthly_fee_inr)} a month`);
+  // The plan and the start date can arrive by themselves from the Mac's feed; the fee never does.
+  else if (sub.plan_name || dateParts(sub.subscription_started_on)) parts.push(MONTHLY_FEE_NOT_ENTERED);
   if (sub.extra_usage_on != null) parts.push(`paid extra use ${sub.extra_usage_on ? 'on' : 'off'}`);
   if (sub.billing_note) parts.push(`note: ${sub.billing_note}`);
   return parts.length ? parts.join(' · ') : NO_SUBSCRIPTION_DETAILS;

@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { createHash } from 'crypto';
 import { labelsToProbe, PROBE_AFTER_MS } from '@/lib/ai-engine/accounts';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
-import { macReadingRow, MAC_READING_MAX_AGE_MS } from '@/lib/ai-engine/mac-usage';
+import { macReadingRow, macReadingSchema, MAC_READING_MAX_AGE_MS } from '@/lib/ai-engine/mac-usage';
 
 /**
  * /api/internal/ai-engine/usage-reading: the Mac hands in a free usage reading.
@@ -13,6 +13,8 @@ import { macReadingRow, MAC_READING_MAX_AGE_MS } from '@/lib/ai-engine/mac-usage
  * reading, and a stored reading stops the watch cron probing that account.
  * A stored reading is also added to the history (21 Nov 2026), and a history
  * failure never fails the reading.
+ * A reading may carry the signed-in account's subscription details
+ * (22 Nov 2026): they fill empty fields only, never a typed one.
  */
 
 const MAC = 'M'.repeat(64);
@@ -21,12 +23,15 @@ const LANE = 'L'.repeat(64);
 const sha = (t: string) => createHash('sha256').update(t, 'utf8').digest('hex');
 
 type Row = Record<string, unknown>;
+const SUBSCRIPTION_COLUMNS = ['plan_name', 'subscription_started_on', 'extra_usage_on', 'billing_day', 'monthly_fee_inr', 'billing_note'];
 const db = vi.hoisted(() => ({
   tables: {} as Record<string, Row[]>,
   touched: [] as string[],
   writes: [] as { table: string; op: string; row: Row }[],
   /** How the history table (ai_account_readings) misbehaves: null = it works. */
-  history: null as null | 'missing' | 'down' | 'throws'
+  history: null as null | 'missing' | 'down' | 'throws',
+  /** How a write of a subscription column misbehaves: null = it works. */
+  subscription: null as null | 'missing' | 'down' | 'throws'
 }));
 
 vi.mock('@/lib/supabase/admin', () => ({
@@ -67,6 +72,16 @@ vi.mock('@/lib/supabase/admin', () => ({
             ok(error ? { data: null, error } : { data: newestFirst, error: null });
           }).then(res, rej),
         maybeSingle: async () => {
+          if (patch && db.subscription && Object.keys(patch).some((k) => SUBSCRIPTION_COLUMNS.includes(k))) {
+            if (db.subscription === 'throws') throw new Error('connection lost');
+            return {
+              data: null,
+              error:
+                db.subscription === 'missing'
+                  ? { code: 'PGRST204', message: "Could not find the 'plan_name' column of 'ai_accounts'" }
+                  : { code: '57014', message: 'down' }
+            };
+          }
           const hit = rows()[0] ?? null;
           if (patch && hit) {
             Object.assign(hit, patch);
@@ -105,6 +120,7 @@ beforeEach(() => {
   db.touched = [];
   db.writes = [];
   db.history = null;
+  db.subscription = null;
   db.tables = {
     ai_runner_tokens: [
       { runner: 'macusage-mac', token_sha256: sha(MAC), revoked_at: null },
@@ -408,5 +424,145 @@ describe('labelsToProbe and updated_at', () => {
     });
     const readings = [r('full', 1, 5 * 60_000), r('half', 0.5, 5 * 60_000), r('old', 0.5, PROBE_AFTER_MS + 1)];
     expect(labelsToProbe(readings, ['full', 'half', 'old'], now)).toEqual(['old']);
+  });
+});
+
+describe('subscription details from the Mac (22 Nov 2026)', () => {
+  const SUB = { plan: 'Max 20x', started_on: '2024-03-05', extra_use: false };
+  const subWrites = () => db.writes.filter((w) => Object.keys(w.row).some((k) => SUBSCRIPTION_COLUMNS.includes(k)));
+
+  it('fills the empty plan, start date and paid extra use, and nothing else', async () => {
+    const res = await POST(req(reading({ subscription: SUB })));
+    expect(await res.json()).toEqual({ status: 'stored' });
+    const a = account('ainursing');
+    expect(a.plan_name).toBe('Max 20x');
+    expect(a.subscription_started_on).toBe('2024-03-05');
+    expect(a.extra_usage_on).toBe(false);
+    // One column per write, and never the fee, the billing day or the note.
+    expect(subWrites().map((w) => w.row)).toEqual([
+      { plan_name: 'Max 20x' },
+      { subscription_started_on: '2024-03-05' },
+      { extra_usage_on: false }
+    ]);
+    for (const c of ['billing_day', 'monthly_fee_inr', 'billing_note']) expect(a[c]).toBeUndefined();
+    // The reading is settled first; the subscription fields come after it.
+    expect(db.writes.map((w) => Object.keys(w.row)[0])).toEqual([
+      'seven_day_util',
+      'label',
+      'plan_name',
+      'subscription_started_on',
+      'extra_usage_on'
+    ]);
+    expect(a.priority).toBe(2);
+    expect(db.touched).not.toContain('ai_account_secrets');
+  });
+
+  it('never changes a value that is already there', async () => {
+    Object.assign(account('ainursing'), {
+      plan_name: 'Team plan (typed)',
+      subscription_started_on: '2025-01-10',
+      extra_usage_on: true,
+      billing_day: 12,
+      monthly_fee_inr: 24000
+    });
+    expect((await POST(req(reading({ subscription: SUB })))).status).toBe(200);
+    const a = account('ainursing');
+    expect(a.plan_name).toBe('Team plan (typed)');
+    expect(a.subscription_started_on).toBe('2025-01-10');
+    expect(a.extra_usage_on).toBe(true);
+    expect(a.billing_day).toBe(12);
+    expect(a.monthly_fee_inr).toBe(24000);
+    expect(subWrites()).toEqual([]);
+  });
+
+  it('fills only the fields that are empty when some were typed', async () => {
+    account('ainursing').plan_name = 'Typed plan';
+    await POST(req(reading({ subscription: SUB })));
+    expect(account('ainursing').plan_name).toBe('Typed plan');
+    expect(account('ainursing').subscription_started_on).toBe('2024-03-05');
+    expect(account('ainursing').extra_usage_on).toBe(false);
+  });
+
+  it('writes only the parts it was given', async () => {
+    await POST(req(reading({ subscription: { plan: 'Max 5x' } })));
+    expect(subWrites().map((w) => w.row)).toEqual([{ plan_name: 'Max 5x' }]);
+    db.writes = [];
+    await POST(req(reading({ label: 'aimech', subscription: {} })));
+    expect(subWrites()).toEqual([]);
+  });
+
+  it('still fills them when the reading itself is answered kept_newer', async () => {
+    account('ainursing').updated_at = new Date().toISOString();
+    const res = await POST(req(reading({ subscription: SUB })));
+    expect(await res.json()).toEqual({ status: 'kept_newer' });
+    expect(account('ainursing').plan_name).toBe('Max 20x');
+    // The usage reading and its time are untouched.
+    expect(account('ainursing').seven_day_util).toBe(0.96);
+    expect(db.writes.every((w) => !('updated_at' in w.row))).toBe(true);
+  });
+
+  it('leaves out a start date that is still in the future', async () => {
+    const nextYear = `${new Date().getUTCFullYear() + 1}-06-01`;
+    expect((await POST(req(reading({ subscription: { plan: 'Max 20x', started_on: nextYear } })))).status).toBe(200);
+    expect(account('ainursing').plan_name).toBe('Max 20x');
+    expect(account('ainursing').subscription_started_on).toBeUndefined();
+  });
+
+  it('a failed subscription write never fails the reading', async () => {
+    for (const how of ['missing', 'down', 'throws'] as const) {
+      db.subscription = how;
+      account('ainursing').updated_at = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+      const res = await POST(req(reading({ seven_day_util: 0.7, subscription: SUB })));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'stored' });
+      expect(account('ainursing').seven_day_util).toBe(0.7);
+      expect(account('ainursing').plan_name).toBeUndefined();
+    }
+  });
+
+  it('refuses a badly shaped subscription with 400 and writes nothing', async () => {
+    for (const bad of [
+      'Max 20x',
+      null,
+      [],
+      { plan: '' },
+      { plan: '   ' },
+      { plan: ' Max 20x' },
+      { plan: 'x'.repeat(41) },
+      { plan: 20 },
+      { started_on: '2024-3-5' },
+      { started_on: '2024-02-30' },
+      { started_on: '1999-12-31' },
+      { started_on: '2024-03-05T10:00:00Z' },
+      { extra_use: 'yes' },
+      { extra_use: null },
+      { plan: 'Max 20x', monthly_fee_inr: 1 },
+      { plan: 'Max 20x', billing_day: 5 },
+      { plan: 'Max 20x', email: 'x' }
+    ]) {
+      expect((await POST(req(reading({ subscription: bad })))).status, JSON.stringify(bad)).toBe(400);
+    }
+    expect(db.writes).toEqual([]);
+  });
+
+  it('a reading with no subscription is accepted as before', () => {
+    expect(macReadingSchema.safeParse(reading()).success).toBe(true);
+    expect(macReadingSchema.safeParse(reading({ subscription: SUB })).success).toBe(true);
+  });
+
+  it('worker and lane tokens are still refused, subscription or not', async () => {
+    for (const t of [WORKER, LANE]) {
+      const res = await POST(req(reading({ subscription: SUB }), t));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error.code).toBe('NOT_A_USAGE_TOKEN');
+    }
+    expect((await POST(req(reading({ subscription: SUB }), ''))).status).toBe(401);
+    expect(db.writes).toEqual([]);
+    expect(account('ainursing').plan_name).toBeUndefined();
+  });
+
+  it('a label the Tower does not have gets nothing', async () => {
+    expect((await POST(req(reading({ label: 'director', subscription: SUB })))).status).toBe(404);
+    expect(db.writes).toEqual([]);
   });
 });

@@ -240,14 +240,24 @@ describe('subscriptionLine', () => {
 
   it('drops "estimated" once the billing day is entered', () => {
     const line = subscriptionLine(sub({ subscription_started_on: '2024-03-05', billing_day: 7 }), '2026-11-21');
-    expect(line).toBe('started 5 Mar 2024 · renews on the 7th · next 7 Dec');
+    expect(line).toBe('started 5 Mar 2024 · renews on the 7th · next 7 Dec · monthly fee not entered');
   });
 
   it('shows only the parts that are known', () => {
     expect(subscriptionLine(sub({ monthly_fee_inr: 24000 }), '2026-11-21')).toBe('Rs 24,000 a month');
-    expect(subscriptionLine(sub({ plan_name: 'Max 20x' }), '2026-11-21')).toBe('Max 20x');
+    expect(subscriptionLine(sub({ plan_name: 'Max 20x' }), '2026-11-21')).toBe('Max 20x · monthly fee not entered');
     expect(subscriptionLine(sub({ extra_usage_on: true }), '2026-11-21')).toBe('paid extra use on');
     expect(subscriptionLine(sub({ billing_note: 'card ends 4411' }), '2026-11-21')).toBe('note: card ends 4411');
+  });
+
+  it('says the fee is missing when the plan or start date is known without it (the Mac feed fills those)', () => {
+    const fromFeed = sub({ plan_name: 'Max 20x', subscription_started_on: '2024-03-05', extra_usage_on: false });
+    expect(subscriptionLine(fromFeed, '2026-11-21')).toBe(
+      'Max 20x · started 5 Mar 2024 · renews on the 5th (estimated from the start date) · next 5 Dec · monthly fee not entered · paid extra use off'
+    );
+    // Not when only something else is known, and not once the fee is entered (0 counts as entered).
+    expect(subscriptionLine(sub({ billing_day: 7 }), '2026-11-21')).not.toContain('fee');
+    expect(subscriptionLine(sub({ plan_name: 'Max 20x', monthly_fee_inr: 0 }), '2026-11-21')).toBe('Max 20x · Rs 0 a month');
   });
 
   it('says so when nothing is known', () => {
