@@ -59,7 +59,9 @@ process.stdin.on('end', () => {
   }
   console.log(JSON.stringify({ type: 'result', is_error: false,
     result: 'usage limit is a phrase in this good answer',
-    who, args: process.argv.slice(2), stdin: Buffer.concat(chunks).toString() }));
+    who, args: process.argv.slice(2), stdin: Buffer.concat(chunks).toString(),
+    mentionsOff: process.env.CLAUDE_CODE_DISABLE_FILE_MENTIONS ?? null,
+    spellings: process.env.FAKE_ECHO_SPELLINGS ? Object.keys(process.env).filter((n) => n.toUpperCase() === 'CLAUDE_CODE_DISABLE_FILE_MENTIONS') : undefined }));
 });
 `;
 
@@ -418,6 +420,113 @@ describe('claude-acct.mjs', () => {
     expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('tower: refused a non-https JICATE_AI_URL');
   }, 20_000);
 
+  describe('file mentions (@<path> in the prompt) are switched off on every run that passed the fence, with a Tower key or on the own sign-in', () => {
+    const PROMPT = 'read the proof @C:\\jicate-ai\\maxlane-biometric.env';
+    const UNFENCED = ['-p', '--output-format', 'json', '--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--allowedTools', 'Read(./**)'];
+
+    it('a keyed run gets CLAUDE_CODE_DISABLE_FILE_MENTIONS=1 (plain shape and proof-read shape); arguments and stdin are untouched', async () => {
+      for (const args of [ARGS, PROOF_ARGS]) {
+        const r = await runShim(args, PROMPT);
+        const out = lastResult(r.stdout);
+        expect(out.who).toBe('aimech');
+        expect(out.mentionsOff).toBe('1');
+        expect(out.args).toEqual(args);
+        expect(out.stdin).toBe(PROMPT);
+      }
+    }, 30_000);
+
+    it('a rolled run gets it on the next account too', async () => {
+      const r = await runShim(ARGS, PROMPT, { FAKE_LIMITED: 'aimech' });
+      const out = lastResult(r.stdout);
+      expect(out.who).toBe('ainursing');
+      expect(out.mentionsOff).toBe('1');
+    }, 20_000);
+
+    for (const helperValue of ['0', 'false', '']) {
+      it(`a helper that sets it to ${JSON.stringify(helperValue)} cannot switch mentions back on for a keyed run`, async () => {
+        const r = await runShim(ARGS, PROMPT, { CLAUDE_CODE_DISABLE_FILE_MENTIONS: helperValue });
+        const out = lastResult(r.stdout);
+        expect(out.who).toBe('aimech');
+        expect(out.mentionsOff).toBe('1');
+      }, 20_000);
+    }
+
+    it("a run that did not pass the fence, or runs under CLAUDE_ACCT_OFF, is left exactly as the helper had it: never set by the shim, never changed", async () => {
+      const cases: [string, string[], Record<string, string>][] = [
+        ['unfenced', UNFENCED, {}],
+        ['CLAUDE_ACCT_OFF', ARGS, { CLAUDE_ACCT_OFF: '1' }]
+      ];
+      for (const [name, args, env] of cases) {
+        const absent = lastResult((await runShim(args, PROMPT, env)).stdout);
+        expect(absent.who, name).toBe('own');
+        expect(absent.mentionsOff, name).toBe(null); // absent stays absent
+        const zero = lastResult((await runShim(args, PROMPT, { ...env, CLAUDE_CODE_DISABLE_FILE_MENTIONS: '0' })).stdout);
+        expect(zero.who, name).toBe('own');
+        expect(zero.mentionsOff, name).toBe('0'); // the helper's own value, untouched
+      }
+    }, 60_000);
+
+    describe("a fenced run that falls back to the box's own sign-in has the switch too (PR #102 review)", () => {
+      const downEnv = () => {
+        writeFileSync(join(dir, 'down3.env'), 'JICATE_AI_URL=http://127.0.0.1:9\nJICATE_AI_RUNNER_TOKEN=' + LANE_TOKEN + '\n');
+        return { TOWER_LANE_ENV: join(dir, 'down3.env') };
+      };
+
+      it('when the Tower is down (plain shape and proof-read shape); stdin is untouched', async () => {
+        for (const args of [ARGS, PROOF_ARGS]) {
+          const out = lastResult((await runShim(args, PROMPT, downEnv())).stdout);
+          expect(out.who).toBe('own');
+          expect(out.mentionsOff).toBe('1');
+          expect(out.stdin).toBe(PROMPT);
+        }
+        expect(asks).toHaveLength(0);
+      }, 30_000);
+
+      it('when every account refuses, the last run (own sign-in) has it', async () => {
+        const r = await runShim(ARGS, PROMPT, { FAKE_LIMITED: 'aimech,ainursing,aiahs' });
+        const out = lastResult(r.stdout);
+        expect(out.who).toBe('own');
+        expect(out.mentionsOff).toBe('1');
+      }, 30_000);
+
+      it('when the fence passed but no key may be asked for (ANTHROPIC_BASE_URL set)', async () => {
+        const out = lastResult((await runShim(ARGS, PROMPT, { ANTHROPIC_BASE_URL: 'https://x.example.com' })).stdout);
+        expect(out.who).toBe('own');
+        expect(out.mentionsOff).toBe('1');
+        expect(asks).toHaveLength(0);
+      }, 20_000);
+
+      for (const [name, helperValue] of [
+        ['CLAUDE_CODE_DISABLE_FILE_MENTIONS', '0'],
+        ['claude_code_disable_file_mentions', '0'],
+        ['Claude_Code_Disable_File_Mentions', 'false'],
+        ['cLAUDE_cODE_dISABLE_fILE_mENTIONS', '']
+      ] as [string, string][]) {
+        it(`a helper that sets ${name}=${JSON.stringify(helperValue)} cannot switch mentions back on, Tower down or every account refused`, async () => {
+          for (const env of [downEnv(), { FAKE_LIMITED: 'aimech,ainursing,aiahs' }]) {
+            const out = lastResult((await runShim(ARGS, PROMPT, { ...env, [name]: helperValue, FAKE_ECHO_SPELLINGS: '1' })).stdout);
+            expect(out.who).toBe('own');
+            expect(out.mentionsOff).toBe('1');
+            expect(out.spellings).toEqual(['CLAUDE_CODE_DISABLE_FILE_MENTIONS']); // the other spelling is gone
+          }
+        }, 40_000);
+      }
+    });
+  });
+
+  it('hands no Tower key when "--setting-sources" sits past "--"; the run goes on untouched', async () => {
+    for (const tail of [['--setting-sources', 'user'], ['--setting-sources=user']]) {
+      const args = [...ARGS, '--', ...tail];
+      const r = await runShim(args, 'p');
+      const out = lastResult(r.stdout);
+      expect(out.who).toBe('own');
+      expect(out.args).toEqual(args);
+      expect(out.mentionsOff).toBe(null);
+    }
+    expect(asks).toHaveLength(0);
+    expect(readFileSync(join(dir, 'logs', 'claude-acct.log'), 'utf8')).toContain('fence: no Tower key (--setting-sources after "--")');
+  }, 20_000);
+
   it('never writes a key to any file', async () => {
     await runShim(ARGS, 'p', { FAKE_LIMITED: 'aimech' });
     expect(existsSync(join(dir, 'logs', 'claude-acct.log'))).toBe(true);
@@ -659,7 +768,8 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
         expect(fenceOf([...base, '--settings', GOOD, '--', ...tail]), tail.join(' ')).toEqual({ ok: false, reason: SETTINGS_REASON });
       }
       // the whole argument only: prompt text that merely mentions the option, or a look-alike, still passes
-      for (const tail of [['explain --settings to me'], ['--settings-notes'], ['--setting-sources', 'user'], ['--managed-settings-in-initialize'], ['settings', '{}']]) {
+      // (['--setting-sources', 'user'] stood in this list until the PR #100 follow-up: it is refused now, see the next test)
+      for (const tail of [['explain --settings to me'], ['--settings-notes'], ['--managed-settings-in-initialize'], ['settings', '{}']]) {
         expect(fenceOf([...base, '--', ...tail]).ok, tail.join(' ')).toBe(true);
         expect(fenceOf([...base, '--settings', GOOD, '--', ...tail]).ok, tail.join(' ')).toBe(true);
       }
@@ -670,6 +780,118 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
       expect(fenceOf(['-p', '--', '--settings', GOOD]).reason).toBe(SETTINGS_REASON);
       expect(fenceOf([...base, '--mcp-config', 'm.json', '--', '--settings', GOOD]).reason).toBe('MCP, plugin or settings by argument');
     });
+    it('refuses a "--setting-sources" token past "--" (PR #100 follow-up); longer prompt text that only contains the words still passes', () => {
+      const base = PROOF_ARGS.filter((_, i) => i !== SETTINGS_AT - 1 && i !== SETTINGS_AT);
+      const SOURCES_REASON = '--setting-sources after "--"';
+      for (const tail of [
+        ['--setting-sources', 'user'],
+        ['--setting-sources', 'project'], // refused whatever it names
+        ['--setting-sources=user'],
+        ['--setting-sources='],
+        ['--setting-sources'],
+        ['read the proof', '--setting-sources', 'user'],
+        ['--setting-sources', 'user', '--setting-sources', 'user']
+      ]) {
+        expect(fenceOf([...base, '--', ...tail]), tail.join(' ')).toEqual({ ok: false, reason: SOURCES_REASON });
+        expect(fenceOf([...base, '--settings', GOOD, '--', ...tail]), tail.join(' ')).toEqual({ ok: false, reason: SOURCES_REASON });
+        expect(fenceOf([...FENCE, '--allowedTools', 'Read(./**)', '--', ...tail]), tail.join(' ')).toEqual({ ok: false, reason: SOURCES_REASON });
+      }
+      // the whole argument only
+      for (const tail of [['explain --setting-sources user to me'], ['--setting-sources-notes'], ['--setting-source', 'user'], ['setting-sources', 'user'], ['-setting-sources', 'user'], [' --setting-sources', 'user']]) {
+        expect(fenceOf([...base, '--', ...tail]).ok, tail.join(' ')).toBe(true);
+        expect(fenceOf([...base, '--settings', GOOD, '--', ...tail]).ok, tail.join(' ')).toBe(true);
+      }
+      // before "--" nothing changed: given twice without "user" still passes, "user" is still refused under its own reason
+      expect(fenceOf(['--setting-sources', 'project', ...base]).ok).toBe(true);
+      expect(fenceOf(['--setting-sources=local', ...base]).ok).toBe(true);
+      expect(fenceOf(['--setting-sources', 'user', ...base]).reason).toBe('user settings loaded');
+      // any other refusal keeps its own reason: this check comes last
+      expect(fenceOf(['-p', '--', ...FENCE]).reason).toBe('no --tools list');
+      expect(fenceOf(['-p', '--', '--setting-sources', 'user']).reason).toBe('no --tools list');
+      expect(fenceOf([...base, '--', '--settings', GOOD, '--setting-sources', 'user']).reason).toBe(SETTINGS_REASON);
+      expect(fenceOf([...base, '--mcp-config', 'm.json', '--', '--setting-sources', 'user']).reason).toBe('MCP, plugin or settings by argument');
+      expect(fenceOf(['--permission-mode', 'dontAsk', '--strict-mcp-config', '--tools', 'Read', '--', '--setting-sources', 'project']).reason).toBe('no --setting-sources without user');
+    });
+
+    // ---- pins asked for by the PR #100 review. They record what the code does today. ----
+
+    it('a settings value wrapped in a byte-order mark or non-breaking spaces is taken, and the canonical text is what goes on', () => {
+      const BOM = '\uFEFF';
+      const NBSP = '\u00A0';
+      for (const wrapped of [BOM + PROOF_SETTINGS, NBSP + PROOF_SETTINGS + NBSP, `${BOM}${NBSP} ${PROOF_SETTINGS_LOOSE} ${NBSP}${BOM}`]) {
+        expect(strictSettings(wrapped)).toBe(PROOF_SETTINGS);
+        const f = fenceOf(proofArgs(wrapped));
+        expect(f).toEqual({ ok: true, args: PROOF_ARGS }); // claude never sees the mark or the spaces
+        expect(f.args?.[SETTINGS_AT]).not.toContain(BOM);
+        expect(f.args?.[SETTINGS_AT]).not.toContain(NBSP);
+      }
+      // only AROUND the JSON (String.trim strips both). Inside it they are not JSON white space: refused.
+      expect(strictSettings(`{${BOM}"permissions":{}}`)).toBe(null);
+      expect(strictSettings(`{${NBSP}"permissions":{}}`)).toBe(null);
+      expect(strictSettings(`{"permissions${NBSP}":{}}`)).toBe(null); // a different key
+      // a zero-width space is not trimmed: the value does not start with "{", so it reads as a file path
+      expect(strictSettings('\u200B' + PROOF_SETTINGS)).toBe(null);
+    });
+
+    it('a mode is matched exactly: any other letter case, or a space, is refused (in the settings and as --permission-mode)', () => {
+      for (const mode of ['DontAsk', 'dontask', 'DONTASK', 'PLAN', 'Plan', 'Default', 'bypasspermissions', 'BypassPermissions', 'dontAsk ', ' plan', '']) {
+        expect(strictSettings(P({ allow: ['Read(./**)'], defaultMode: mode })), mode).toBe(null);
+        expect(fenceOf(proofArgs(P({ defaultMode: mode }))).reason, mode).toBe(SETTINGS_REASON);
+        expect(fenceOf(['--setting-sources', 'project', '--permission-mode', mode, '--strict-mcp-config', '--tools', 'Read']).reason, mode).toBe('permission bypass');
+      }
+      for (const mode of ['dontAsk', 'default', 'plan']) expect(strictSettings(P({ defaultMode: mode })), mode).toBe(P({ defaultMode: mode }));
+    });
+
+    it('look-alike tool names (Cyrillic, full-width, zero-width, other case) are never taken for the real tool', () => {
+      const lookalikes = [
+        'R\u0435ad', // Cyrillic "е"
+        'Re\u0430d', // Cyrillic "а"
+        '\uFF32ead', // full-width "Ｒ"
+        'Read\u200B', // zero-width space after the name
+        'READ',
+        'read'
+      ];
+      for (const t of lookalikes) {
+        expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--tools', t]).reason, t).toBe('shell, web or unknown tool allowed');
+        expect(why(['--allowedTools', `${t}(./**)`]), t).toBe('shell, web or unknown tool allowed');
+        expect(strictSettings(P({ allow: [`${t}(./**)`] })), t).toBe(null);
+      }
+      // deny rules: letters outside A-Z a-z are refused; another CASE of a real name is let through
+      // as written (deny only narrows; claude does not know a tool called "READ", so it denies nothing)
+      for (const t of lookalikes.slice(0, 4)) expect(strictSettings(P({ deny: [t] })), t).toBe(null);
+      expect(strictSettings(P({ deny: ['READ', 'read'] }))).toBe(P({ deny: ['READ', 'read'] }));
+    });
+
+    it('look-alike flags (em-dash, en-dashes, full-width hyphens) are not options to the shim: pinned as they behave today', () => {
+      const base = PROOF_ARGS.filter((_, i) => i !== SETTINGS_AT - 1 && i !== SETTINGS_AT);
+      for (const flag of ['\u2014settings', '\u2013\u2013settings', '\uFF0D\uFF0Dsettings', '\u2014setting-sources', '\uFF0D\uFF0Dsetting-sources']) {
+        // They do not start with "-" (U+002D), so the shim reads them as prompt words, as commander does:
+        // on their own, past "--", or as an option's value, the run still gets a key and they go on unchanged.
+        expect(fenceOf([...base, flag, 'C:/x/evil.json']), flag).toEqual({ ok: true, args: [...base, flag, 'C:/x/evil.json'] });
+        expect(fenceOf([...base, '--', flag, 'C:/x/evil.json']).ok, flag).toBe(true);
+        expect(fenceOf([...base, '--settings', GOOD, '--', flag, 'user']).ok, flag).toBe(true);
+        expect(fenceOf([...base, '--model', flag]).ok, flag).toBe(true);
+        // Straight after a tool list they are swallowed as a tool name (as claude does): no key.
+        expect(fenceOf([...FENCE, '--allowedTools', 'Read(./**)', flag, 'C:/x/evil.json']).reason, flag).toBe('shell, web or unknown tool allowed');
+        expect(fenceOf(['--setting-sources', 'project', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--tools', 'Read', flag]).reason, flag).toBe('shell, web or unknown tool allowed');
+      }
+    });
+
+    it('odd "./" allow rules PASS today (pinned, not blessed: the PR #100 review said to tighten toolProblem later)', () => {
+      // Each starts with "./" and has no "..", which is all toolProblem asks. Whether claude reads any of
+      // them as reaching outside the run's folder has not been tried. When toolProblem is tightened,
+      // flip these to refused.
+      for (const rule of [
+        'Read(./a, //c/Users/**)', // a comma inside the brackets: one rule to the shim
+        'Read(./C:/Users/**)', // a drive letter after "./"
+        'Read(.///c/jicate-ai/**)', // "//c/" after "./"
+        'Read(./~/**)' // "~" after "./"
+      ]) {
+        expect(fenceOf([...FENCE, '--allowedTools', rule]), rule).toEqual({ ok: true, args: [...FENCE, '--allowedTools', rule] });
+        expect(strictSettings(P({ allow: [rule] })), rule).toBe(P({ allow: [rule] }));
+      }
+    });
+
     it('takes a value of up to 16,384 characters and refuses a longer one', () => {
       const head = '{"permissions":{"deny":["Read(./';
       const tail = '**)"]}}';
@@ -737,6 +959,27 @@ describe('fenceOf (which runs may get a Tower key)', async () => {
     expect(envFenceOf({ ANTHROPIC_BASE_URL: 'https://x.example.com' })).toEqual({ ok: false, reason: 'ANTHROPIC_BASE_URL set' });
     expect(envFenceOf({}).ok).toBe(true);
   });
+  it('noMentionsEnv: the switch goes in last as "1", other spellings are dropped, no key is added, the input is not edited', async () => {
+    const { noMentionsEnv } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+    const base = { PATH: '/bin', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '0', claude_code_disable_file_mentions: '', Claude_Code_Disable_File_Mentions: 'false', CLAUDE_CODE_DISABLE_FILE_MENTIONS_X: 'kept' };
+    const before = JSON.stringify(base);
+    const out = noMentionsEnv(base);
+    expect(out).toEqual({ PATH: '/bin', CLAUDE_CODE_DISABLE_FILE_MENTIONS_X: 'kept', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1' });
+    expect(Object.keys(out).at(-1)).toBe('CLAUDE_CODE_DISABLE_FILE_MENTIONS');
+    expect(JSON.stringify(base)).toBe(before);
+    expect(noMentionsEnv({})).toEqual({ CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1' });
+  });
+  it('keyedEnv: the key and the file-mention switch go in together; other spellings of the switch are dropped', async () => {
+    const { keyedEnv, NO_FILE_MENTIONS } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
+    expect(NO_FILE_MENTIONS).toBe('CLAUDE_CODE_DISABLE_FILE_MENTIONS'); // the exact name read in the claude 2.1.329 program text
+    const FAKE = 'sk-ant-oat01-' + 'F'.repeat(40);
+    const base = { PATH: '/bin', CLAUDE_ACCT_ACTIVE: '1', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '0', claude_code_disable_file_mentions: '0', Claude_Code_Disable_File_Mentions: 'false', CLAUDE_CODE_DISABLE_FILE_MENTIONS_X: 'kept' };
+    const before = JSON.stringify(base);
+    expect(keyedEnv(base, FAKE)).toEqual({ PATH: '/bin', CLAUDE_ACCT_ACTIVE: '1', CLAUDE_CODE_DISABLE_FILE_MENTIONS_X: 'kept', CLAUDE_CODE_OAUTH_TOKEN: FAKE, CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1' });
+    expect(JSON.stringify(base)).toBe(before); // the drain's environment (used for the own sign-in) is not edited
+    expect(keyedEnv({}, FAKE)).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: FAKE, CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1' });
+    expect(Object.keys(keyedEnv(base, FAKE)).at(-1)).toBe('CLAUDE_CODE_DISABLE_FILE_MENTIONS'); // written last
+  });
   it('accepts https, and plain http only for localhost', () => {
     expect(towerUrlOk('https://tower.example.com')).toBe(true);
     expect(towerUrlOk('http://127.0.0.1:3000')).toBe(true);
@@ -751,6 +994,7 @@ describe('refusalOf (which failed runs count as the account refused)', async () 
   const { refusalOf } = await import('../windows/jicate-ai-engine/claude-acct.mjs');
   const failed = (result: string) =>
     refusalOf({ code: 1, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({ type: 'result', is_error: true, result })) });
+  const PHRASE = 'Your organization has disabled Claude subscription access for Claude Code';
   it('matches every "hit your ... limit" wording Claude uses', () => {
     expect(failed("You've hit your limit · resets 3pm")).toBe('limit');
     expect(failed("You've hit your weekly limit · resets Nov 18, 5:30am")).toBe('limit');
@@ -787,6 +1031,26 @@ describe('refusalOf (which failed runs count as the account refused)', async () 
     expect(failed('Your organization has disabled Claude subscription access')).toBe(null);
     expect(failed('Your organization has disabled web search for Claude Code')).toBe(null);
     expect(failed('organization')).toBe(null);
+  });
+  it('pinned: the phrase in ANOTHER field of a failed run\'s last line still counts (the whole last line is read, not only "result")', () => {
+    // Today's behaviour, not a wish: refusalOf matches the final JSON line as text. A failed run whose last
+    // line carries the phrase in any field rolls to the next account. The cost is one extra account tried.
+    const last = (o: object) => ({ code: 1, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify(o)) });
+    expect(refusalOf(last({ type: 'result', is_error: true, result: 'max turns reached', note: PHRASE }))).toBe('org');
+    expect(refusalOf(last({ type: 'result', is_error: true, result: 'max turns reached', usage: { last_tool_output: PHRASE } }))).toBe('org');
+    // exit 0 but is_error: still a failed run
+    expect(refusalOf({ code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({ type: 'result', is_error: true, result: 'x', note: PHRASE })) })).toBe('org');
+    // ... but only the LAST line: the phrase in the transcript before it does not count
+    const transcript = `${JSON.stringify({ type: 'assistant', text: PHRASE })}\n${JSON.stringify({ type: 'result', is_error: true, result: 'max turns reached' })}`;
+    expect(refusalOf({ code: 1, stderr: Buffer.alloc(0), stdout: Buffer.from(transcript) })).toBe(null);
+  });
+  it('a run that SUCCEEDED never rolls, wherever the phrase sits (another field, stderr, plain text, the transcript)', () => {
+    const good = (stdout: string, stderr = '') => refusalOf({ code: 0, stderr: Buffer.from(stderr), stdout: Buffer.from(stdout) });
+    expect(good(JSON.stringify({ type: 'result', is_error: false, result: 'fine', note: PHRASE }))).toBe(null);
+    expect(good(JSON.stringify({ type: 'result', is_error: false, result: 'fine', usage: { last_tool_output: PHRASE } }))).toBe(null);
+    expect(good(JSON.stringify({ type: 'result', is_error: false, result: 'fine' }), `${PHRASE}\n`)).toBe(null);
+    expect(good(`${PHRASE}\n`)).toBe(null); // plain-text output
+    expect(good(`${JSON.stringify({ type: 'assistant', text: PHRASE })}\n${JSON.stringify({ type: 'result', is_error: false, result: 'fine' })}`)).toBe(null);
   });
   it('a good answer that quotes the organisation phrase is never a refusal', () => {
     const ok = { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'Your organization has disabled Claude subscription access for Claude Code' })) };
