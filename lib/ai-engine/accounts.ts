@@ -20,6 +20,12 @@
  * (checkSaysUnusable), until a check of it succeeds or its key is replaced.
  * Only those two: a check that was slow, hit a limit or failed for another
  * reason says nothing about the key and leaves the account in the choice.
+ * For the same reason a slow or failed check never wipes out an earlier
+ * verdict (2026-11-21): the choice goes by the newest check that says
+ * something about the key (tellingCheck).
+ *
+ * A computer's name is matched without regard to capital letters (sameHost):
+ * a box saved as "Biometric" and a worker reporting "biometric" are one box.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -300,6 +306,34 @@ export function checkBlocksUse(kind: CheckKind): boolean {
   return kind === 'key-rejected' || kind === 'blocked';
 }
 
+/**
+ * How many of an account's latest checks the chooser and the card read. A
+ * rejected account is checked about every 15 minutes, so this is about two
+ * hours of rounds.
+ */
+const CHECKS_READ = 8;
+
+/**
+ * Of an account's checks, newest first, the one to go by. Pure.
+ * - A check still waiting or running is not a result: only finished ones count.
+ * - A finished check that was slow, or failed for a reason that says nothing
+ *   about the key, does not replace an earlier verdict. Before (found in the
+ *   review of #99): one slow check after "key rejected" put the account back
+ *   into "auto" until the next check.
+ * - With `keyAddedAt`, checks of the key BEFORE the one stored now are left
+ *   out first, so an old verdict is never carried over to a new key.
+ * When every finished check was slow or failed, the newest of them is given.
+ */
+export function tellingCheck(jobs: CheckJob[], keyAddedAt: string | null = null): CheckJob | null {
+  const finished = jobs.filter((j) => j.status === 'done' || j.status === 'error');
+  const ofThisKey = finished.filter((j) => classifyCheck(j, keyAddedAt).kind !== 'not-checked');
+  const saysNothing = (j: CheckJob) => {
+    const kind = classifyCheck(j).kind;
+    return kind === 'too-slow' || kind === 'failed';
+  };
+  return ofThisKey.find((j) => !saysNothing(j)) ?? ofThisKey[0] ?? finished[0] ?? null;
+}
+
 const probeJobs = (admin: SupabaseClient, label: string) =>
   admin
     .from('ai_jobs')
@@ -353,12 +387,13 @@ async function classifyStoredCheck(
 }
 
 /**
- * True when the latest finished check of the key stored now says the account
- * cannot be used (key refused, or blocked by its organisation). One small read
- * in the usual case; only when that check says "cannot be used" is the key's
- * save time read too, so a check of the key BEFORE the one stored now does not
- * count (the same rule the card uses). False when there is no such check or
- * the checks cannot be read: the choice then stays as it was.
+ * True when the latest telling check of the key stored now (tellingCheck: a
+ * slow or failed check is looked past) says the account cannot be used (key
+ * refused, or blocked by its organisation). One small read in the usual case;
+ * only when that check says "cannot be used" is the key's save time read too,
+ * so a check of the key BEFORE the one stored now does not count (the same
+ * rule the card uses). False when there is no such check or the checks cannot
+ * be read: the choice then stays as it was.
  */
 export async function checkSaysUnusable(admin: SupabaseClient, label: string, now: number): Promise<boolean> {
   try {
@@ -366,13 +401,14 @@ export async function checkSaysUnusable(admin: SupabaseClient, label: string, no
       .in('status', ['done', 'error'])
       .gte('requested_at', new Date(now - CHECK_LOOKBACK_MS).toISOString())
       .order('requested_at', { ascending: false })
-      .limit(1);
+      .limit(CHECKS_READ);
     if (error) throw new Error(error.message);
-    const latest = ((data ?? []) as CheckJob[])[0] ?? null;
-    if (!checkBlocksUse(classifyCheck(latest).kind)) return false;
+    const finished = (data ?? []) as CheckJob[];
+    if (!checkBlocksUse(classifyCheck(tellingCheck(finished)).kind)) return false;
     const { data: sec, error: e2 } = await admin.from('ai_account_secrets').select('added_at').eq('label', label).limit(1);
     if (e2) throw new Error(e2.message);
     const keyAddedAt = ((sec ?? []) as { added_at: string | null }[])[0]?.added_at ?? null;
+    const latest = tellingCheck(finished, keyAddedAt);
     return checkBlocksUse((await classifyStoredCheck(admin, latest, label, keyAddedAt)).kind);
   } catch (e) {
     console.error('[ai-engine/accounts] last check not read for', label, '-', e instanceof Error ? e.message : e);
@@ -381,7 +417,15 @@ export async function checkSaysUnusable(admin: SupabaseClient, label: string, no
 }
 
 /**
- * For the accounts card: what the latest check of each stored key said.
+ * For the accounts card: what the last check of each stored key said.
+ * - When the check "auto" goes by (tellingCheck) says the account cannot be
+ *   used, the card says that too, also after a later slow or failed check: the
+ *   card never shows an account as usable while "auto" passes it over.
+ * - In every other case the card shows the newest finished check as it is. A
+ *   slow or failed check is NOT looked past here: a run of failing checks must
+ *   show as "check failed", never as an older "key works".
+ * The card reads the same finished checks the chooser does (the newest
+ * CHECKS_READ); the two extra rows make up for checks still waiting or running.
  * `keys` = label and when its key was saved. A check still waiting shows as
  * 'checking' only while no finished check of this key counts yet.
  */
@@ -398,11 +442,16 @@ export async function readAccountChecks(
         const { data, error } = await probeJobs(admin, label)
           .gte('requested_at', since)
           .order('requested_at', { ascending: false })
-          .limit(3);
+          .limit(CHECKS_READ + 2);
         if (error) throw new Error(error.message);
         const rows = (data ?? []) as CheckJob[];
-        const latest = rows.find((j) => j.status === 'done' || j.status === 'error') ?? null;
-        const result = await classifyStoredCheck(admin, latest, label, added_at);
+        const finished = rows.filter((j) => j.status === 'done' || j.status === 'error').slice(0, CHECKS_READ);
+        const newest = finished[0] ?? null;
+        const telling = tellingCheck(finished, added_at);
+        let result = await classifyStoredCheck(admin, telling, label, added_at);
+        if (telling !== newest && !checkBlocksUse(result.kind)) {
+          result = await classifyStoredCheck(admin, newest, label, added_at);
+        }
         const waiting = rows.some((j) => j.status === 'queued' || j.status === 'running');
         out.set(label, result.kind === 'not-checked' && waiting ? { kind: 'checking', at: null } : result);
       } catch (e) {
@@ -433,6 +482,16 @@ export async function pickAuto(admin: SupabaseClient, labels: string[]): Promise
   }
 }
 
+/** Two computer names are the same box whatever their capital letters ("Biometric" and "biometric"). */
+export function sameHost(a: string | null | undefined, b: string | null | undefined): boolean {
+  return a != null && b != null && a.toLowerCase() === b.toLowerCase();
+}
+
+/** Of rows that carry a computer name, the one for `host`: its exact spelling first, else the same name in other capitals. */
+export function findHost<T extends { host: string | null }>(rows: T[], host: string): T | undefined {
+  return rows.find((r) => r.host === host) ?? rows.find((r) => sameHost(r.host, host));
+}
+
 /**
  * The account a whole box should use, or undefined when the box has no
  * Control Tower choice (then each worker's own setting applies).
@@ -443,12 +502,11 @@ export async function resolveBoxAccount(
   host: string | null | undefined
 ): Promise<string | null | undefined> {
   if (!host) return undefined;
-  const { data } = await admin
-    .from('ai_boxes')
-    .select('account, chosen_label')
-    .eq('host', host)
-    .maybeSingle();
-  const box = data as { account: string | null; chosen_label: string | null } | null;
+  // Every box row is read (there are two) and matched here, so a worker that
+  // reports "biometric" finds the box saved as "Biometric". Nothing stored changes.
+  // In name order and capped, so the answer is the same on every poll.
+  const { data } = await admin.from('ai_boxes').select('host, account, chosen_label').order('host').limit(50);
+  const box = findHost((data ?? []) as { host: string; account: string | null; chosen_label: string | null }[], host);
   if (!box || box.account == null) return undefined;
   let label: string | null = box.account === 'default' ? null : box.account;
   if (box.account === 'auto') {
@@ -458,7 +516,7 @@ export async function resolveBoxAccount(
     label = best === 'default' ? null : best;
   }
   if ((box.chosen_label ?? null) !== label) {
-    await admin.from('ai_boxes').update({ chosen_label: label, updated_at: new Date().toISOString() }).eq('host', host);
+    await admin.from('ai_boxes').update({ chosen_label: label, updated_at: new Date().toISOString() }).eq('host', box.host);
   }
   return label;
 }
