@@ -6,8 +6,9 @@
  * payment date or the amount. So a platform admin types the details in on the
  * card (plan, start date, the day it renews when known, the monthly fee, a
  * note) and the card works the dates out. Since 22 Nov 2026 the Mac's feed
- * fills the plan, the start date and paid extra use when they are empty
- * (lib/ai-engine/mac-usage.ts); the fee and the billing day are still typed.
+ * fills the plan and the start date when they are empty, and keeps paid extra
+ * use as the Mac last saw it (lib/ai-engine/mac-usage.ts); the fee and the
+ * billing day are still typed.
  *
  * Dates here are calendar days in India, "YYYY-MM-DD". They are never run
  * through a clock: the caller says what "today" is (istToday).
@@ -29,7 +30,7 @@ export type Subscription = {
   /** The day of the month it renews (1 to 31), when the admin knows it. */
   billing_day: number | null;
   monthly_fee_inr: number | null;
-  /** Whether paid extra use is switched on; null = not known. */
+  /** Whether paid extra use is switched on, as the Mac's feed last saw it (nobody types it); null = not known. */
   extra_usage_on: boolean | null;
   billing_note: string | null;
 };
@@ -131,9 +132,11 @@ export const MONTHLY_FEE_NOT_ENTERED = 'monthly fee not entered';
 /**
  * One line for an account row, with only the parts that are known:
  * "Max 20x · started 5 Mar 2024 · renews on the 5th (estimated from the start
- * date) · next 5 Dec · Rs 24,000 a month · paid extra use off".
- * When the plan or the start date is known and the fee is not, it says
- * "monthly fee not entered" where the fee would be.
+ * date) · next 5 Dec · Rs 24,000 a month · paid extra use off, last seen on
+ * the Mac". When the plan or the start date is known and the fee is not, it
+ * says "monthly fee not entered" where the fee would be. Paid extra use comes
+ * only from the Mac's feed, for the account signed in on the Mac at the time,
+ * so the line says where it was seen: it can be behind for the other accounts.
  */
 export function subscriptionLine(sub: Subscription, today: string): string {
   const parts: string[] = [];
@@ -147,7 +150,7 @@ export function subscriptionLine(sub: Subscription, today: string): string {
   if (sub.monthly_fee_inr != null) parts.push(`${rupees(sub.monthly_fee_inr)} a month`);
   // The plan and the start date can arrive by themselves from the Mac's feed; the fee never does.
   else if (sub.plan_name || dateParts(sub.subscription_started_on)) parts.push(MONTHLY_FEE_NOT_ENTERED);
-  if (sub.extra_usage_on != null) parts.push(`paid extra use ${sub.extra_usage_on ? 'on' : 'off'}`);
+  if (sub.extra_usage_on != null) parts.push(`paid extra use ${sub.extra_usage_on ? 'on' : 'off'}, last seen on the Mac`);
   if (sub.billing_note) parts.push(`note: ${sub.billing_note}`);
   return parts.length ? parts.join(' · ') : NO_SUBSCRIPTION_DETAILS;
 }
@@ -189,9 +192,12 @@ const text = (max: number) =>
     .transform((v) => v?.trim() || null);
 
 /**
- * What the subscription editor may send. Every field must be there (null =
- * not known), nothing else is accepted, and the key is not part of it.
- * `today` is checked by the route: a start date cannot be in the future.
+ * What the subscription editor may send: only the fields the admin changed,
+ * at least one. A field that is there is saved (null = not known, which
+ * empties it); a field that is left out is not touched, so a value the Mac's
+ * feed filled in after the page was loaded is not wiped by saving something
+ * else. Nothing else is accepted, and the key is not part of it. `today` is
+ * checked by the route: a start date cannot be in the future.
  */
 export const subscriptionSchema = z
   .object({
@@ -210,7 +216,9 @@ export const subscriptionSchema = z
       .nullable(),
     billing_note: text(300)
   })
-  .strict();
+  .partial()
+  .strict()
+  .refine((s) => Object.values(s).some((v) => v !== undefined), 'nothing to save');
 
 const SUBSCRIPTION_COLUMNS =
   'label, plan_name, subscription_started_on, billing_day, monthly_fee_inr, extra_usage_on, billing_note';

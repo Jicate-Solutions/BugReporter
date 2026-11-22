@@ -36,7 +36,12 @@
  * answer one, or fetch any key. The job routes and /lane-key refuse it (403),
  * and /usage-reading refuses every other token (403). If it leaks, the holder
  * can at worst write wrong usage numbers for existing accounts (the next probe
- * or Mac reading overwrites them). Revoke by setting revoked_at.
+ * or Mac reading overwrites them) and, since 22 Nov 2026, plant subscription
+ * values on them: a plan name and a start date where those are still empty
+ * (they stay until an admin corrects them in the editor), and a wrong paid
+ * extra use on/off (the next Mac reading for that account puts it right).
+ * It cannot touch the fee, the billing day or the note. Revoke by setting
+ * revoked_at.
  *
  * - an X-API-Key header → 401. Application keys never drive the engine.
  * - missing or short token → 401. Unknown or revoked hash → 401.

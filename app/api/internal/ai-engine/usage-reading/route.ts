@@ -11,15 +11,17 @@
  *         subscription?: { plan?, started_on? (YYYY-MM-DD), extra_use? } }
  *
  * subscription (the account signed in on the Mac only) fills the account's
- * EMPTY plan, start date and paid-extra-use fields; a value already there is
- * never changed. It is applied whenever the account exists, for 'stored' and
- * 'kept_newer' alike, and a failure there never fails the reading.
+ * EMPTY plan and start date (a value already there is never changed) and keeps
+ * paid extra use as the Mac last saw it. It is applied whenever the account
+ * exists, for 'stored' and 'kept_newer' alike, and a failure there never fails
+ * the reading. It is checked apart from the reading: a badly shaped
+ * subscription is dropped and the reading is still stored.
  *
  * 200 { status: 'stored' }      the reading is now the account's latest, and is
  *                               added to the history the card works its pace
  *                               out from (a history failure never fails this)
  * 200 { status: 'kept_newer' }  a newer reading was already stored; nothing changed
- * 400 bad body · 404 no account with that label (never created here)
+ * 400 bad reading · 404 no account with that label (never created here)
  * 422 the reading is older than 20 minutes, or from the future
  *
  * See lib/ai-engine/mac-usage.ts for what is written and why.
@@ -28,7 +30,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
-import { fillSubscriptionFromMac, macReadingRow, macReadingSchema } from '@/lib/ai-engine/mac-usage';
+import { fillSubscriptionFromMac, macReadingRow, macReadingSchema, macSubscriptionSchema } from '@/lib/ai-engine/mac-usage';
 import { recordReadingHistory } from '@/lib/ai-engine/account-pace';
 
 export const dynamic = 'force-dynamic';
@@ -42,9 +44,18 @@ export async function POST(request: NextRequest) {
   const auth = await checkEngineRunnerAuth(request, admin, { usage: true });
   if (!auth.ok) return auth.response;
 
-  const parsed = macReadingSchema.safeParse(await request.json().catch(() => null));
+  // The reading and the subscription part are checked apart, so a bad subscription never loses a reading.
+  const raw: unknown = await request.json().catch(() => null);
+  const isObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw);
+  const { subscription: rawSubscription, ...rawReading } = (isObject ? raw : {}) as Record<string, unknown>;
+  const parsed = macReadingSchema.safeParse(isObject ? rawReading : raw);
   if (!parsed.success) return fail('BAD_REQUEST', 'Invalid body.', 400);
   const reading = parsed.data;
+  const parsedSubscription = rawSubscription === undefined ? null : macSubscriptionSchema.safeParse(rawSubscription);
+  const subscription = parsedSubscription?.success ? parsedSubscription.data : undefined;
+  if (parsedSubscription && !parsedSubscription.success) {
+    console.error('[ai-engine/usage-reading] subscription part dropped (bad shape) for', reading.label);
+  }
 
   const built = macReadingRow(reading, auth.runner, Date.now());
   if (!built.ok) {
@@ -67,10 +78,10 @@ export async function POST(request: NextRequest) {
   }
   if (!current) return fail('NOT_FOUND', 'No Control Tower account with that label.', 404);
 
-  // The account exists, so every answer from here also fills its empty subscription fields.
+  // The account exists, so every answer from here also brings its subscription fields up to date.
   // That runs AFTER the reading is settled, so it can never get in the way of the guard below.
   const done = async (status: 'stored' | 'kept_newer') => {
-    await fillSubscriptionFromMac(admin, reading.label, reading.subscription, Date.now());
+    await fillSubscriptionFromMac(admin, reading.label, subscription, Date.now());
     return NextResponse.json({ status }, { status: 200 });
   };
 

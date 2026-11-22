@@ -20,8 +20,9 @@
  *     newer stored reading is kept.
  *
  * A reading may also carry the subscription details the Mac knows for the
- * account signed in on it (22 Nov 2026). Those only ever fill fields that are
- * still empty: see fillSubscriptionFromMac.
+ * account signed in on it (22 Nov 2026). The plan and the start date only ever
+ * fill fields that are still empty; paid extra use follows the Mac, because
+ * nobody can type it: see fillSubscriptionFromMac.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -129,15 +130,19 @@ export function macReadingRow(
 const columnMissing = (code: string | undefined) => code === 'PGRST204' || code === '42703';
 
 /**
- * Fill an account's EMPTY subscription fields from what the Mac reported.
- * Each field is one UPDATE that only matches while that field is still null,
- * so a value an admin typed (or an earlier one from the feed) is never
- * changed, and there is no read-then-write gap. The fee, the billing day and
- * the note are never written here, and neither is updated_at, so the usage
- * reading's own guard is not disturbed. A start date later than today in
- * India is left out. NEVER throws and returns nothing: this is an extra, and
- * a failure here must not fail the reading. Before the columns exist every
- * call ends quietly.
+ * Bring an account's subscription fields in line with what the Mac reported.
+ * The plan and the start date fill an EMPTY field only: each is one UPDATE
+ * that only matches while that field is still null, so a value an admin typed
+ * (or an earlier one from the feed) is never changed, and there is no
+ * read-then-write gap. Paid extra use is different: nobody can type it, so
+ * the feed keeps it current. Its UPDATE matches whenever the stored value is
+ * not the one reported (empty, or the other one), and matches nothing when
+ * they agree. The fee, the billing day and the note are never written here,
+ * and neither is updated_at, so the usage reading's own guard is not
+ * disturbed. A start date later than today in India is left out. NEVER throws
+ * and returns nothing: this is an extra, and a failure here must not fail the
+ * reading. One field failing does not stop the others. Before the columns
+ * exist every call ends quietly.
  */
 export async function fillSubscriptionFromMac(
   admin: SupabaseClient,
@@ -152,20 +157,15 @@ export async function fillSubscriptionFromMac(
   if (s.extra_use != null) fills.push(['extra_usage_on', s.extra_use]);
   for (const [column, value] of fills) {
     try {
-      const { error } = await admin
-        .from('ai_accounts')
-        .update({ [column]: value })
-        .eq('label', label)
-        .is(column, null)
-        .select('label')
-        .maybeSingle();
-      if (error) {
-        if (!columnMissing(error.code)) console.error('[ai-engine/mac-usage] subscription not filled:', error.message);
-        return;
+      const base = admin.from('ai_accounts').update({ [column]: value }).eq('label', label);
+      // An update that matches no row (the field is already filled, or already agrees) is not an error.
+      const { error } =
+        typeof value === 'boolean' ? await base.not(column, 'is', value) : await base.is(column, null);
+      if (error && !columnMissing(error.code)) {
+        console.error(`[ai-engine/mac-usage] ${column} not filled:`, error.message);
       }
     } catch (e) {
-      console.error('[ai-engine/mac-usage] subscription not filled:', e instanceof Error ? e.message : e);
-      return;
+      console.error(`[ai-engine/mac-usage] ${column} not filled:`, e instanceof Error ? e.message : e);
     }
   }
 }

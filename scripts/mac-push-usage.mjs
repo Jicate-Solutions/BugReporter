@@ -30,10 +30,15 @@
  * date and whether paid extra use is on, for the account signed in on this Mac
  * right now only. That account's reading carries them as
  *   subscription = { plan, started_on (the India calendar day), extra_use }
- * with only the parts that are known. The Tower fills its own empty fields from
- * it and never changes one an admin typed. There is no fee and no billing day
- * in that file. The other accounts get theirs when the Mac switches to them.
+ * with only the parts that are known. The Tower fills its own empty plan and
+ * start date from it and never changes one an admin typed; paid extra use it
+ * keeps as last seen here. There is no fee and no billing day in that file.
+ * The other accounts get theirs when the Mac switches to them.
  * A missing or unreadable file means no subscription key; the usage push goes on.
+ * The signed-in account is matched to a cache entry on the FULL address. The
+ * Tower only knows the name before the @, so when two addresses in the cache
+ * share that name, the subscription is held back for it (usage still goes) and
+ * the run says so.
  *
  * Settings (environment):
  *   QC_PATH            the cache (default ~/.config/obsidian/v5-quota-cache.json)
@@ -139,13 +144,29 @@ export function readSubscription(path) {
   }
 }
 
+/** First character + "***": enough to tell entries apart in the output, never a whole address. */
+export function masked(text) {
+  const s = String(text ?? '').trim();
+  return `${s.slice(0, 1)}***`;
+}
+
 /**
  * The bodies to send, and what was skipped and why. Pure. `signedIn` (from
- * subscriptionOf) adds the subscription to the reading of that account only.
+ * subscriptionOf) adds the subscription to the reading of that account only,
+ * matched on the full address. `withheld` lists the labels whose subscription
+ * was held back because two addresses in the cache share that label: the
+ * Tower could not tell which of the two it belongs to.
  */
 export function buildReadings(cache, now, signedIn = null) {
   const send = [];
   const skipped = [];
+  const withheld = [];
+  // Every address counts here, also one whose reading is too old to send: it is still a second owner of the label.
+  const owners = new Map();
+  for (const email of Object.keys(cache?.accounts ?? {})) {
+    const label = labelOf(email);
+    if (label) owners.set(label, (owners.get(label) ?? new Set()).add(String(email).trim().toLowerCase()));
+  }
   for (const [email, a] of Object.entries(cache?.accounts ?? {})) {
     const label = labelOf(email);
     if (!label) { skipped.push({ email, why: 'not a label' }); continue; }
@@ -168,10 +189,13 @@ export function buildReadings(cache, now, signedIn = null) {
       body.five_hour_util = round(a.five_hour_pct / 100);
       body.five_hour_resets_at = fhReset;
     }
-    if (signedIn && signedIn.email === String(email).trim().toLowerCase()) body.subscription = signedIn.subscription;
+    if (signedIn && signedIn.email === String(email).trim().toLowerCase()) {
+      if (owners.get(label).size > 1) withheld.push(label);
+      else body.subscription = signedIn.subscription;
+    }
     send.push(body);
   }
-  return { send, skipped };
+  return { send, skipped, withheld };
 }
 
 /** Share of the allowance, 0-1 (the Tower refuses anything above 1). */
@@ -208,12 +232,16 @@ async function main(argv) {
   try {
     cache = JSON.parse(readFileSync(path, 'utf8'));
   } catch (e) {
-    console.error(`cannot read the cache ${path}: ${e instanceof Error ? e.message : e}`);
+    // A fixed message: the reason text of a parse error can quote the file, and the file holds addresses.
+    console.error(`cannot read the usage cache: ${e?.code === 'ENOENT' ? 'no file' : 'unreadable or not JSON'}`);
     return 1;
   }
   const signedIn = readSubscription(process.env.CLAUDE_JSON_PATH || join(homedir(), '.claude.json'));
-  const { send, skipped } = buildReadings(cache, Date.now(), signedIn);
-  for (const s of skipped) console.log(`skip ${s.label ?? s.email}: ${s.why}`);
+  const { send, skipped, withheld } = buildReadings(cache, Date.now(), signedIn);
+  for (const s of skipped) console.log(`skip ${s.label ?? masked(s.email)}: ${s.why}`);
+  for (const label of withheld) {
+    console.log(`${label}: two sign-ins on this Mac share this name, so its subscription details are not sent (usage is)`);
+  }
   if (dry) {
     for (const b of send) console.log(`would send ${describe(b)}`);
     console.log(`dry run: ${send.length} to send, ${skipped.length} skipped, nothing sent`);

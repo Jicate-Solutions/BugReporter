@@ -37,7 +37,8 @@ const mod = (await import(pathToFileURL(SCRIPT).href)) as {
     cache: unknown,
     now: number,
     signedIn?: SignedIn
-  ) => { send: Body[]; skipped: { label?: string; email?: string; why: string }[] };
+  ) => { send: Body[]; skipped: { label?: string; email?: string; why: string }[]; withheld: string[] };
+  masked: (text: unknown) => string;
 };
 
 const NOW = Date.parse('2026-11-18T07:30:00Z');
@@ -285,6 +286,107 @@ describe('buildReadings with the signed-in account', () => {
       expect(send[0].subscription).toBeDefined();
       expect(macReadingSchema.safeParse(send[0]).success).toBe(true);
     }
+  });
+});
+
+describe('two addresses with the same name (review of #103)', () => {
+  const other = (name: string) => [name, 'other.test'].join('@');
+  const entry = (age = 5) => ({ seven_day_pct: 85, sd_reset: 'in 9h 36m', fetched_at: minsAgo(age) });
+  const SUB = { plan: 'Max 20x', started_on: '2024-03-05', extra_use: false };
+
+  it('sends the usage of both as before, and holds the subscription back for that name', () => {
+    const cache = { accounts: { [at('aimech')]: entry(), [other('aimech')]: entry(), [at('ainursing')]: entry() } };
+    for (const signedInAs of [at('aimech'), other('aimech')]) {
+      const out = mod.buildReadings(cache, NOW, mod.subscriptionOf(oauth({ emailAddress: signedInAs })));
+      expect(out.send.map((b) => b.label)).toEqual(['aimech', 'aimech', 'ainursing']);
+      for (const b of out.send) expect('subscription' in b).toBe(false);
+      expect(out.withheld).toEqual(['aimech']);
+      // The usage bodies are exactly what they are with nobody signed in.
+      expect(out.send).toEqual(mod.buildReadings(cache, NOW).send);
+    }
+  });
+
+  it('a twin too old to send, or differing only in capitals, still counts as a second owner', () => {
+    const stale = { accounts: { [at('aimech')]: entry(), [other('aimech')]: entry(45) } };
+    const out = mod.buildReadings(stale, NOW, mod.subscriptionOf(oauth()));
+    expect(out.send).toHaveLength(1);
+    expect('subscription' in out.send[0]).toBe(false);
+    expect(out.withheld).toEqual(['aimech']);
+    const capitals = { accounts: { [at('aimech')]: entry(), [other('AiMech')]: entry() } };
+    expect(mod.buildReadings(capitals, NOW, mod.subscriptionOf(oauth())).withheld).toEqual(['aimech']);
+  });
+
+  it('another account that shares no name is not held back, and nothing is withheld with nobody signed in', () => {
+    const cache = { accounts: { [at('aimech')]: entry(), [other('aimech')]: entry(), [at('ainursing')]: entry() } };
+    const out = mod.buildReadings(cache, NOW, mod.subscriptionOf(oauth({ emailAddress: at('ainursing') })));
+    expect(out.withheld).toEqual([]);
+    expect(out.send.find((b) => b.label === 'ainursing')?.subscription).toEqual(SUB);
+    expect(out.send.filter((b) => b.label === 'aimech').every((b) => !('subscription' in b))).toBe(true);
+    expect(mod.buildReadings(cache, NOW).withheld).toEqual([]);
+    // The same address written twice in different capitals is one owner, not two.
+    const once = { accounts: { [at('aimech')]: entry() } };
+    expect(mod.buildReadings(once, NOW, mod.subscriptionOf(oauth({ emailAddress: at('AIMECH') }))).send[0].subscription).toEqual(SUB);
+  });
+
+  it('matches on the whole address, never on the name alone', () => {
+    const cache = { accounts: { [at('aimech')]: entry() } };
+    const out = mod.buildReadings(cache, NOW, mod.subscriptionOf(oauth({ emailAddress: other('aimech') })));
+    expect('subscription' in out.send[0]).toBe(false);
+    expect(out.withheld).toEqual([]);
+  });
+});
+
+describe('what the run prints (review of #103)', () => {
+  const run = (cacheText: string | null, claudeJson: unknown = null) => {
+    const dir = mkdtempSync(join(tmpdir(), 'macpush-'));
+    try {
+      const qc = join(dir, 'qc.json');
+      const cj = join(dir, 'claude.json');
+      if (cacheText !== null) writeFileSync(qc, cacheText);
+      if (claudeJson !== null) writeFileSync(cj, JSON.stringify(claudeJson));
+      return spawnSync(process.execPath, [SCRIPT, '--dry'], {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: dir, QC_PATH: qc, CLAUDE_JSON_PATH: cj, TOWER_URL: 'https://127.0.0.1:1', TOWER_USAGE_TOKEN: '' }
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const fresh = () => ({ seven_day_pct: 85, sd_reset: 'in 9h 36m', fetched_at: new Date().toISOString() });
+
+  it('masks an address it cannot use as a name: first character and stars', () => {
+    expect(mod.masked(['Some.Body', 'example.test'].join('@'))).toBe('S***');
+    expect(mod.masked('')).toBe('***');
+    const out = run(JSON.stringify({ accounts: { ['Some.Body@' + 'example.test']: fresh(), [at('default')]: fresh(), [at('aimech')]: fresh() } }));
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain('skip S***: not a label');
+    expect(out.stdout).toContain('skip d***: not a label');
+    expect(out.stdout + out.stderr).not.toContain('@');
+    expect(out.stdout + out.stderr).not.toContain('example.test');
+    expect(out.stdout + out.stderr).not.toMatch(/Body|default/);
+  });
+
+  it('a cache that is not JSON gets a fixed message that quotes nothing from the file', () => {
+    const broken = `{"accounts": {"${at('secretperson')}": oops`;
+    const out = run(broken);
+    expect(out.status).toBe(1);
+    expect(out.stderr.trim()).toBe('cannot read the usage cache: unreadable or not JSON');
+    expect(out.stdout + out.stderr).not.toMatch(/secretperson|example\.test|@|oops|position|token/i);
+    const missing = run(null);
+    expect(missing.status).toBe(1);
+    expect(missing.stderr.trim()).toBe('cannot read the usage cache: no file');
+  });
+
+  it('says a subscription was held back for a shared name, without an address', () => {
+    const cache = { accounts: { [at('aimech')]: fresh(), [['aimech', 'other.test'].join('@')]: fresh() } };
+    const out = run(JSON.stringify(cache), oauth());
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain('aimech: two sign-ins on this Mac share this name, so its subscription details are not sent (usage is)');
+    expect(out.stdout.match(/would send aimech: week 0\.85 /g)).toHaveLength(2);
+    expect(out.stdout).not.toContain('subscription: plan');
+    expect(out.stdout).toMatch(/dry run: 2 to send, 0 skipped, nothing sent/);
+    expect(out.stdout + out.stderr).not.toContain('@');
+    expect(out.stdout + out.stderr).not.toMatch(/example\.test|other\.test/);
   });
 });
 

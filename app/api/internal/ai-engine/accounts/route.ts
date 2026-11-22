@@ -12,8 +12,9 @@
  *   PATCH  { label, priority }        set its priority (below)
  *   PATCH  { label, subscription }    set its subscription details: plan name,
  *                                     start date, billing day, monthly fee, note
- *                                     (each one null = not known). Typed in by
- *                                     hand; this never reads or changes the key.
+ *                                     (each one null = not known). Only the
+ *                                     fields sent are saved; one left out keeps
+ *                                     its value. This never reads or changes the key.
  *
  * PATCH — set a Claude account's priority.
  *
@@ -159,8 +160,9 @@ export async function PATCH(request: NextRequest) {
 
 /**
  * Save one account's subscription details (the caller has passed the admin
- * check above). Only these five columns of ai_accounts are written: the key,
- * the priority and the readings are not touched.
+ * check above). Only the fields that were sent are written, out of these five
+ * columns of ai_accounts; one left out keeps its value. The key, the priority
+ * and the readings are not touched.
  */
 async function saveSubscription(admin: ReturnType<typeof createAdminClient>, body: unknown) {
   const parsed = subscriptionBodySchema.safeParse(body);

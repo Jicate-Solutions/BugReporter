@@ -14,7 +14,9 @@ import { macReadingRow, macReadingSchema, MAC_READING_MAX_AGE_MS } from '@/lib/a
  * A stored reading is also added to the history (21 Nov 2026), and a history
  * failure never fails the reading.
  * A reading may carry the signed-in account's subscription details
- * (22 Nov 2026): they fill empty fields only, never a typed one.
+ * (22 Nov 2026): the plan and the start date fill empty fields only, never
+ * a typed one; paid extra use follows the Mac. A badly shaped subscription
+ * is dropped and the reading is still stored.
  */
 
 const MAC = 'M'.repeat(64);
@@ -31,7 +33,9 @@ const db = vi.hoisted(() => ({
   /** How the history table (ai_account_readings) misbehaves: null = it works. */
   history: null as null | 'missing' | 'down' | 'throws',
   /** How a write of a subscription column misbehaves: null = it works. */
-  subscription: null as null | 'missing' | 'down' | 'throws'
+  subscription: null as null | 'missing' | 'down' | 'throws',
+  /** Only writes of this column misbehave (null = every subscription column does). */
+  subscriptionColumn: null as null | string
 }));
 
 vi.mock('@/lib/supabase/admin', () => ({
@@ -49,10 +53,21 @@ vi.mock('@/lib/supabase/admin', () => ({
           ? { code: 'PGRST205', message: "Could not find the table 'public.ai_account_readings' in the schema cache" }
           : { code: '57014', message: 'down' };
       };
+      const subscriptionError = () => {
+        const columns = Object.keys(patch ?? {}).filter((k) => SUBSCRIPTION_COLUMNS.includes(k));
+        if (!db.subscription || !columns.length) return null;
+        if (db.subscriptionColumn && !columns.includes(db.subscriptionColumn)) return null;
+        if (db.subscription === 'throws') throw new Error('connection lost');
+        return db.subscription === 'missing'
+          ? { code: 'PGRST204', message: "Could not find the 'plan_name' column of 'ai_accounts'" }
+          : { code: '57014', message: 'down' };
+      };
       const b: Record<string, unknown> = {
         select: () => b,
         eq: (c: string, v: unknown) => (filters.push((r) => r[c] === v), b),
         is: (c: string, v: unknown) => (filters.push((r) => (r[c] ?? null) === v), b),
+        // Only .not(column, 'is', value) is used: "is not that value", which an empty field also passes.
+        not: (c: string, _op: string, v: unknown) => (filters.push((r) => (r[c] ?? null) !== v), b),
         update: (row: Row) => ((patch = row), b),
         upsert: async (row: Row) => (db.writes.push({ table, op: 'upsert', row }), { error: null }),
         insert: async (row: Row) => {
@@ -67,21 +82,20 @@ vi.mock('@/lib/supabase/admin', () => ({
         limit: () => b,
         then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
           new Promise((ok) => {
+            if (patch) {
+              // An update awaited as it is (no row asked back): every matching row is changed, none is fine.
+              const error = subscriptionError();
+              if (error) return ok({ data: null, error });
+              const hits = rows();
+              for (const hit of hits) Object.assign(hit, patch);
+              if (hits.length) db.writes.push({ table, op: 'update', row: patch });
+              return ok({ data: null, error: null });
+            }
             const error = historyError();
             const newestFirst = [...rows()].sort((x, y) => (String(x.read_at) < String(y.read_at) ? 1 : -1));
             ok(error ? { data: null, error } : { data: newestFirst, error: null });
           }).then(res, rej),
         maybeSingle: async () => {
-          if (patch && db.subscription && Object.keys(patch).some((k) => SUBSCRIPTION_COLUMNS.includes(k))) {
-            if (db.subscription === 'throws') throw new Error('connection lost');
-            return {
-              data: null,
-              error:
-                db.subscription === 'missing'
-                  ? { code: 'PGRST204', message: "Could not find the 'plan_name' column of 'ai_accounts'" }
-                  : { code: '57014', message: 'down' }
-            };
-          }
           const hit = rows()[0] ?? null;
           if (patch && hit) {
             Object.assign(hit, patch);
@@ -121,6 +135,7 @@ beforeEach(() => {
   db.writes = [];
   db.history = null;
   db.subscription = null;
+  db.subscriptionColumn = null;
   db.tables = {
     ai_runner_tokens: [
       { runner: 'macusage-mac', token_sha256: sha(MAC), revoked_at: null },
@@ -457,11 +472,11 @@ describe('subscription details from the Mac (22 Nov 2026)', () => {
     expect(db.touched).not.toContain('ai_account_secrets');
   });
 
-  it('never changes a value that is already there', async () => {
+  it('never changes a plan, a start date, a billing day or a fee that is already there', async () => {
     Object.assign(account('ainursing'), {
       plan_name: 'Team plan (typed)',
       subscription_started_on: '2025-01-10',
-      extra_usage_on: true,
+      extra_usage_on: false,
       billing_day: 12,
       monthly_fee_inr: 24000
     });
@@ -469,10 +484,75 @@ describe('subscription details from the Mac (22 Nov 2026)', () => {
     const a = account('ainursing');
     expect(a.plan_name).toBe('Team plan (typed)');
     expect(a.subscription_started_on).toBe('2025-01-10');
-    expect(a.extra_usage_on).toBe(true);
+    expect(a.extra_usage_on).toBe(false);
     expect(a.billing_day).toBe(12);
     expect(a.monthly_fee_inr).toBe(24000);
     expect(subWrites()).toEqual([]);
+  });
+
+  describe('paid extra use follows the Mac (review of #103)', () => {
+    const push = (extra_use: boolean) => POST(req(reading({ subscription: { extra_use } })));
+
+    it('fills it when it is empty', async () => {
+      await push(true);
+      expect(account('ainursing').extra_usage_on).toBe(true);
+      expect(subWrites().map((w) => w.row)).toEqual([{ extra_usage_on: true }]);
+    });
+
+    it('off in the Tower, on at the Mac: it becomes on', async () => {
+      account('ainursing').extra_usage_on = false;
+      await push(true);
+      expect(account('ainursing').extra_usage_on).toBe(true);
+      expect(subWrites().map((w) => w.row)).toEqual([{ extra_usage_on: true }]);
+    });
+
+    it('on in the Tower, off at the Mac: it becomes off', async () => {
+      account('ainursing').extra_usage_on = true;
+      await push(false);
+      expect(account('ainursing').extra_usage_on).toBe(false);
+      expect(subWrites().map((w) => w.row)).toEqual([{ extra_usage_on: false }]);
+    });
+
+    it('the same value again writes nothing', async () => {
+      for (const same of [true, false]) {
+        account('ainursing').extra_usage_on = same;
+        account('ainursing').updated_at = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+        db.writes = [];
+        expect((await push(same)).status).toBe(200);
+        expect(account('ainursing').extra_usage_on).toBe(same);
+        expect(subWrites()).toEqual([]);
+      }
+    });
+
+    it('the plan and the start date beside it still fill empty fields only', async () => {
+      Object.assign(account('ainursing'), { plan_name: 'Typed plan', subscription_started_on: '2025-01-10', extra_usage_on: true });
+      await POST(req(reading({ subscription: SUB })));
+      expect(account('ainursing')).toMatchObject({ plan_name: 'Typed plan', subscription_started_on: '2025-01-10', extra_usage_on: false });
+      expect(subWrites().map((w) => w.row)).toEqual([{ extra_usage_on: false }]);
+    });
+
+    it('never touches another account', async () => {
+      account('aimech').extra_usage_on = true;
+      await push(false);
+      expect(account('aimech').extra_usage_on).toBe(true);
+    });
+  });
+
+  it('one field that cannot be written does not stop the others', async () => {
+    for (const how of ['down', 'throws', 'missing'] as const) {
+      for (const column of ['plan_name', 'subscription_started_on', 'extra_usage_on']) {
+        const a = account('ainursing');
+        for (const c of SUBSCRIPTION_COLUMNS) delete a[c];
+        a.updated_at = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+        db.subscription = how;
+        db.subscriptionColumn = column;
+        expect((await POST(req(reading({ subscription: SUB })))).status, `${how} ${column}`).toBe(200);
+        const want: Row = { plan_name: 'Max 20x', subscription_started_on: '2024-03-05', extra_usage_on: false };
+        delete want[column];
+        expect(a[column], `${how} ${column}`).toBeUndefined();
+        expect(a, `${how} ${column}`).toMatchObject(want);
+      }
+    }
   });
 
   it('fills only the fields that are empty when some were typed', async () => {
@@ -520,7 +600,8 @@ describe('subscription details from the Mac (22 Nov 2026)', () => {
     }
   });
 
-  it('refuses a badly shaped subscription with 400 and writes nothing', async () => {
+  it('drops a badly shaped subscription and still stores the reading', async () => {
+    let util = 0.5;
     for (const bad of [
       'Max 20x',
       null,
@@ -540,7 +621,26 @@ describe('subscription details from the Mac (22 Nov 2026)', () => {
       { plan: 'Max 20x', billing_day: 5 },
       { plan: 'Max 20x', email: 'x' }
     ]) {
-      expect((await POST(req(reading({ subscription: bad })))).status, JSON.stringify(bad)).toBe(400);
+      util = Math.round((util + 0.01) * 100) / 100;
+      account('ainursing').updated_at = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+      const res = await POST(req(reading({ seven_day_util: util, subscription: bad })));
+      expect(res.status, JSON.stringify(bad)).toBe(200);
+      expect(await res.json()).toEqual({ status: 'stored' });
+      expect(account('ainursing').seven_day_util, JSON.stringify(bad)).toBe(util);
+    }
+    // Not even the good half of a bad subscription is written.
+    expect(subWrites()).toEqual([]);
+    for (const c of SUBSCRIPTION_COLUMNS) expect(account('ainursing')[c]).toBeUndefined();
+  });
+
+  it('a bad reading is still a 400, with a good subscription or a bad one, and writes nothing', async () => {
+    for (const subscription of [SUB, { plan: '' }, undefined]) {
+      for (const over of [{ seven_day_util: 2 }, { read_at: undefined }, { label: 'Bad Label' }, { source: 'box' }]) {
+        expect((await POST(req(reading({ ...over, subscription })))).status, JSON.stringify(over)).toBe(400);
+      }
+    }
+    for (const notAnObject of ['x', 5, null, [reading({ subscription: SUB })]]) {
+      expect((await POST(req(notAnObject))).status).toBe(400);
     }
     expect(db.writes).toEqual([]);
   });
