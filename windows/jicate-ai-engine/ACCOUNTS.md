@@ -139,23 +139,41 @@ Install (after the PR is merged and live; only on the Director's yes):
      deny rule covers that path. --tools, "./" allow rules and dontAsk do not
      stop it. The helpers put staff-typed text and text from uploads into the
      prompt, so this matters for every fenced helper.
-     What the shim does: every run it starts WITH A TOWER KEY gets
+     What the shim does: every run whose ARGUMENTS PASS THE FENCE gets
        CLAUDE_CODE_DISABLE_FILE_MENTIONS=1
-     in its environment, set in the same place as the key (a helper that sets
-     the variable to 0, in any letter case, is overruled). With it claude does
-     not open the file; it only notes "Referenced <path> (not read)". A run on
-     the box's own sign-in is NOT given the variable: its environment is the
+     in its environment on every attempt: with a Tower key, and also when it
+     falls back to the box's own sign-in (Tower down, every account refused,
+     no key allowed; W12 review of PR #102). A helper that sets the variable
+     to 0, false or empty, in any letter case, is overruled: every other
+     spelling is dropped and the shim's "1" is written last. With it claude
+     does not open the file; it only notes "Referenced <path> (not read)". A
+     run whose arguments do NOT pass the fence, and every run under
+     CLAUDE_ACCT_OFF=1, is NOT given the variable: its environment is the
      helper's own, as before the shim.
+     THE SETTINGS-FILE GAP (W12 review of PR #102; not proven either way,
+     nobody ran claude). Fenced runs use --setting-sources project (or
+     local), so claude reads .claude\settings.json and
+     .claude\settings.local.json in the job folder (the folder the helper
+     starts claude in). An "env" block there that sets
+     CLAUDE_CODE_DISABLE_FILE_MENTIONS to 0 / false / empty MAY win over the
+     variable the shim put in the environment and switch file mentions back
+     on. The shim does NOT look at settings files (docs-only guard: the stop
+     list and scan under "THE TOKEN FILE IS NOT PROTECTED" below, and fence
+     check (3) repeated in the helper's real job folder).
+     HELPERS ON THE SHIM TODAY (Box 1): proof-read (since 21 Nov 2026) and
+     regscan-read (since 22 Nov 2026). Both pass the same 13-rule --settings
+     fence, whose deny rules cover C:/jicate-ai/** and C:/Users/** (each in
+     both spellings).
      How sure: the variable name and the code that reads it were read in the
      claude 2.1.329 program text on the Mac on 21 Nov 2026 (the name is also
      in 2.1.326 - 2.1.328; values 1 / true / yes / on switch it on). It was
      NOT run, and NOT read in the claude.exe on Box 1, whose version may
      differ. So fence check (3) below is the proof on the box. If (3) FAILS
      (the canary prints through <SHIM>), the box's claude does not honour the
-     variable: point no fenced helper other than proof-read at the shim until
-     file mentions are fenced. (proof-read is the exception because its own
-     deny rules cover C:\jicate-ai and C:\Users in both spellings.) Run (3)
-     again after every claude update on the box: the variable is claude's own
+     variable: point no fenced helper other than proof-read and regscan-read
+     at the shim until file mentions are fenced. (Those two are the exception
+     because their own deny rules cover C:\jicate-ai and C:\Users in both
+     spellings.) Run (3) again after every claude update on the box: the variable is claude's own
      and a later version could drop or rename it.
    - THE TOKEN FILE IS NOT PROTECTED FROM OTHER RUNS ON THE BOX. Plainly:
      maxlane-biometric.env is readable by the Windows user Admin, and Admin is
@@ -199,15 +217,22 @@ Install (after the PR is merged and live; only on the Director's yes):
        Get-ChildItem C:\Users\Admin\jkkn-max-lane, C:\jkkn-* -Recurse -Include settings.json, settings.local.json, .mcp.json -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName; Get-Content $_.FullName }
        # any settings file that adds working folders (it could add C:\jicate-ai, which the shim cannot see)
        Get-ChildItem C:\Users\Admin\jkkn-max-lane, C:\jkkn-* -Recurse -Include settings.json, settings.local.json -ErrorAction SilentlyContinue | Select-String additionalDirectories
+       # any settings file that names the file-mention switch (an "env" block could set it back to 0; -match ignores letter case)
+       Get-ChildItem C:\Users\Admin\jkkn-max-lane, C:\jkkn-* -Recurse -Include settings.json, settings.local.json -ErrorAction SilentlyContinue | Select-String -Pattern 'CLAUDE_CODE_DISABLE_FILE_MENTIONS|ANTHROPIC_BASE_URL'
+       # (these two scans cover the folders named above only: run them again on each helper's real job folder if it is elsewhere)
        # the scheduled tasks behind them
        Get-ScheduledTask | Where-Object TaskName -like 'ai.jkkn.*' | Select-Object TaskName, State
      Or simply: point ONE drain at the shim and read logs\claude-acct.log; a
      "fence: no Tower key (<reason>)" line names what is missing.
      The shim cannot see settings FILES: a drain whose project settings allow
-     Bash / PowerShell / WebFetch / WebSearch, set ANTHROPIC_BASE_URL, add
+     Bash / PowerShell / WebFetch / WebSearch, set ANTHROPIC_BASE_URL, set
+     CLAUDE_CODE_DISABLE_FILE_MENTIONS (in any letter case, to any value: an
+     "env" block could switch file mentions back on), add
      working folders (permissions.additionalDirectories), or start MCP servers
      or hooks, must not be pointed at the shim (leave its
-     CLAUDE_BIN as the real claude.exe) until that is removed.
+     CLAUDE_BIN as the real claude.exe) until that is removed. This stop list
+     is docs-only: nothing in the shim reads a settings file, so the scan
+     above and fence check (3) are the only guard.
    - maxlane-biometric.env stays in C:\jicate-ai\, OUTSIDE every drain's
      working folder (a run allowed Read must not be able to reach it).
    - THREE FENCE CHECKS ON THE BOX: (1) and (2) before the token row is
@@ -250,11 +275,29 @@ Install (after the PR is merged and live; only on the Director's yes):
        $m | & <SHIM> @F > out3b.json
        Pass out3b.json                               # must be True (control printed, no error)
        (Get-Content out3b.json -Raw).Contains($c)   # must be False
-     and logs\claude-acct.log must show an account label for that run, NOT
-     own-sign-in and no "fence: ..." line (an own-sign-in run has mentions on
-     by design, so it proves nothing here). True on the last line = the box's
+     and logs\claude-acct.log must show an account label for that run and
+     no "fence: ..." line (a run with a "fence: ..." line is not given the
+     switch, so it proves nothing here; a fenced run that fell back to
+     own-sign-in does have the switch, but then (2) through <SHIM> is not
+     proven, so get an account label). True on the last line = the box's
      claude ignores CLAUDE_CODE_DISABLE_FILE_MENTIONS: stop, and point no
-     fenced helper other than proof-read at the shim. Then clean up:
+     fenced helper other than proof-read and regscan-read (same deny rules)
+     at the shim.
+     REPEAT (3) WHERE THE HELPER REALLY RUNS. C:\fence-test is an empty
+     folder with no .claude\settings*.json, so (3) run there alone does NOT
+     see the settings-file gap above. For each helper on the shim (today
+     proof-read and regscan-read) run the out3b line again, same $m and $F,
+     from that helper's real job folder (copy inside.txt there first, remove
+     it after). If that folder cannot be used, plant the file instead:
+       mkdir C:\fence-test\.claude
+       Set-Content C:\fence-test\.claude\settings.json '{"env":{"CLAUDE_CODE_DISABLE_FILE_MENTIONS":"0"}}'
+       $m | & <SHIM> @F > out3c.json
+       Pass out3c.json                               # must be True
+       (Get-Content out3c.json -Raw).Contains($c)   # must be False
+     True on that last line = a settings file in the job folder switches file
+     mentions back on, over the shim: the stop list above is then the only
+     guard, so re-run its scan on every helper folder before and after each
+     helper change, and tell the Box desk. Then clean up:
        cmd /c rmdir C:\fence-test\link; Remove-Item C:\fence-test -Recurse; Remove-Item C:\jicate-ai\fence-canary.txt
      (rmdir on a junction removes the link only, never C:\jicate-ai.)
 2. Lane token, made ON the box (prints only a hash; secret stays in the file):
@@ -348,7 +391,9 @@ How it behaves:
   on a command line, never in the log.
 - A run that holds a key also has CLAUDE_CODE_DISABLE_FILE_MENTIONS=1 in its
   environment, so a file named in the prompt as @<path> is not attached
-  (install step 1, "FILE MENTIONS IN THE PROMPT"). Own-sign-in runs do not.
+  (install step 1, "FILE MENTIONS IN THE PROMPT"). So does a fenced run that
+  falls back to the box's own sign-in. Runs that did not pass the fence, and
+  runs under CLAUDE_ACCT_OFF=1, do not.
 - Only fenced runs get a key (install step 1). Unfenced runs, and every run
   when the Tower URL is not https, go on the box's own sign-in as before.
 

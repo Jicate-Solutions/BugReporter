@@ -19,10 +19,11 @@
  *      of --settings: the fence takes it only in one strict shape
  *      (strictSettings below) and hands claude the shim's OWN re-written JSON
  *      for it, so claude never reads text the shim did not check.
- *      A run that holds a Tower key also gets CLAUDE_CODE_DISABLE_FILE_MENTIONS=1
- *      in its environment (keyedEnv below): claude then no longer attaches a
- *      file named in the prompt as "@<path>", which the tool fence does not
- *      cover (W12 review, PR #100);
+ *      A run that passed fenceOf also gets CLAUDE_CODE_DISABLE_FILE_MENTIONS=1
+ *      in its environment, on EVERY attempt: with a Tower key (keyedEnv below)
+ *      and on the box's own sign-in (noMentionsEnv below; W12 review, PR #102).
+ *      claude then no longer attaches a file named in the prompt as "@<path>",
+ *      which the tool fence does not cover (W12 review, PR #100);
  *   4. if Claude refuses the account (usage limit, bad key, or the account's
  *      organisation has switched Claude Code off), asks again with
  *      refused=<label> and runs on the next account — at most once per account;
@@ -33,9 +34,10 @@
  * ahead exactly as before this shim (the box's own sign-in / whatever
  * environment the drain already had). One exception: a run that PASSED the
  * fence keeps the shim's re-written --settings value on every attempt, the
- * own sign-in included (same settings, the shim's spelling). The own sign-in
- * never gets CLAUDE_CODE_DISABLE_FILE_MENTIONS from the shim: its environment
- * is the drain's own, untouched.
+ * own sign-in included (same settings, the shim's spelling), and it has
+ * CLAUDE_CODE_DISABLE_FILE_MENTIONS=1 on every attempt, the own sign-in
+ * included. A run that did NOT pass fenceOf, and every run under
+ * CLAUDE_ACCT_OFF=1, has the drain's own environment, untouched.
  *
  * The key is held in memory only: never written to disk, never logged, never
  * put on a command line. The log line per run (logs\claude-acct.log next to
@@ -508,26 +510,42 @@ export function envFenceOf(env) {
  * unless a deny rule covers the path, and "./" allow rules, --tools and
  * dontAsk do not stop it: the tool fence is about tools, and this is not a
  * tool call. The helpers put staff-typed text and text from uploads into the
- * prompt, so a keyed run without the switch could be handed
- * @C:\jicate-ai\maxlane-biometric.env.
+ * prompt, so a fenced run without the switch could be handed
+ * @C:\jicate-ai\maxlane-biometric.env, with a Tower key or on the box's own
+ * sign-in alike.
  */
 export const NO_FILE_MENTIONS = 'CLAUDE_CODE_DISABLE_FILE_MENTIONS';
 
 /**
+ * The environment of a fenced run on the box's own sign-in: the drain's
+ * environment with the file-mention switch ON. Any other spelling of the
+ * switch's name in the drain's environment is dropped first (Windows variable
+ * names ignore case, so "claude_code_disable_file_mentions=0" would be the
+ * same variable); the switch is written last.
+ * @param {Record<string, string | undefined>} baseEnv
+ * @returns {Record<string, string | undefined>}
+ */
+export function noMentionsEnv(baseEnv) {
+  const env = {};
+  for (const [name, value] of Object.entries(baseEnv)) {
+    if (name.toUpperCase() !== NO_FILE_MENTIONS) env[name] = value;
+  }
+  env[NO_FILE_MENTIONS] = '1';
+  return env;
+}
+
+/**
  * The environment of a run that holds a Tower key: the drain's environment,
- * the key, and the file-mention switch ON. Built in ONE place so the switch
- * can never be left off a keyed run. Any other spelling of the switch's name
- * in the drain's environment is dropped first (Windows variable names ignore
- * case, so "claude_code_disable_file_mentions=0" would be the same variable).
+ * the key, and the file-mention switch ON (same rule as noMentionsEnv, the
+ * switch written last). Built in ONE place so the switch can never be left
+ * off a keyed run.
  * @param {Record<string, string | undefined>} baseEnv
  * @param {string} key
  * @returns {Record<string, string | undefined>}
  */
 export function keyedEnv(baseEnv, key) {
-  const env = {};
-  for (const [name, value] of Object.entries(baseEnv)) {
-    if (name.toUpperCase() !== NO_FILE_MENTIONS) env[name] = value;
-  }
+  const env = noMentionsEnv(baseEnv);
+  delete env[NO_FILE_MENTIONS];
   env.CLAUDE_CODE_OAUTH_TOKEN = key;
   env[NO_FILE_MENTIONS] = '1';
   return env;
@@ -763,12 +781,17 @@ async function main() {
   // own copy (a --settings value re-written by the shim) on EVERY attempt, the
   // own sign-in included; any other run gets the drain's arguments untouched.
   let runArgs = args;
+  // The environment of the own-sign-in attempt. A run that passed fenceOf has
+  // file mentions off there too (W12 review, PR #102); any other run, and
+  // every run under CLAUDE_ACCT_OFF, has exactly what the drain had.
+  let ownEnv = baseEnv;
   const argFence = fenceOf(args);
   const envFence = argFence.ok ? envFenceOf(process.env) : argFence;
   const fence = envFence.ok && tokenInsideFolder(ENV_FILE, process.cwd())
     ? { ok: false, reason: 'token file inside the working folder' }
     : envFence;
   if (process.env.CLAUDE_ACCT_OFF !== '1' && process.env.CLAUDE_ACCT_ACTIVE !== '1') {
+    if (argFence.ok) ownEnv = noMentionsEnv(baseEnv); // file mentions off, key or no key
     if (!fence.ok) {
       // Not fenced off from the shell / web: never ask for a key.
       log(`fence: no Tower key (${fence.reason})`);
@@ -800,7 +823,7 @@ async function main() {
       if (ownTried) break; // the floor ran already: hand back what we have
       ownTried = true;
       label = 'own-sign-in';
-      env = baseEnv; // exactly what the drain had before this shim
+      env = ownEnv; // the drain's own; a run that passed fenceOf: file mentions off
       if (pick.none) log(`tower: ${pick.none}`);
     }
     last = await runClaude(runArgs, env, input);
