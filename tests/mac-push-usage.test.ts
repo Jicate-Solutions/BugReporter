@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { macReadingSchema } from '@/lib/ai-engine/mac-usage';
+import { macReadingSchema, macSubscriptionOnlySchema, macSubscriptionSchema } from '@/lib/ai-engine/mac-usage';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -426,6 +426,88 @@ describe('--dry with the signed-in account', () => {
       expect(run.stdout).not.toContain('subscription');
       expect(run.stderr).toBe('');
       expect(run.stdout).toMatch(/dry run: 1 to send, 0 skipped, nothing sent/);
+    }
+  });
+});
+
+describe('the signed-in account has no reading to send (23 Nov 2026)', () => {
+  const SUB = { plan: 'Max 20x', started_on: '2024-03-05', extra_use: false };
+  const fresh = { seven_day_pct: 40, sd_reset: 'in 3d 1h', fetched_at: minsAgo(5) };
+  const noReading = [
+    { seven_day_pct: 85, sd_reset: 'in 9h 36m', fetched_at: minsAgo(21) },
+    { error: 'rate-limited' },
+    { seven_day_pct: null, sd_reset: 'in 1d 0h', fetched_at: minsAgo(1) },
+    { seven_day_pct: 0, sd_reset: 'due', fetched_at: minsAgo(1) }
+  ];
+
+  it('sends its subscription alone, with no usage numbers and no read time', () => {
+    for (const entry of noReading) {
+      const out = mod.buildReadings({ accounts: { [at('aimech')]: entry, [at('ainursing')]: fresh } }, NOW, mod.subscriptionOf(oauth()));
+      expect(out.send.map((b) => b.label)).toEqual(['ainursing', 'aimech']);
+      expect(out.send[1]).toEqual({ label: 'aimech', source: 'mac', subscription: SUB });
+      expect('subscription' in out.send[0]).toBe(false);
+      // The skipped reading is still reported as skipped, and is not sent as a reading.
+      expect(out.skipped.map((s) => s.label)).toEqual(['aimech']);
+      expect(out.withheld).toEqual([]);
+    }
+  });
+
+  it('what it sends alone is a body the Tower accepts as subscription-only, never as a reading', () => {
+    const out = mod.buildReadings({ accounts: { [at('aimech')]: noReading[0] } }, NOW, mod.subscriptionOf(oauth()));
+    expect(out.send).toHaveLength(1);
+    const { subscription, ...rest } = out.send[0];
+    expect(macSubscriptionOnlySchema.safeParse(rest).success).toBe(true);
+    expect(macSubscriptionSchema.safeParse(subscription).success).toBe(true);
+    expect(macReadingSchema.safeParse(out.send[0]).success).toBe(false);
+  });
+
+  it('sends nothing alone for anyone else, with nobody signed in, or for an account not in the cache', () => {
+    const cache = { accounts: { [at('aimech')]: noReading[0], [at('ainursing')]: noReading[0] } };
+    expect(mod.buildReadings(cache, NOW, null).send).toEqual([]);
+    expect(mod.buildReadings(cache, NOW, mod.subscriptionOf(oauth({ emailAddress: at('director') }))).send).toEqual([]);
+    expect(mod.buildReadings(cache, NOW, mod.subscriptionOf(oauth({ emailAddress: ['aimech', 'other.test'].join('@') }))).send).toEqual([]);
+    expect(mod.buildReadings(cache, NOW, mod.subscriptionOf(oauth())).send.map((b) => b.label)).toEqual(['aimech']);
+  });
+
+  it('a fresh reading still carries the subscription itself, once', () => {
+    const out = mod.buildReadings({ accounts: { [at('aimech')]: fresh } }, NOW, mod.subscriptionOf(oauth()));
+    expect(out.send).toHaveLength(1);
+    expect(out.send[0].read_at).toBeDefined();
+    expect(out.send[0].subscription).toEqual(SUB);
+  });
+
+  it('two addresses sharing the name: still held back, once, and nothing is sent alone', () => {
+    const other = ['aimech', 'other.test'].join('@');
+    for (const twin of [fresh, noReading[0]]) {
+      const out = mod.buildReadings({ accounts: { [at('aimech')]: noReading[0], [other]: twin } }, NOW, mod.subscriptionOf(oauth()));
+      expect(out.withheld).toEqual(['aimech']);
+      for (const b of out.send) expect('subscription' in b).toBe(false);
+      expect(out.send).toHaveLength(twin === fresh ? 1 : 0);
+    }
+  });
+
+  it('--dry prints the subscription line without usage numbers or an address', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'macpush-'));
+    try {
+      const qc = join(dir, 'qc.json');
+      const cj = join(dir, 'claude.json');
+      const old = new Date(Date.now() - 21 * 60_000).toISOString();
+      writeFileSync(qc, JSON.stringify({ accounts: { [at('aimech')]: { seven_day_pct: 85, sd_reset: 'in 9h 36m', fetched_at: old } } }));
+      writeFileSync(cj, JSON.stringify(oauth()));
+      const run = spawnSync(process.execPath, [SCRIPT, '--dry'], {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: dir, QC_PATH: qc, CLAUDE_JSON_PATH: cj, TOWER_URL: 'https://127.0.0.1:1', TOWER_USAGE_TOKEN: '' }
+      });
+      expect(run.status).toBe(0);
+      expect(run.stderr).toBe('');
+      expect(run.stdout).toMatch(/skip aimech: too old \(21 min\)/);
+      expect(run.stdout).toContain('would send aimech: no fresh reading · subscription: plan Max 20x, started 2024-03-05, extra use off');
+      expect(run.stdout).not.toContain('week');
+      expect(run.stdout).toMatch(/dry run: 1 to send, 1 skipped, nothing sent/);
+      expect(run.stdout + run.stderr).not.toContain('@');
+      expect(run.stdout + run.stderr).not.toContain('example.test');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

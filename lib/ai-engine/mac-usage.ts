@@ -23,6 +23,10 @@
  * account signed in on it (22 Nov 2026). The plan and the start date only ever
  * fill fields that are still empty; paid extra use follows the Mac, because
  * nobody can type it: see fillSubscriptionFromMac.
+ *
+ * When the Mac has no fresh reading for that account it sends the subscription
+ * alone (macSubscriptionOnlySchema): only the subscription fields are brought
+ * up to date, and no reading is stored anywhere.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -89,6 +93,21 @@ export const macReadingSchema = z
   });
 
 export type MacReading = z.infer<typeof macReadingSchema>;
+
+/**
+ * Everything but the subscription in an item that carries NO reading: the
+ * label and the source, nothing else. Strict on purpose, so a half-given
+ * reading is still refused as a bad reading and never passes as this.
+ */
+export const macSubscriptionOnlySchema = z
+  .object({
+    label: z
+      .string()
+      .regex(ACCOUNT_LABEL)
+      .refine((l) => l !== 'default' && l !== 'auto', 'reserved'),
+    source: z.literal('mac')
+  })
+  .strict();
 
 export type MacRow = {
   seven_day_util: number;
