@@ -6,6 +6,8 @@ import { NextRequest } from 'next/server';
  * platform admin types in an account's subscription details (21 Nov 2026).
  * Same admin check as the rest of the route; every field is checked; only the
  * five subscription columns are written and the keys table is never touched.
+ * Only the fields that are sent are written (22 Nov 2026): one left out keeps
+ * what is stored, so what the Mac's feed filled is not wiped by another save.
  * The older { label, priority } body still works as before.
  */
 
@@ -97,6 +99,45 @@ describe('PATCH /api/internal/ai-engine/accounts { label, subscription }', () =>
     expect(state.updates[0].row).toMatchObject({ plan_name: null, billing_day: null, billing_note: null });
   });
 
+  describe('only what the admin changed is saved (review of #103)', () => {
+    // The stored row as the Mac's feed left it after the page was loaded: the admin's page still shows an empty plan.
+    const stored = (): Row => ({ plan_name: 'Max 20x', subscription_started_on: '2024-03-05', extra_usage_on: true, billing_day: null, monthly_fee_inr: null, billing_note: null });
+    const afterSave = () => ({ ...stored(), ...state.updates[0].row });
+
+    it('a fee-only save writes the fee alone: the plan and start date the feed filled survive', async () => {
+      const res = await patch({ label: 'aiahs', subscription: { monthly_fee_inr: 24000 } });
+      expect(res.status).toBe(200);
+      expect(state.updates).toEqual([{ table: 'ai_accounts', label: 'aiahs', row: { monthly_fee_inr: 24000 } }]);
+      expect(Object.keys(state.updates[0].row)).toEqual(['monthly_fee_inr']);
+      expect(afterSave()).toMatchObject({ plan_name: 'Max 20x', subscription_started_on: '2024-03-05', extra_usage_on: true, monthly_fee_inr: 24000 });
+      expect((await res.json()).account).toEqual({ label: 'aiahs', subscription: { monthly_fee_inr: 24000 } });
+    });
+
+    it('each field can be saved by itself, and nothing else is written with it', async () => {
+      for (const [key, value] of Object.entries(details())) {
+        state.updates = [];
+        expect((await patch({ label: 'aiahs', subscription: { [key]: value } })).status, key).toBe(200);
+        expect(state.updates[0].row, key).toEqual({ [key]: value });
+      }
+    });
+
+    it('a field the admin emptied is still set to "not known", and only that field', async () => {
+      expect((await patch({ label: 'aiahs', subscription: { plan_name: null } })).status).toBe(200);
+      expect(state.updates[0].row).toEqual({ plan_name: null });
+      expect(afterSave()).toMatchObject({ plan_name: null, subscription_started_on: '2024-03-05' });
+      state.updates = [];
+      expect((await patch({ label: 'aiahs', subscription: { subscription_started_on: null, billing_note: '' } })).status).toBe(200);
+      expect(state.updates[0].row).toEqual({ subscription_started_on: null, billing_note: null });
+    });
+
+    it('a future start date is still refused when it comes alone, and paid extra use can never be typed', async () => {
+      expect((await patch({ label: 'aiahs', subscription: { subscription_started_on: '2999-01-01' } })).status).toBe(400);
+      expect((await patch({ label: 'aiahs', subscription: { extra_usage_on: false } })).status).toBe(400);
+      expect((await patch({ label: 'aiahs', subscription: { monthly_fee_inr: 24000, extra_usage_on: false } })).status).toBe(400);
+      expect(state.updates).toEqual([]);
+    });
+  });
+
   it('is for platform admins only, like the rest of the route', async () => {
     state.isAdmin = false;
     const forbidden = await patch({ label: 'aiahs', subscription: details() });
@@ -115,7 +156,8 @@ describe('PATCH /api/internal/ai-engine/accounts { label, subscription }', () =>
       details({ monthly_fee_inr: 'a lot' }),
       details({ key: 'sk-ant-oat01-anything' }),
       details({ priority: 1 }),
-      { plan_name: 'Max 20x' }
+      { plan_name: 'Max 20x', billing_day: 32 },
+      {}
     ]) {
       const res = await patch({ label: 'aiahs', subscription: bad });
       expect(res.status, JSON.stringify(bad)).toBe(400);

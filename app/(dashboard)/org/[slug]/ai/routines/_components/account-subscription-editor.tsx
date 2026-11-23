@@ -3,9 +3,15 @@
 /**
  * Subscription details for one Claude account: plan name, start date, the day
  * of the month it renews, the monthly fee and a note. Platform admins only.
- * Claude does not report these, so they are typed in here. Folded away behind
+ * The Mac's feed fills the plan and the start date when they are empty; the
+ * rest Claude does not report, so it is typed in here. What is typed here is
+ * never changed by the feed. Folded away behind
  * "edit subscription" so the card stays short on a phone. Saves through the
  * accounts PATCH route, which never touches the key.
+ *
+ * Save sends ONLY the fields changed since the editor was opened, and every
+ * opening starts from the values the page has now. So a plan the feed filled
+ * in after the page was loaded is not wiped by an admin who only types a fee.
  */
 
 import { useState } from 'react';
@@ -14,6 +20,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { subscriptionChanges, subscriptionFields, type SubscriptionFields } from '@/lib/ai-engine/subscription-edit';
 
 export function AccountSubscriptionEditor({
   label,
@@ -34,7 +41,9 @@ export function AccountSubscriptionEditor({
   note: string | null;
 }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const saved = () => subscriptionFields({ planName, startedOn, billingDay, monthlyFee, note });
+  /** What the fields showed when the editor was opened; null while it is closed. Save compares against it. */
+  const [opened, setOpened] = useState<SubscriptionFields | null>(null);
   const [plan, setPlan] = useState(planName ?? '');
   const [started, setStarted] = useState(startedOn ?? '');
   const [day, setDay] = useState(billingDay == null ? '' : String(billingDay));
@@ -42,23 +51,27 @@ export function AccountSubscriptionEditor({
   const [text, setText] = useState(note ?? '');
   const [saving, setSaving] = useState(false);
 
-  /** Cancel: put back what is saved, so typing that was not saved never looks saved the next time. */
-  function cancel() {
-    setPlan(planName ?? '');
-    setStarted(startedOn ?? '');
-    setDay(billingDay == null ? '' : String(billingDay));
-    setFee(monthlyFee == null ? '' : String(monthlyFee));
-    setText(note ?? '');
-    setOpen(false);
+  /** Open: start from what the page has now, never from what it had when it was first drawn or from old typing. */
+  function open() {
+    const now = saved();
+    setPlan(now.plan);
+    setStarted(now.started);
+    setDay(now.day);
+    setFee(now.fee);
+    setText(now.note);
+    setOpened(now);
   }
 
-  if (!open) {
+  if (!opened) {
     return (
-      <button type="button" className="text-muted-foreground text-xs underline" onClick={() => setOpen(true)}>
+      <button type="button" className="text-muted-foreground text-xs underline" onClick={open}>
         edit subscription
       </button>
     );
   }
+  const baseline = opened;
+  /** Cancel: typing that was not saved is dropped; the next opening starts from what is saved. */
+  const cancel = () => setOpened(null);
 
   async function save() {
     const dayNumber = day.trim() === '' ? null : Number(day);
@@ -75,21 +88,19 @@ export function AccountSubscriptionEditor({
       toast.error('The start date cannot be in the future.');
       return;
     }
+    // Only what changed since the editor was opened goes out; a field left alone is not sent, so it is not touched.
+    const changes = subscriptionChanges(baseline, { plan, started, day, fee, note: text });
+    if (Object.keys(changes).length === 0) {
+      toast.info(`${label}: nothing changed.`);
+      setOpened(null);
+      return;
+    }
     setSaving(true);
     try {
       const res = await fetch('/api/internal/ai-engine/accounts', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          label,
-          subscription: {
-            plan_name: plan.trim() || null,
-            subscription_started_on: started || null,
-            billing_day: dayNumber,
-            monthly_fee_inr: feeNumber,
-            billing_note: text.trim() || null
-          }
-        })
+        body: JSON.stringify({ label, subscription: changes })
       });
       const json = await res.json().catch(() => null);
       if (!res.ok) {
@@ -97,7 +108,7 @@ export function AccountSubscriptionEditor({
         return;
       }
       toast.success(`${label}: subscription details saved.`);
-      setOpen(false);
+      setOpened(null);
       router.refresh();
     } finally {
       setSaving(false);
@@ -109,7 +120,8 @@ export function AccountSubscriptionEditor({
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-muted-foreground text-xs">
         Subscription for {label}. Leave any of these empty when you do not know it. Leave the
-        billing day empty to go by the start date.
+        billing day empty to go by the start date. An empty field means &quot;not known&quot;: the plan
+        and the start date may then be filled in from the Mac.
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="space-y-1">

@@ -26,8 +26,23 @@
  * Skipped: a reading older than 20 minutes (its fetched_at), no weekly %, or no
  * weekly reset time ('' or 'due').
  *
+ * Subscription details (22 Nov 2026): ~/.claude.json knows the plan, the start
+ * date and whether paid extra use is on, for the account signed in on this Mac
+ * right now only. That account's reading carries them as
+ *   subscription = { plan, started_on (the India calendar day), extra_use }
+ * with only the parts that are known. The Tower fills its own empty plan and
+ * start date from it and never changes one an admin typed; paid extra use it
+ * keeps as last seen here. There is no fee and no billing day in that file.
+ * The other accounts get theirs when the Mac switches to them.
+ * A missing or unreadable file means no subscription key; the usage push goes on.
+ * The signed-in account is matched to a cache entry on the FULL address. The
+ * Tower only knows the name before the @, so when two addresses in the cache
+ * share that name, the subscription is held back for it (usage still goes) and
+ * the run says so.
+ *
  * Settings (environment):
  *   QC_PATH            the cache (default ~/.config/obsidian/v5-quota-cache.json)
+ *   CLAUDE_JSON_PATH   Claude's own settings file (default ~/.claude.json)
  *   TOWER_URL          default https://jkkn-centralized-bug-reporter.vercel.app
  *   TOWER_USAGE_TOKEN  the Mac usage token (runner "macusage-mac"); if unset it is read
  *                      from the login Keychain item "jicate-tower-macusage". Never printed.
@@ -81,10 +96,77 @@ export function resetEpoch(iso, relative, fetchedMs) {
   return secs == null ? null : Math.ceil(fetchedMs / 1000) + secs;
 }
 
-/** The bodies to send, and what was skipped and why. Pure. */
-export function buildReadings(cache, now) {
+const IST_OFFSET_MS = 5.5 * 60 * 60_000;
+
+/** "Max 20x" / "Max 5x" from the rate-limit tier, else the plan's own name (40 characters at most). '' = not known. */
+export function planText(o) {
+  const tier = typeof o?.organizationRateLimitTier === 'string' ? o.organizationRateLimitTier : '';
+  if (tier.includes('max_20x')) return 'Max 20x';
+  if (tier.includes('max_5x')) return 'Max 5x';
+  for (const v of [o?.planDisplayName, o?.organizationType]) {
+    if (typeof v === 'string' && v.trim()) return v.trim().slice(0, 40).trim();
+  }
+  return '';
+}
+
+/** An ISO moment → the calendar day in India, "YYYY-MM-DD". null when it is not a sane moment. */
+export function indiaDay(isoText) {
+  const t = typeof isoText === 'string' ? Date.parse(isoText) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const day = new Date(t + IST_OFFSET_MS).toISOString().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) && day >= '2000-01-01' ? day : null;
+}
+
+/**
+ * What ~/.claude.json says about the signed-in account: its email (lower case)
+ * and the subscription parts that are known. null when there is no account or
+ * nothing is known. Pure: it is given the parsed file.
+ */
+export function subscriptionOf(claudeJson) {
+  const o = claudeJson?.oauthAccount;
+  if (!o || typeof o !== 'object' || typeof o.emailAddress !== 'string') return null;
+  const subscription = {};
+  const plan = planText(o);
+  if (plan) subscription.plan = plan;
+  const startedOn = indiaDay(o.subscriptionCreatedAt);
+  if (startedOn) subscription.started_on = startedOn;
+  if (typeof o.hasExtraUsageEnabled === 'boolean') subscription.extra_use = o.hasExtraUsageEnabled;
+  if (!Object.keys(subscription).length) return null;
+  return { email: o.emailAddress.trim().toLowerCase(), subscription };
+}
+
+/** Read the signed-in account's subscription. Any trouble (no file, not JSON, no account) = null, silently. */
+export function readSubscription(path) {
+  try {
+    return subscriptionOf(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+/** First character + "***": enough to tell entries apart in the output, never a whole address. */
+export function masked(text) {
+  const s = String(text ?? '').trim();
+  return `${s.slice(0, 1)}***`;
+}
+
+/**
+ * The bodies to send, and what was skipped and why. Pure. `signedIn` (from
+ * subscriptionOf) adds the subscription to the reading of that account only,
+ * matched on the full address. `withheld` lists the labels whose subscription
+ * was held back because two addresses in the cache share that label: the
+ * Tower could not tell which of the two it belongs to.
+ */
+export function buildReadings(cache, now, signedIn = null) {
   const send = [];
   const skipped = [];
+  const withheld = [];
+  // Every address counts here, also one whose reading is too old to send: it is still a second owner of the label.
+  const owners = new Map();
+  for (const email of Object.keys(cache?.accounts ?? {})) {
+    const label = labelOf(email);
+    if (label) owners.set(label, (owners.get(label) ?? new Set()).add(String(email).trim().toLowerCase()));
+  }
   for (const [email, a] of Object.entries(cache?.accounts ?? {})) {
     const label = labelOf(email);
     if (!label) { skipped.push({ email, why: 'not a label' }); continue; }
@@ -107,9 +189,13 @@ export function buildReadings(cache, now) {
       body.five_hour_util = round(a.five_hour_pct / 100);
       body.five_hour_resets_at = fhReset;
     }
+    if (signedIn && signedIn.email === String(email).trim().toLowerCase()) {
+      if (owners.get(label).size > 1) withheld.push(label);
+      else body.subscription = signedIn.subscription;
+    }
     send.push(body);
   }
-  return { send, skipped };
+  return { send, skipped, withheld };
 }
 
 /** Share of the allowance, 0-1 (the Tower refuses anything above 1). */
@@ -132,7 +218,11 @@ const iso = (s) => new Date(s * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 function describe(b) {
   const fh = b.five_hour_util != null ? ` · 5h ${b.five_hour_util} (resets ${iso(b.five_hour_resets_at)})` : '';
-  return `${b.label}: week ${b.seven_day_util} (resets ${iso(b.seven_day_resets_at)}) · read ${iso(b.read_at)}${fh}`;
+  const s = b.subscription;
+  const sub = s
+    ? ` · subscription: plan ${s.plan ?? '-'}, started ${s.started_on ?? '-'}, extra use ${s.extra_use == null ? '-' : s.extra_use ? 'on' : 'off'}`
+    : '';
+  return `${b.label}: week ${b.seven_day_util} (resets ${iso(b.seven_day_resets_at)}) · read ${iso(b.read_at)}${fh}${sub}`;
 }
 
 async function main(argv) {
@@ -142,11 +232,16 @@ async function main(argv) {
   try {
     cache = JSON.parse(readFileSync(path, 'utf8'));
   } catch (e) {
-    console.error(`cannot read the cache ${path}: ${e instanceof Error ? e.message : e}`);
+    // A fixed message: the reason text of a parse error can quote the file, and the file holds addresses.
+    console.error(`cannot read the usage cache: ${e?.code === 'ENOENT' ? 'no file' : 'unreadable or not JSON'}`);
     return 1;
   }
-  const { send, skipped } = buildReadings(cache, Date.now());
-  for (const s of skipped) console.log(`skip ${s.label ?? s.email}: ${s.why}`);
+  const signedIn = readSubscription(process.env.CLAUDE_JSON_PATH || join(homedir(), '.claude.json'));
+  const { send, skipped, withheld } = buildReadings(cache, Date.now(), signedIn);
+  for (const s of skipped) console.log(`skip ${s.label ?? masked(s.email)}: ${s.why}`);
+  for (const label of withheld) {
+    console.log(`${label}: two sign-ins on this Mac share this name, so its subscription details are not sent (usage is)`);
+  }
   if (dry) {
     for (const b of send) console.log(`would send ${describe(b)}`);
     console.log(`dry run: ${send.length} to send, ${skipped.length} skipped, nothing sent`);

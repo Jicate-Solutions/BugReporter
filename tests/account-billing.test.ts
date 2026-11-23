@@ -184,6 +184,21 @@ describe('renewalsDue', () => {
     expect(due.feesMissing).toBe(1);
   });
 
+  it('a start date from the Mac feed with no fee: listed as estimated, and adds nothing to the money', () => {
+    const fromFeed = { label: 'aicse', ...sub({ plan_name: 'Max 20x', subscription_started_on: '2024-03-25', extra_usage_on: true }) };
+    const alone = renewalsDue([fromFeed], '2026-11-21');
+    expect(alone).toEqual({ items: [{ label: 'aicse', date: '2026-11-25', confirmed: false, fee: null }], total: 0, feesMissing: 1 });
+    expect(renewalLine(alone.items[0], '2026-11-21')).toBe('25 Nov (estimated) · aicse · fee not entered');
+    expect(renewalsTotalLine(alone)).toBe('Total: Rs 0. One account has no fee entered and is left out.');
+    // Beside accounts that have a fee, the total is exactly what it was without it.
+    const withIt = renewalsDue([...accounts, fromFeed], '2026-11-21');
+    expect(withIt.items.map((i) => i.label)).toContain('aicse');
+    expect(withIt.total).toBe(renewalsDue(accounts, '2026-11-21').total);
+    expect(withIt.total).toBe(48000);
+    expect(withIt.feesMissing).toBe(2);
+    expect(Number.isFinite(withIt.total)).toBe(true);
+  });
+
   it('leaves out an account with no date, whatever its fee', () => {
     expect(renewalsDue(accounts, '2026-11-21').items.map((i) => i.label)).not.toContain('director');
     expect(renewalsDue([{ label: 'director', ...sub({ monthly_fee_inr: 24000 }) }], '2026-11-21')).toEqual({
@@ -234,20 +249,38 @@ describe('subscriptionLine', () => {
       extra_usage_on: false
     });
     expect(subscriptionLine(full, '2026-11-21')).toBe(
-      'Max 20x · started 5 Mar 2024 · renews on the 5th (estimated from the start date) · next 5 Dec · Rs 24,000 a month · paid extra use off'
+      'Max 20x · started 5 Mar 2024 · renews on the 5th (estimated from the start date) · next 5 Dec · Rs 24,000 a month · paid extra use off, last seen on the Mac'
     );
   });
 
   it('drops "estimated" once the billing day is entered', () => {
     const line = subscriptionLine(sub({ subscription_started_on: '2024-03-05', billing_day: 7 }), '2026-11-21');
-    expect(line).toBe('started 5 Mar 2024 · renews on the 7th · next 7 Dec');
+    expect(line).toBe('started 5 Mar 2024 · renews on the 7th · next 7 Dec · monthly fee not entered');
   });
 
   it('shows only the parts that are known', () => {
     expect(subscriptionLine(sub({ monthly_fee_inr: 24000 }), '2026-11-21')).toBe('Rs 24,000 a month');
-    expect(subscriptionLine(sub({ plan_name: 'Max 20x' }), '2026-11-21')).toBe('Max 20x');
-    expect(subscriptionLine(sub({ extra_usage_on: true }), '2026-11-21')).toBe('paid extra use on');
+    expect(subscriptionLine(sub({ plan_name: 'Max 20x' }), '2026-11-21')).toBe('Max 20x · monthly fee not entered');
+    expect(subscriptionLine(sub({ extra_usage_on: true }), '2026-11-21')).toBe('paid extra use on, last seen on the Mac');
     expect(subscriptionLine(sub({ billing_note: 'card ends 4411' }), '2026-11-21')).toBe('note: card ends 4411');
+  });
+
+  it('says the fee is missing when the plan or start date is known without it (the Mac feed fills those)', () => {
+    const fromFeed = sub({ plan_name: 'Max 20x', subscription_started_on: '2024-03-05', extra_usage_on: false });
+    expect(subscriptionLine(fromFeed, '2026-11-21')).toBe(
+      'Max 20x · started 5 Mar 2024 · renews on the 5th (estimated from the start date) · next 5 Dec · monthly fee not entered · paid extra use off, last seen on the Mac'
+    );
+    // Not when only something else is known, and not once the fee is entered (0 counts as entered).
+    expect(subscriptionLine(sub({ billing_day: 7 }), '2026-11-21')).not.toContain('fee');
+    expect(subscriptionLine(sub({ plan_name: 'Max 20x', monthly_fee_inr: 0 }), '2026-11-21')).toBe('Max 20x · Rs 0 a month');
+  });
+
+  it('says where paid extra use was seen: it comes from the Mac and can be behind', () => {
+    for (const [value, word] of [[true, 'on'], [false, 'off']] as const) {
+      const line = subscriptionLine(sub({ plan_name: 'Max 20x', monthly_fee_inr: 24000, extra_usage_on: value }), '2026-11-21');
+      expect(line).toBe(`Max 20x · Rs 24,000 a month · paid extra use ${word}, last seen on the Mac`);
+    }
+    expect(subscriptionLine(sub({ plan_name: 'Max 20x', monthly_fee_inr: 24000 }), '2026-11-21')).not.toContain('extra use');
   });
 
   it('says so when nothing is known', () => {
@@ -344,10 +377,21 @@ describe('subscriptionSchema: what the editor may save', () => {
     }
   });
 
-  it('refuses a missing field and anything extra: the key and the priority cannot ride along', () => {
-    const missing: Record<string, unknown> = { ...good };
-    delete missing.billing_note;
-    expect(subscriptionSchema.safeParse(missing).success).toBe(false);
+  it('takes only the fields that changed: one left out is not in what gets saved', () => {
+    expect(subscriptionSchema.parse({ monthly_fee_inr: 24000 })).toEqual({ monthly_fee_inr: 24000 });
+    expect(Object.keys(subscriptionSchema.parse({ monthly_fee_inr: 24000 }))).toEqual(['monthly_fee_inr']);
+    // A field that was emptied is sent as "not known" and stays in.
+    expect(subscriptionSchema.parse({ plan_name: null })).toEqual({ plan_name: null });
+    expect(subscriptionSchema.parse({ plan_name: '  ', billing_day: 7 })).toEqual({ plan_name: null, billing_day: 7 });
+    for (const key of Object.keys(good)) {
+      const one = { [key]: (good as Record<string, unknown>)[key] };
+      expect(Object.keys(subscriptionSchema.parse(one)), key).toEqual([key]);
+    }
+  });
+
+  it('refuses nothing at all, and anything extra: the key and the priority cannot ride along', () => {
+    expect(subscriptionSchema.safeParse({}).success).toBe(false);
+    expect(subscriptionSchema.safeParse({ plan_name: undefined }).success).toBe(false);
     expect(ok({ key: 'anything' })).toBe(false);
     expect(ok({ ciphertext: 'anything' })).toBe(false);
     expect(ok({ priority: 1 })).toBe(false);
