@@ -17,10 +17,17 @@
  * the reading. It is checked apart from the reading: a badly shaped
  * subscription is dropped and the reading is still stored.
  *
+ * Subscription alone: { label, source: 'mac', subscription } with no reading
+ * fields at all, sent when the Mac has no fresh reading for the signed-in
+ * account. Only the subscription fields are brought up to date: no reading is
+ * stored, nothing goes into the history and updated_at does not move.
+ *
  * 200 { status: 'stored' }      the reading is now the account's latest, and is
  *                               added to the history the card works its pace
  *                               out from (a history failure never fails this)
  * 200 { status: 'kept_newer' }  a newer reading was already stored; nothing changed
+ * 200 { status: 'subscription_only' }     no reading was given; the subscription fields were brought up to date
+ * 200 { status: 'subscription_dropped' }  no reading was given and the subscription was badly shaped; nothing written
  * 400 bad reading · 404 no account with that label (never created here)
  * 422 the reading is older than 20 minutes, or from the future
  *
@@ -30,7 +37,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkEngineRunnerAuth } from '@/lib/ai-engine/runner-auth';
-import { fillSubscriptionFromMac, macReadingRow, macReadingSchema, macSubscriptionSchema } from '@/lib/ai-engine/mac-usage';
+import {
+  fillSubscriptionFromMac,
+  macReadingRow,
+  macReadingSchema,
+  macSubscriptionOnlySchema,
+  macSubscriptionSchema
+} from '@/lib/ai-engine/mac-usage';
 import { recordReadingHistory } from '@/lib/ai-engine/account-pace';
 
 export const dynamic = 'force-dynamic';
@@ -49,28 +62,31 @@ export async function POST(request: NextRequest) {
   const isObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw);
   const { subscription: rawSubscription, ...rawReading } = (isObject ? raw : {}) as Record<string, unknown>;
   const parsed = macReadingSchema.safeParse(isObject ? rawReading : raw);
-  if (!parsed.success) return fail('BAD_REQUEST', 'Invalid body.', 400);
-  const reading = parsed.data;
+  // A subscription with no reading fields at all (the Mac had no fresh reading for that account).
+  const alone =
+    !parsed.success && isObject && rawSubscription !== undefined ? macSubscriptionOnlySchema.safeParse(rawReading) : null;
+  if (!parsed.success && !alone?.success) return fail('BAD_REQUEST', 'Invalid body.', 400);
+  const reading = parsed.success ? parsed.data : null;
+  const label = reading ? reading.label : alone!.data!.label;
   const parsedSubscription = rawSubscription === undefined ? null : macSubscriptionSchema.safeParse(rawSubscription);
   const subscription = parsedSubscription?.success ? parsedSubscription.data : undefined;
   if (parsedSubscription && !parsedSubscription.success) {
-    console.error('[ai-engine/usage-reading] subscription part dropped (bad shape) for', reading.label);
+    console.error('[ai-engine/usage-reading] subscription part dropped (bad shape) for', label);
   }
 
-  const built = macReadingRow(reading, auth.runner, Date.now());
-  if (!built.ok) {
+  const built = reading ? macReadingRow(reading, auth.runner, Date.now()) : null;
+  if (built && !built.ok) {
     return fail(
       built.reason === 'stale' ? 'STALE_READING' : 'FUTURE_READING',
       built.reason === 'stale' ? 'The reading is older than 20 minutes.' : 'The reading is from the future.',
       422
     );
   }
-  const { row } = built;
 
   const { data: current, error: readError } = await admin
     .from('ai_accounts')
     .select('label, updated_at')
-    .eq('label', reading.label)
+    .eq('label', label)
     .maybeSingle();
   if (readError) {
     console.error('[ai-engine/usage-reading] read failed:', readError.message);
@@ -80,10 +96,14 @@ export async function POST(request: NextRequest) {
 
   // The account exists, so every answer from here also brings its subscription fields up to date.
   // That runs AFTER the reading is settled, so it can never get in the way of the guard below.
-  const done = async (status: 'stored' | 'kept_newer') => {
-    await fillSubscriptionFromMac(admin, reading.label, subscription, Date.now());
+  const done = async (status: 'stored' | 'kept_newer' | 'subscription_only' | 'subscription_dropped') => {
+    await fillSubscriptionFromMac(admin, label, subscription, Date.now());
     return NextResponse.json({ status }, { status: 200 });
   };
+
+  // No reading was given: nothing is stored as one, the history is not touched and updated_at does not move.
+  if (!reading || !built?.ok) return done(subscription ? 'subscription_only' : 'subscription_dropped');
+  const { row } = built;
 
   const stored = (current as { updated_at: string | null }).updated_at;
   if (stored && Date.parse(stored) >= Date.parse(row.updated_at)) {
@@ -91,7 +111,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Guarded on the value just read, so a probe reading that lands in between is never overwritten.
-  const base = admin.from('ai_accounts').update(row).eq('label', reading.label);
+  const base = admin.from('ai_accounts').update(row).eq('label', label);
   const guarded = stored ? base.eq('updated_at', stored) : base.is('updated_at', null);
   const { data: updated, error: writeError } = await guarded.select('label').maybeSingle();
   if (writeError) {

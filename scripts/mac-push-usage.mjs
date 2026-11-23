@@ -39,6 +39,10 @@
  * Tower only knows the name before the @, so when two addresses in the cache
  * share that name, the subscription is held back for it (usage still goes) and
  * the run says so.
+ * When that account has no reading to send (too old, never read, no weekly
+ * numbers), its subscription goes on its own as { label, source, subscription }
+ * with no usage numbers and no read time: the Tower updates the subscription
+ * fields only and stores no reading for it.
  *
  * Settings (environment):
  *   QC_PATH            the cache (default ~/.config/obsidian/v5-quota-cache.json)
@@ -155,12 +159,16 @@ export function masked(text) {
  * subscriptionOf) adds the subscription to the reading of that account only,
  * matched on the full address. `withheld` lists the labels whose subscription
  * was held back because two addresses in the cache share that label: the
- * Tower could not tell which of the two it belongs to.
+ * Tower could not tell which of the two it belongs to. When that account is in
+ * the cache but has no reading to send, its subscription is sent alone, with
+ * no usage numbers (the skipped reading stays skipped).
  */
 export function buildReadings(cache, now, signedIn = null) {
   const send = [];
   const skipped = [];
   const withheld = [];
+  let signedInLabel = null; // the signed-in account's label, when it is in the cache
+  let signedInSent = false; // its reading went (with the subscription, or withheld)
   // Every address counts here, also one whose reading is too old to send: it is still a second owner of the label.
   const owners = new Map();
   for (const email of Object.keys(cache?.accounts ?? {})) {
@@ -170,6 +178,8 @@ export function buildReadings(cache, now, signedIn = null) {
   for (const [email, a] of Object.entries(cache?.accounts ?? {})) {
     const label = labelOf(email);
     if (!label) { skipped.push({ email, why: 'not a label' }); continue; }
+    const isSignedIn = Boolean(signedIn) && signedIn.email === String(email).trim().toLowerCase();
+    if (isSignedIn) signedInLabel = label;
     const fetchedMs = a?.fetched_at ? Date.parse(a.fetched_at) : NaN;
     if (!Number.isFinite(fetchedMs)) { skipped.push({ label, why: 'never read' }); continue; }
     const ageMin = Math.round((now - fetchedMs) / 60_000);
@@ -189,11 +199,17 @@ export function buildReadings(cache, now, signedIn = null) {
       body.five_hour_util = round(a.five_hour_pct / 100);
       body.five_hour_resets_at = fhReset;
     }
-    if (signedIn && signedIn.email === String(email).trim().toLowerCase()) {
+    if (isSignedIn) {
+      signedInSent = true;
       if (owners.get(label).size > 1) withheld.push(label);
       else body.subscription = signedIn.subscription;
     }
     send.push(body);
+  }
+  // No reading went for the signed-in account: its subscription goes alone, never with stale numbers.
+  if (signedInLabel && !signedInSent) {
+    if (owners.get(signedInLabel).size > 1) withheld.push(signedInLabel);
+    else send.push({ label: signedInLabel, source: 'mac', subscription: signedIn.subscription });
   }
   return { send, skipped, withheld };
 }
@@ -222,6 +238,7 @@ function describe(b) {
   const sub = s
     ? ` · subscription: plan ${s.plan ?? '-'}, started ${s.started_on ?? '-'}, extra use ${s.extra_use == null ? '-' : s.extra_use ? 'on' : 'off'}`
     : '';
+  if (b.read_at == null) return `${b.label}: no fresh reading${sub}`;
   return `${b.label}: week ${b.seven_day_util} (resets ${iso(b.seven_day_resets_at)}) · read ${iso(b.read_at)}${fh}${sub}`;
 }
 

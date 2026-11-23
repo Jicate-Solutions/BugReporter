@@ -666,3 +666,89 @@ describe('subscription details from the Mac (22 Nov 2026)', () => {
     expect(db.writes).toEqual([]);
   });
 });
+
+describe('a subscription with no reading (23 Nov 2026)', () => {
+  const SUB = { plan: 'Max 20x', started_on: '2024-03-05', extra_use: false };
+  const alone = (over: Row = {}) => ({ label: 'ainursing', source: 'mac', subscription: SUB, ...over });
+  const READING_COLUMNS = ['seven_day_util', 'seven_day_resets_at', 'five_hour_util', 'five_hour_resets_at', 'reported_by', 'updated_at'];
+
+  it('fills the subscription fields and stores no reading: no usage column, no history row, updated_at unmoved', async () => {
+    const before = { ...account('ainursing') };
+    const res = await POST(req(alone()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'subscription_only' });
+    const a = account('ainursing');
+    expect(a.plan_name).toBe('Max 20x');
+    expect(a.subscription_started_on).toBe('2024-03-05');
+    expect(a.extra_usage_on).toBe(false);
+    for (const c of [...READING_COLUMNS, 'priority', 'overage_enabled']) expect(a[c], c).toEqual(before[c]);
+    expect(db.writes.map((w) => w.row)).toEqual([{ plan_name: 'Max 20x' }, { subscription_started_on: '2024-03-05' }, { extra_usage_on: false }]);
+    expect(db.touched).not.toContain('ai_account_readings');
+    expect(db.touched).not.toContain('ai_account_secrets');
+    expect(db.tables.ai_account_readings ?? []).toEqual([]);
+  });
+
+  it('an account that never had a reading still has none afterwards', async () => {
+    expect(await (await POST(req(alone({ label: 'aimech' })))).json()).toEqual({ status: 'subscription_only' });
+    expect(account('aimech').plan_name).toBe('Max 20x');
+    expect(account('aimech').updated_at).toBeNull();
+    expect(account('aimech').seven_day_util).toBeUndefined();
+  });
+
+  it('keeps the same rules: a typed plan and start date stay, paid extra use follows the Mac', async () => {
+    Object.assign(account('ainursing'), { plan_name: 'Team', subscription_started_on: '2023-01-01', extra_usage_on: false });
+    await POST(req(alone({ subscription: { ...SUB, extra_use: true } })));
+    const a = account('ainursing');
+    expect(a.plan_name).toBe('Team');
+    expect(a.subscription_started_on).toBe('2023-01-01');
+    expect(a.extra_usage_on).toBe(true);
+  });
+
+  it('a badly shaped subscription is dropped: 200, nothing written, and the next item is not affected', async () => {
+    for (const bad of ['Max 20x', null, [], { plan: '' }, { started_on: '2024-02-30' }, { plan: 'Max 20x', monthly_fee_inr: 1 }]) {
+      const res = await POST(req(alone({ subscription: bad })));
+      expect(res.status, JSON.stringify(bad)).toBe(200);
+      expect(await res.json()).toEqual({ status: 'subscription_dropped' });
+    }
+    expect(db.writes).toEqual([]);
+    expect(await (await POST(req(reading({ label: 'aimech' })))).json()).toEqual({ status: 'stored' });
+    expect(await (await POST(req(alone()))).json()).toEqual({ status: 'subscription_only' });
+  });
+
+  it('a failed subscription write still answers 200', async () => {
+    db.subscription = 'down';
+    expect((await POST(req(alone()))).status).toBe(200);
+    db.subscription = 'throws';
+    expect((await POST(req(alone()))).status).toBe(200);
+  });
+
+  it('a half-given or stale reading is never taken as subscription-only', async () => {
+    for (const over of [
+      { read_at: NOW_S() - 60 },
+      { seven_day_util: 0.5 },
+      { seven_day_util: 0.5, seven_day_resets_at: NOW_S() + 86400 },
+      { five_hour_util: 0.1 },
+      { extra: 1 },
+      { source: 'box' },
+      { label: 'Bad Label' },
+      { label: 'default' }
+    ]) {
+      expect((await POST(req(alone(over)))).status, JSON.stringify(over)).toBe(400);
+    }
+    // No subscription key at all is not this kind of item either.
+    expect((await POST(req({ label: 'ainursing', source: 'mac' }))).status).toBe(400);
+    // A whole reading that is too old is still refused as stale; its subscription is not applied on the side.
+    const stale = await POST(req(reading({ read_at: NOW_S() - 21 * 60, subscription: SUB })));
+    expect(stale.status).toBe(422);
+    expect(db.writes).toEqual([]);
+    expect(account('ainursing').plan_name).toBeUndefined();
+  });
+
+  it('auth and the unknown label are as before', async () => {
+    for (const t of [WORKER, LANE]) expect((await POST(req(alone(), t))).status).toBe(403);
+    expect((await POST(req(alone(), ''))).status).toBe(401);
+    expect((await POST(req(alone({ label: 'director' })))).status).toBe(404);
+    expect(db.writes).toEqual([]);
+    expect(db.tables.ai_accounts.map((r) => r.label)).toEqual(['ainursing', 'aimech']);
+  });
+});
